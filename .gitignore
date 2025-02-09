@@ -1,0 +1,71 @@
+# Ignore build directories
+build/
+build-*/
+cmake-build-*/
+out/
+bin/
+lib/
+
+# Xcode
+*.xcodeproj/
+xcuserdata/
+*.xcscmblueprint
+*.xcscheme
+*.xcworkspace/
+DerivedData/
+*.pbxuser
+!default.pbxuser
+!default.mode1v3
+!default.mode2v3
+!default.perspectivev3
+
+# macOS system files
+.DS_Store
+
+# CMake-generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+CPackConfig.cmake
+CPackSourceConfig.cmake
+CTestTestfile.cmake
+install_manifest.txt
+compile_commands.json
+
+# CLion
+.idea/
+
+# Visual Studio Code
+.vscode/
+
+# Object files
+*.o
+*.obj
+
+# Libraries
+*.a
+*.lib
+*.dylib
+*.so
+
+# Executables
+*.exe
+*.out
+
+# Core dumps
+*.core
+
+# Log files (adjust if you have specific log file patterns)
+*.log
+
+# Temporary files
+*~
+*.tmp
+*.temp
+*.swp
+
+# helper scripts
+SKELETON*
+skeleton.sh
+compile_commands.json
+cmakeupdate.py
