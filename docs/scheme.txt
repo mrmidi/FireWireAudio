@@ -1,0 +1,33 @@
++---------------------+     +---------------------------------+     +-----------------------+
+|     Core Audio      |     | Audio Server Plug-in (ASPL)     |     | FireWire Daemon       |
+|    (coreaudiod)     | <-> |  (User Space, Sandboxed)        | <-> |      (User Space)     |
++---------------------+     +---------------------------------+     +-----------------------+
+      ^                           |                                         |
+      |                           |                                         |
+      |  Audio                    |  UNIX Domain Socket / IPC               |
+      |  Data                     |  (Audio Data + Control/Status)          |
+      | (PCM)                     |                                         |
+      |                           v                                         v
+      |                 +-----------------------------+     +-------------------------------+
+      +---------------->+ StreamProcessors            |     |                               |
+                        |  (Buffers and converts PCM  |     |  (Manages FireWire            |
+                        |   to/from AM824)            |---->|   Isochronous Transmissions,  |
+                        +-----------------------------+     |   Time Stamps, Sends/Receives |
+                                                            |   Data via IOFireWireLib)     |
+                                              +-----------------+------------+      +------------------------------+
+                                              |                 |            |      |                              |
+                                              |    FireWire     |            |      |    (Handles AV/C Commands)   |
+                                              |  Isochronous    |            |      +------------------------------+
+                                              |  Data           |            |                       ^
+                                              |                 |            |                       |
+                                              v                 |            +-----------------------+
+                                        +-----------------------+
+                                        |    FireWire Bus       |
+                                        +-----------------------+
+                                              |
+                                              v
+                                      +-----------------------+
+                                      | FireWire Audio Device |
+                                      +-----------------------+
+
+
