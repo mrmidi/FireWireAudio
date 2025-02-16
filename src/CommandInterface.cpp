@@ -23,7 +23,7 @@ CommandInterface::~CommandInterface()
 {
     auto result = deactivate();
     if (!result) {
-        spdlog::error("~CommandInterface, deactivate failed 0x{:x}", result.error().iokit_return());
+        spdlog::error("~CommandInterface, deactivate failed 0x{:x}", static_cast<int>(result.error()));
     }
 }
 

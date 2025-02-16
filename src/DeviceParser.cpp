@@ -65,12 +65,12 @@ std::expected<void, IOKitError> DeviceParser::parse() {
 
     // (C) Continue with further discovery (e.g., Music Subunit and Audio Subunit)
     if (auto musicResult = parseMusicSubunit(); !musicResult) {
-        spdlog::error("Failed to parse Music Subunit: 0x{:x}", musicResult.error().iokit_return());
+        spdlog::error("Failed to parse Music Subunit: 0x{:x}", static_cast<int>(musicResult.error()));
         return std::unexpected(musicResult.error());
     }
 
     if (auto audioResult = parseAudioSubunit(); !audioResult) {
-        spdlog::error("Failed to parse Audio Subunit: 0x{:x}", audioResult.error().iokit_return());
+        spdlog::error("Failed to parse Audio Subunit: 0x{:x}", static_cast<int>(audioResult.error()));
         return std::unexpected(audioResult.error());
     }
 

@@ -29,7 +29,7 @@ std::expected<void, IOKitError> DeviceController::start(DeviceNotificationCallba
     // Pass the stored callback directly to startDiscovery.
     auto result = discovery_->startDiscovery(notificationCallback_);
     if (!result) {
-        spdlog::error("Failed to start discovery: 0x{:x}", result.error().iokit_return());
+        spdlog::error("Failed to start discovery: 0x{:x}", static_cast<int>(result.error()));
         return std::unexpected(result.error());
     }
 
@@ -48,7 +48,7 @@ std::expected<void, IOKitError> DeviceController::stop() {
 
     auto result = discovery_->stopDiscovery();
     if (!result) {
-        spdlog::error("Failed to stop discovery: 0x{:x}", result.error().iokit_return());
+        spdlog::error("Failed to stop discovery: 0x{:x}", static_cast<int>(result.error()));
         return std::unexpected(result.error());
     }
 

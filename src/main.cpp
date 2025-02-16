@@ -55,7 +55,7 @@ int main() {
         // Start the DeviceController
         auto result = controller.start(callback);
         if (!result) {
-            spdlog::error("Failed to start DeviceController: 0x{:x}", result.error().iokit_return());
+            spdlog::error("Failed to start DeviceController: 0x{:x}", static_cast<int>(result.error()));
             return 1;
         }
         spdlog::info("Entering main run loop...");

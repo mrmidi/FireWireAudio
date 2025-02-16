@@ -169,7 +169,7 @@ void IOKitFireWireDeviceDiscovery::deviceAdded(void* refCon, io_iterator_t itera
         // Try to get the GUID *before* creating the AudioDevice.
         auto guidResult = self->getDeviceGuid(device);
         if (!guidResult) {
-            spdlog::error("deviceAdded: Failed to get GUID: 0x{:x}", guidResult.error().iokit_return());
+            spdlog::error("deviceAdded: Failed to get GUID: 0x{:x}", static_cast<int>(guidResult.error()));
             IOObjectRelease(device);
             continue; // Go to the next device
         }
@@ -202,7 +202,7 @@ void IOKitFireWireDeviceDiscovery::deviceAdded(void* refCon, io_iterator_t itera
                 self->callback_(audioDeviceResult.value(), true); // connected = true
             }
         } else {
-            spdlog::error("deviceAdded: Failed to create AudioDevice: 0x{:x}", audioDeviceResult.error().iokit_return());
+            spdlog::error("deviceAdded: Failed to create AudioDevice: 0x{:x}", static_cast<int>(audioDeviceResult.error()));
         }
         
         IOObjectRelease(device);
@@ -325,7 +325,7 @@ IOKitFireWireDeviceDiscovery::createAudioDevice(io_object_t device) {
     // --- Initialize the AudioDevice ---
     auto initResult = audioDevice->init();
     if (!initResult) {
-        spdlog::error("Failed to initialize AudioDevice: 0x{:x}", initResult.error().iokit_return());
+        spdlog::error("Failed to initialize AudioDevice: 0x{:x}", static_cast<int>(initResult.error()));
         // DO NOT release the device object here; the AudioDevice destructor handles it.
         return std::unexpected(initResult.error());
     }

@@ -69,3 +69,6 @@ SKELETON*
 skeleton.sh
 compile_commands.json
 cmakeupdate.py
+
+# AppleHeaders folder
+AppleHeaders/

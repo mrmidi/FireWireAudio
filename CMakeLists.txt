@@ -8,23 +8,31 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Export compile commands (for sonarlint)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# --- spdlog (using FetchContent) ---
+# --- Dependencies using FetchContent ---
 include(FetchContent)
+
+# spdlog
 FetchContent_Declare(
     spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
     GIT_TAG        v1.13.0
 )
-FetchContent_MakeAvailable(spdlog)
 
-# --- Catch2 (using FetchContent) ---
+# Catch2
 FetchContent_Declare(
     catch2
     GIT_REPOSITORY https://github.com/catchorg/Catch2.git
     GIT_TAG        v3.5.2 
 )
-FetchContent_MakeAvailable(catch2)
 
+# libASPL
+FetchContent_Declare(
+    libASPL
+    GIT_REPOSITORY https://github.com/gavv/libASPL.git
+    GIT_TAG main
+)
+
+FetchContent_MakeAvailable(spdlog catch2 libASPL)
 
 # --- Create a Library for the Application Code ---
 add_library(FWA STATIC
@@ -35,6 +43,11 @@ add_library(FWA STATIC
     src/IOKitFireWireDeviceDiscovery.cpp
     src/main.cpp
     src/DeviceParser.cpp
+    # Isoch implementation files
+    src/Isoch/IsochBufferManager.cpp
+    src/Isoch/CIPHeaderHandler.cpp
+    src/Isoch/AmdtpHelpers.cpp
+    src/Isoch/AmdtpTransmitter.cpp
     include/FWA/AudioDevice.h
     include/FWA/CommandInterface.h
     include/FWA/DeviceController.h
@@ -49,6 +62,11 @@ add_library(FWA STATIC
     include/FWA/Subunit.hpp
     include/FWA/DeviceParser.hpp
     include/FWA/DeviceInfo.hpp
+    # Isoch header files
+    include/FWA/Isoch/IsochBufferManager.hpp
+    include/FWA/Isoch/CIPHeaderHandler.hpp
+    include/FWA/Isoch/AmdtpHelpers.hpp
+    include/FWA/Isoch/AmdtpTransmitter.hpp
 )
 
 # Set include directories for the FWA library (PUBLIC)
@@ -76,6 +94,24 @@ target_link_libraries(fwadaemon
         "-framework CoreFoundation"
 )
 
+# --- Audio Driver Target ---
+add_library(FWADriver MODULE src/driver/FWADriver.cpp)
+set_target_properties(FWADriver PROPERTIES
+    BUNDLE TRUE
+    BUNDLE_EXTENSION "driver"
+    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist
+    PREFIX ""
+    SUFFIX ""
+)
+
+target_link_libraries(FWADriver
+    PRIVATE
+        FWA
+        libASPL
+        "-framework CoreFoundation"
+        "-framework CoreAudio"
+)
+
 # --- Testing ---
 enable_testing()
 add_subdirectory(test)
@@ -92,6 +128,10 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX "Source Files" FILES
     src/IOKitFireWireDeviceDiscovery.cpp
     src/main.cpp
     src/DeviceParser.cpp
+    src/Isoch/IsochBufferManager.cpp
+    src/Isoch/CIPHeaderHandler.cpp
+    src/Isoch/AmdtpHelpers.cpp
+    src/Isoch/AmdtpTransmitter.cpp
 )
 
 # Group header files
@@ -104,6 +144,10 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/include PREFIX "Header Files" FILE
     include/FWA/IFireWireDeviceDiscovery.h
     include/FWA/IOKitFireWireDeviceDiscovery.h
     include/FWA/DeviceParser.hpp
+    include/FWA/Isoch/IsochBufferManager.hpp
+    include/FWA/Isoch/CIPHeaderHandler.hpp
+    include/FWA/Isoch/AmdtpHelpers.hpp
+    include/FWA/Isoch/AmdtpTransmitter.hpp
 )
 
 # Group Capabilities files
