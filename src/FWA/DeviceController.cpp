@@ -19,7 +19,7 @@ DeviceController::~DeviceController() {
 std::expected<void, IOKitError> DeviceController::start(DeviceNotificationCallback callback) {
     spdlog::info("DeviceController::start() called");
     if (isRunning_) {
-        return std::unexpected(IOKitError(kIOReturnExclusiveAccess));
+        return std::unexpected(static_cast<IOKitError>(kIOReturnExclusiveAccess));
     }
 
     // Store the provided callback.  NO LONGER create a lambda here.
@@ -29,10 +29,12 @@ std::expected<void, IOKitError> DeviceController::start(DeviceNotificationCallba
     // Pass the stored callback directly to startDiscovery.
     auto result = discovery_->startDiscovery(notificationCallback_);
     if (!result) {
-        spdlog::error("Failed to start discovery: 0x{:x}", result.error().iokit_return());
+        spdlog::error("Failed to start discovery: 0x{:x}", static_cast<int>(result.error()));
         return std::unexpected(result.error());
     }
-
+    
+    runLoopRef_ = CFRunLoopGetCurrent();
+    
     isRunning_ = true; // Set isRunning_ *after* successful startDiscovery.
     return {}; // Return success. No need start any thread!
 
@@ -48,7 +50,7 @@ std::expected<void, IOKitError> DeviceController::stop() {
 
     auto result = discovery_->stopDiscovery();
     if (!result) {
-        spdlog::error("Failed to stop discovery: 0x{:x}", result.error().iokit_return());
+        spdlog::error("Failed to stop discovery: 0x{:x}", static_cast<int>(result.error()));
         return std::unexpected(result.error());
     }
 
@@ -95,7 +97,7 @@ std::expected<std::shared_ptr<AudioDevice>, IOKitError> DeviceController::getDev
     if (it != devices_.end()) {
         return *it;
     } else {
-        return std::unexpected(IOKitError(kIOReturnNotFound));
+        return std::unexpected(static_cast<IOKitError>(kIOReturnNotFound));
     }
 }
 } // namespace FWA

@@ -7,31 +7,86 @@
 
 namespace FWA {
 
-/// Represents per-channel (or per-field) information.
+/**
+ * @brief Represents per-channel (or per-field) information in an audio stream
+ */
 struct ChannelFormat {
-    uint8_t channelCount;  // e.g. number of channels for this format field
-    uint8_t formatCode;    // e.g. MBLA, IEC60958-3, etc.
+    uint8_t channelCount;  ///< Number of channels for this format field
+    uint8_t formatCode;    ///< Format code (e.g., MBLA, IEC60958-3)
 };
 
+/**
+ * @brief Represents the format and capabilities of an audio stream
+ * 
+ * This class encapsulates the format type, sample rate, synchronization source status,
+ * and channel format information for an audio stream.
+ */
 class AudioStreamFormat {
 public:
     AudioStreamFormat() = default;
+
+    /**
+     * @brief Construct a new Audio Stream Format object
+     * @param type Format type of the stream
+     * @param sampleRate Sample rate of the stream
+     * @param syncSource Whether this stream is a sync source
+     * @param channels Vector of channel format information
+     */
     AudioStreamFormat(FormatType type, SampleRate sampleRate, bool syncSource, std::vector<ChannelFormat> channels)
       : formatType_(type), sampleRate_(sampleRate), syncSource_(syncSource), channels_(std::move(channels)) {}
 
-    // Getters
+    /**
+     * @brief Get the format type
+     * @return FormatType The stream's format type
+     */
     FormatType getFormatType() const { return formatType_; }
+
+    /**
+     * @brief Get the sample rate
+     * @return SampleRate The stream's sample rate
+     */
     SampleRate getSampleRate() const { return sampleRate_; }
+
+    /**
+     * @brief Check if this stream is a sync source
+     * @return bool True if this stream is a sync source
+     */
     bool isSyncSource() const { return syncSource_; }
+
+    /**
+     * @brief Get the channel formats
+     * @return const std::vector<ChannelFormat>& Vector of channel format information
+     */
     const std::vector<ChannelFormat>& getChannelFormats() const { return channels_; }
 
-    // Setters
+    /**
+     * @brief Set the format type
+     * @param type New format type to set
+     */
     void setFormatType(FormatType type) { formatType_ = type; }
+
+    /**
+     * @brief Set the sample rate
+     * @param rate New sample rate to set
+     */
     void setSampleRate(SampleRate rate) { sampleRate_ = rate; }
+
+    /**
+     * @brief Set the sync source status
+     * @param sync New sync source status
+     */
     void setSyncSource(bool sync) { syncSource_ = sync; }
+
+    /**
+     * @brief Set the channel formats
+     * @param channels New vector of channel format information
+     */
     void setChannelFormats(const std::vector<ChannelFormat>& channels) { channels_ = channels; }
 
-    // Utility: Returns a human-readable string of the stream format.
+    /**
+     * @brief Get a human-readable string representation of the stream format
+     * @return std::string Description of the stream format
+     */
     std::string toString() const {
         std::ostringstream oss;
         oss << "Format Type: ";
@@ -62,10 +117,10 @@ public:
     }
 
 private:
-    FormatType formatType_{FormatType::Unknown};
-    SampleRate sampleRate_{SampleRate::Unknown};
-    bool syncSource_{false};
-    std::vector<ChannelFormat> channels_;
+    FormatType formatType_{FormatType::Unknown};      ///< Format type of the stream
+    SampleRate sampleRate_{SampleRate::Unknown};      ///< Sample rate of the stream
+    bool syncSource_{false};                          ///< Whether this stream is a sync source
+    std::vector<ChannelFormat> channels_;             ///< Channel format information
 };
 
 } // namespace FWA

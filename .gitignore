@@ -5,6 +5,7 @@ cmake-build-*/
 out/
 bin/
 lib/
+xbuild/
 
 # Xcode
 *.xcodeproj/
@@ -69,3 +70,6 @@ SKELETON*
 skeleton.sh
 compile_commands.json
 cmakeupdate.py
+
+# AppleHeaders folder
+AppleHeaders/

@@ -15,12 +15,13 @@
 
 namespace FWA {
 
-IOKitFireWireDeviceDiscovery::IOKitFireWireDeviceDiscovery() :
-masterPort_(MACH_PORT_NULL),
-notifyPort_(nullptr),
-runLoopSource_(nullptr),
-deviceIterator_(0),
-callback_(nullptr)
+IOKitFireWireDeviceDiscovery::IOKitFireWireDeviceDiscovery(std::shared_ptr<DeviceController> deviceController) :
+    masterPort_(MACH_PORT_NULL),
+    notifyPort_(nullptr),
+    runLoopSource_(nullptr),
+    deviceIterator_(0),
+    deviceController_(deviceController),
+    callback_(nullptr)
 {
 }
 
@@ -28,10 +29,9 @@ IOKitFireWireDeviceDiscovery::~IOKitFireWireDeviceDiscovery() {
     stopDiscovery();
 }
 
-std::expected<void, IOKitError> IOKitFireWireDeviceDiscovery::startDiscovery(DeviceNotificationCallback callback)
-{
+std::expected<void, IOKitError> IOKitFireWireDeviceDiscovery::startDiscovery(DeviceNotificationCallback callback) {
     if (discoveryThreadRunning_) {
-        return std::unexpected(IOKitError(kIOReturnExclusiveAccess));
+        return std::unexpected(static_cast<IOKitError>(kIOReturnExclusiveAccess));
     }
     
     callback_ = callback;
@@ -43,7 +43,7 @@ std::expected<void, IOKitError> IOKitFireWireDeviceDiscovery::startDiscovery(Dev
 }
 void IOKitFireWireDeviceDiscovery::discoveryThreadFunction() {
     
-    kern_return_t kr = IOMasterPort(MACH_PORT_NULL, &masterPort_);
+    kern_return_t kr = IOMainPort(MACH_PORT_NULL, &masterPort_);
     if (kr != KERN_SUCCESS || masterPort_ == MACH_PORT_NULL) {
         spdlog::error("discoveryThreadFunction: Failed to get IOMasterPort: {}", kr);
         discoveryThreadRunning_ = false;
@@ -147,7 +147,7 @@ std::expected<std::shared_ptr<AudioDevice>, IOKitError> IOKitFireWireDeviceDisco
     if (it != devices_.end()) {
         return *it;
     } else {
-        return std::unexpected(IOKitError(kIOReturnNotFound));
+        return std::unexpected(static_cast<IOKitError>(kIOReturnNotFound));
     }
 }
 
@@ -169,7 +169,7 @@ void IOKitFireWireDeviceDiscovery::deviceAdded(void* refCon, io_iterator_t itera
         // Try to get the GUID *before* creating the AudioDevice.
         auto guidResult = self->getDeviceGuid(device);
         if (!guidResult) {
-            spdlog::error("deviceAdded: Failed to get GUID: 0x{:x}", guidResult.error().iokit_return());
+            spdlog::error("deviceAdded: Failed to get GUID: 0x{:x}", static_cast<int>(guidResult.error()));
             IOObjectRelease(device);
             continue; // Go to the next device
         }
@@ -202,7 +202,7 @@ void IOKitFireWireDeviceDiscovery::deviceAdded(void* refCon, io_iterator_t itera
                 self->callback_(audioDeviceResult.value(), true); // connected = true
             }
         } else {
-            spdlog::error("deviceAdded: Failed to create AudioDevice: 0x{:x}", audioDeviceResult.error().iokit_return());
+            spdlog::error("deviceAdded: Failed to create AudioDevice: 0x{:x}", static_cast<int>(audioDeviceResult.error()));
         }
         
         IOObjectRelease(device);
@@ -219,7 +219,7 @@ IOKitFireWireDeviceDiscovery::createAudioDevice(io_object_t device) {
     if (result != kIOReturnSuccess || properties == nullptr) {
         spdlog::error("createAudioDevice: Failed to get device properties: {}", result);
         if (properties) CFRelease(properties);
-        return std::unexpected(IOKitError(result)); // Return the IOReturn
+        return std::unexpected(static_cast<IOKitError>(result));
     }
     spdlog::info("createAudioDevice: Got device properties");
     
@@ -231,7 +231,7 @@ IOKitFireWireDeviceDiscovery::createAudioDevice(io_object_t device) {
     if (guidNumber == nullptr) {
         spdlog::error("createAudioDevice: Device missing GUID");
         CFRelease(properties);
-        return std::unexpected(IOKitError(kIOReturnNotFound)); // Appropriate IOKit error
+        return std::unexpected(static_cast<IOKitError>(kIOReturnNotFound));
     }
     spdlog::info("createAudioDevice: Got GUID CFNumberRef");
     
@@ -239,7 +239,7 @@ IOKitFireWireDeviceDiscovery::createAudioDevice(io_object_t device) {
     if (!CFNumberGetValue(guidNumber, kCFNumberSInt64Type, &guid)) {
         spdlog::error("createAudioDevice: Failed to get GUID value");
         CFRelease(properties);
-        return std::unexpected(IOKitError(kIOReturnBadArgument)); // Or another suitable error
+        return std::unexpected(static_cast<IOKitError>(kIOReturnBadArgument));
     }
     spdlog::info("createAudioDevice: Got GUID value");
     
@@ -281,12 +281,12 @@ IOKitFireWireDeviceDiscovery::createAudioDevice(io_object_t device) {
     result = IORegistryEntryGetParentEntry(device, kIOServicePlane, &avcUnit);
     if (result != kIOReturnSuccess) {
         spdlog::error("createAudioDevice: Failed to get parent AVC unit entry: {}", result);
-        return std::unexpected(IOKitError(result));
+        return std::unexpected(static_cast<IOKitError>(result));
     }
     if (!avcUnit)
     {
         spdlog::error("createAudioDevice: Failed to get avcUnit");
-        return std::unexpected(IOKitError(kIOReturnNotFound));
+        return std::unexpected(static_cast<IOKitError>(kIOReturnNotFound));
     }
 
     // DEBUG:
@@ -312,20 +312,21 @@ IOKitFireWireDeviceDiscovery::createAudioDevice(io_object_t device) {
     if (result != kIOReturnSuccess) {
         spdlog::error("createAudioDevice: Failed to add interest notification: {}", result);
         IOObjectRelease(avcUnit); // Release avcUnit if failed.
-        return std::unexpected(IOKitError(result));
+        return std::unexpected(static_cast<IOKitError>(result));
     }
     
     // Now is safe to create device, with all io objects it needs.
     // Create the AudioDevice, passing in the required parameters.
     std::shared_ptr<AudioDevice> audioDevice = std::make_shared<AudioDevice>(guid, deviceName, vendorName,
-                                                                             device); // create object
+                                                                             device, deviceController_.get());
+    
     // Release the local reference to avcUnit, AudioDevice now owns it
     IOObjectRelease(device);
     
     // --- Initialize the AudioDevice ---
     auto initResult = audioDevice->init();
     if (!initResult) {
-        spdlog::error("Failed to initialize AudioDevice: 0x{:x}", initResult.error().iokit_return());
+        spdlog::error("Failed to initialize AudioDevice: 0x{:x}", static_cast<int>(initResult.error()));
         // DO NOT release the device object here; the AudioDevice destructor handles it.
         return std::unexpected(initResult.error());
     }
@@ -367,14 +368,14 @@ std::expected<UInt64, IOKitError> IOKitFireWireDeviceDiscovery::getDeviceGuid(io
     IOReturn result = IORegistryEntryCreateCFProperties(device, &props, kCFAllocatorDefault, kNilOptions);
     if (result != kIOReturnSuccess || props == nullptr) {
         if (props) CFRelease(props);
-        return std::unexpected(IOKitError(result));
+        return std::unexpected(static_cast<IOKitError>(result));
     }
     
     CFNumberRef guidNumber = (CFNumberRef)CFDictionaryGetValue(props, CFSTR("GUID"));
     UInt64 guid = 0;
     if (guidNumber == nullptr || !CFNumberGetValue(guidNumber, kCFNumberSInt64Type, &guid)) {
         CFRelease(props);
-        return std::unexpected(IOKitError(kIOReturnNotFound)); // Or kIOReturnBadArgument
+        return std::unexpected(static_cast<IOKitError>(kIOReturnNotFound));
     }
     CFRelease(props);
     return guid;

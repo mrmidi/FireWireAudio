@@ -12,17 +12,21 @@
 
 namespace FWA {
 
+/**
+ * @brief Container class for device capabilities and configuration information
+ * 
+ * This class holds the discovered capabilities, subunits, and configuration
+ * information for a FireWire audio device.
+ */
 class DeviceInfo {
     public:
         DeviceInfo() = default;
         ~DeviceInfo() = default;
     
-        // Subunit information.
-        std::shared_ptr<MusicSubunit> musicSubunit = std::make_shared<MusicSubunit>();
-        std::shared_ptr<AudioSubunit> audioSubunit = std::make_shared<AudioSubunit>();
+        std::shared_ptr<MusicSubunit> musicSubunit = std::make_shared<MusicSubunit>();  ///< Music subunit capabilities
+        std::shared_ptr<AudioSubunit> audioSubunit = std::make_shared<AudioSubunit>();  ///< Audio subunit capabilities
     
-        // Parsed AV/C info blocks.
-        std::vector<std::shared_ptr<AVCInfoBlock>> infoBlocks;
-    };
+        std::vector<std::shared_ptr<AVCInfoBlock>> infoBlocks;  ///< Parsed AV/C info blocks
+};
 
 } // namespace FWA

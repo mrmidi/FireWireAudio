@@ -65,12 +65,12 @@ std::expected<void, IOKitError> DeviceParser::parse() {
 
     // (C) Continue with further discovery (e.g., Music Subunit and Audio Subunit)
     if (auto musicResult = parseMusicSubunit(); !musicResult) {
-        spdlog::error("Failed to parse Music Subunit: 0x{:x}", musicResult.error().iokit_return());
+        spdlog::error("Failed to parse Music Subunit");
         return std::unexpected(musicResult.error());
     }
 
     if (auto audioResult = parseAudioSubunit(); !audioResult) {
-        spdlog::error("Failed to parse Audio Subunit: 0x{:x}", audioResult.error().iokit_return());
+        spdlog::error("Failed to parse Audio Subunit");
         return std::unexpected(audioResult.error());
     }
 
@@ -152,7 +152,7 @@ std::expected<void, IOKitError> DeviceParser::parseIsoInPlugs() {
             if (!streamRespResult.value().empty() &&
                 streamRespResult.value()[0] == kAVCNotImplementedStatus)
             {
-                spdlog::info("Opcode 0xBF not supported for IsoIn plug {} (response = 0x{:02x}); trying alternate opcode 0x2F", 
+                spdlog::info("Opcode 0xBF not supported for IsoIn plug {} (response = 0x{:02x}); trying alternate opcode 0x2F",
                              i, streamRespResult.value()[0]);
                 cmdStream[2] = kAlternateStreamFormatOpcode;
                 streamRespResult = device_->getCommandInterface()->sendCommand(cmdStream);
@@ -209,7 +209,7 @@ std::expected<void, IOKitError> DeviceParser::parseIsoOutPlugs() {
             if (!streamRespResult.value().empty() &&
                 streamRespResult.value()[0] == kAVCNotImplementedStatus)
             {
-                spdlog::info("Opcode 0xBF not supported for IsoOut plug {} (response = 0x{:02x}); trying alternate opcode 0x2F", 
+                spdlog::info("Opcode 0xBF not supported for IsoOut plug {} (response = 0x{:02x}); trying alternate opcode 0x2F",
                              i, streamRespResult.value()[0]);
                 cmdStream[2] = kAlternateStreamFormatOpcode;
                 streamRespResult = device_->getCommandInterface()->sendCommand(cmdStream);
@@ -286,7 +286,7 @@ std::expected<void, IOKitError> DeviceParser::parseMusicSubunit() {
             if (!streamRespResult.value().empty() &&
                 streamRespResult.value()[0] == kAVCNotImplementedStatus)
             {
-                spdlog::info("Opcode 0xBF not supported for Music plug {} (response=0x{:02x}); switching opcode", 
+                spdlog::info("Opcode 0xBF not supported for Music plug {} (response=0x{:02x}); switching opcode",
                              i, streamRespResult.value()[0]);
                 cmdStream[2] = kAlternateStreamFormatOpcode;
                 streamRespResult = device_->getCommandInterface()->sendCommand(cmdStream);

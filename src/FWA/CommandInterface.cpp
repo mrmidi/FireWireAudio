@@ -16,14 +16,13 @@ CommandInterface::CommandInterface(std::shared_ptr<AudioDevice> pAudioDevice)
     , notificationCallback_(nullptr)
     , refCon_(nullptr)
 {
-
 }
 
 CommandInterface::~CommandInterface()
 {
     auto result = deactivate();
     if (!result) {
-        spdlog::error("~CommandInterface, deactivate failed 0x{:x}", result.error().iokit_return());
+        spdlog::error("~CommandInterface, deactivate failed");
     }
 }
 
@@ -67,12 +66,12 @@ CommandInterface& CommandInterface::operator=(CommandInterface&& other) noexcept
 
 std::expected<void, IOKitError> CommandInterface::activate() {
     if (avcInterface_ != nullptr) {
-        return std::unexpected(IOKitError(kIOReturnStillOpen)); // Already active.
+        return std::unexpected(static_cast<IOKitError>(kIOReturnStillOpen)); // Already active.
     }
 
     auto result = createAVCUnitInterface();
     if (!result) {
-        return std::unexpected(IOKitError(result.error()));
+        return std::unexpected(result.error());
     }
     // Register the notification callback.
     return setNotificationCallback(notificationCallback_, refCon_);
@@ -101,7 +100,7 @@ std::expected<void, IOKitError> CommandInterface::createAVCUnitInterface()
 
     if (result != kIOReturnSuccess) {
         spdlog::error("Failed to create the CFPlugin interface: 0x{:x}", result);
-        return std::unexpected(IOKitError(result));
+        return std::unexpected(static_cast<IOKitError>(result));
     }
 
     HRESULT comResult = (*plugInInterface)->QueryInterface(plugInInterface,
@@ -112,7 +111,7 @@ std::expected<void, IOKitError> CommandInterface::createAVCUnitInterface()
 
     if (comResult != S_OK || avcInterface_ == nullptr) {
         spdlog::error("Failed to get IOFireWireAVCLibUnitInterface: 0x{:x}", static_cast<int>(comResult));
-        return std::unexpected(IOKitError(comResult));
+        return std::unexpected(static_cast<IOKitError>(comResult));
     }
 
     return {};
@@ -132,7 +131,7 @@ std::expected<std::vector<uint8_t>, IOKitError> CommandInterface::sendCommand(
     const std::vector<uint8_t>& command)
 {
     if (!avcInterface_) {
-        return std::unexpected(IOKitError(kIOReturnNotOpen));
+        return std::unexpected(static_cast<IOKitError>(kIOReturnNotOpen));
     }
 
     std::stringstream ss;
@@ -154,7 +153,7 @@ std::expected<std::vector<uint8_t>, IOKitError> CommandInterface::sendCommand(
 
     if (result != kIOReturnSuccess) {
         spdlog::error("Error sending command: 0x{:x}", result);
-        return std::unexpected(IOKitError(result));
+        return std::unexpected(static_cast<IOKitError>(result));
     }
 
     response.resize(respCapacity);
@@ -172,7 +171,7 @@ std::expected<std::vector<uint8_t>, IOKitError> CommandInterface::sendCommand(
 std::expected<void, IOKitError> CommandInterface::setNotificationCallback(DeviceStatusCallback callback, void* refCon)
 {
     if (notificationCallback_) {
-        return std::unexpected(IOKitError(kIOReturnExclusiveAccess));
+        return std::unexpected(static_cast<IOKitError>(kIOReturnExclusiveAccess));
     }
     notificationCallback_ = callback;
     refCon_ = refCon;
@@ -189,7 +188,7 @@ std::expected<void, IOKitError> CommandInterface::setNotificationCallback(Device
 
     if (result != kIOReturnSuccess) {
         spdlog::error("Failed to add interest notification: {}", result);
-        return std::unexpected(IOKitError(result));
+        return std::unexpected(static_cast<IOKitError>(result));
     }
     interestNotification_ = interestNotification;
     return {};
