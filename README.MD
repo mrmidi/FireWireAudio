@@ -2,6 +2,8 @@
 
 A modern C++ application (potentially evolving into a daemon) for interfacing with FireWire (IEEE 1394) audio devices on macOS, providing low-level device discovery, control, and configuration capabilities.
 
+[![Discord](https://img.shields.io/badge/Join%20Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/c82rmSEEPY)
+
 ## Overview
 
 This project implements a FireWire audio device daemon that handles:
