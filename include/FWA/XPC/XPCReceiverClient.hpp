@@ -10,10 +10,11 @@
 
 #import <Foundation/Foundation.h>
 #import "DuetXPCClientProtocol.h"
+#include "Isoch/interfaces/ITransmitPacketProvider.hpp"
 
 @interface XPCReceiverClient : NSObject <DuetXPCClientProtocol>
 - (instancetype)init;
-@property (nonatomic, assign) void *processor; // Generic pointer instead of specific type
+@property (nonatomic, assign) FWA::Isoch::ITransmitPacketProvider *processor; 
 @end
 
 #endif /* XPC_RECEIVER_CLIENT_HPP */

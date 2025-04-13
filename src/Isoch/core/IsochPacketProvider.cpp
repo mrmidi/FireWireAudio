@@ -100,7 +100,7 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
 
     if (bytesRead == targetBufferSize) {
         // --- SUCCESSFUL READ - FORMAT IN PLACE ---
-        if(logger_) logger_->debug("  Successfully pulled {} bytes. Formatting to AM824...", bytesRead);
+//        if(logger_) logger_->debug("  Successfully pulled {} bytes. Formatting to AM824...", bytesRead);
 
         int32_t* samplesPtr = reinterpret_cast<int32_t*>(targetBuffer);
         size_t numSamples = targetBufferSize / sizeof(int32_t);

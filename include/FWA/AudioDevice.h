@@ -4,11 +4,10 @@
 #include <string>
 #include <memory>
 #include <expected>
-#include <IOKit/IOKitLib.h>           // For IOKit types.
+#include <IOKit/IOKitLib.h>           
 #include <IOKit/firewire/IOFireWireLib.h>
 #include "FWA/Error.h"
 #include "FWA/DeviceInfo.hpp"
-// Removed DeviceController.h to break circular dependency
 #include <IOKit/avc/IOFireWireAVCLib.h>
 
 // Forward declarations

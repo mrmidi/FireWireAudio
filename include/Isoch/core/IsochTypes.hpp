@@ -1,3 +1,5 @@
+// TODO: Seems that it's not used anywhere
+
 #pragma once
 
 #include <cstdint>
@@ -12,13 +14,17 @@ namespace Isoch {
 #include <cstdint>
 
 // Placeholder structs for legacy types
+// TODO: Remove these when possible
 struct UniversalTransmitter;
 
+
+// VERY simplified... May sense to implement a real one
 struct CIPHeader {
     UInt32 header[2];
 };
 
 // Placeholder for UniversalTransmitterCycleInfo
+// TODO: remove
 struct UniversalTransmitterCycleInfo
 {
     UInt32 index;                    // Cycle index within the transmission program

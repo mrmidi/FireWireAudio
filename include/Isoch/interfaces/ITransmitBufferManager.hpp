@@ -4,7 +4,7 @@
 #include <expected>
 #include "Isoch/core/TransmitterTypes.hpp"
 #include "FWA/Error.h"
-#include <IOKit/firewire/IOFireWireLibIsoch.h> // For IOVirtualRange
+#include <IOKit/firewire/IOFireWireLibIsoch.h> 
 
 namespace FWA {
 namespace Isoch {

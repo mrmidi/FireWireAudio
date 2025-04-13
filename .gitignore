@@ -1,11 +1,13 @@
 # Ignore build directories
 build/
+cmake/
 build-*/
 cmake-build-*/
 out/
 bin/
 lib/
 xbuild/
+extern/
 
 # Xcode
 *.xcodeproj/
@@ -70,6 +72,7 @@ SKELETON*
 skeleton.sh
 compile_commands.json
 cmakeupdate.py
+isoch.sh
 
 # AppleHeaders folder
 AppleHeaders/

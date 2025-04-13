@@ -18,8 +18,8 @@
 // Forward declarations
 namespace FWA {
 namespace Isoch {
-class IsochPortChannelManager; // Assume reusable
-class IsochTransportManager; // Assume reusable
+class IsochPortChannelManager; 
+class IsochTransportManager; 
 } }
 
 namespace FWA {
@@ -109,7 +109,7 @@ private:
     MessageCallback messageCallback_{nullptr};
     void* messageCallbackRefCon_{nullptr};
 
-    // Static constants for SYT calc (example for 44.1)
+    // Static constants for SYT calc (44.1kHz)
     static constexpr uint32_t SYT_PHASE_MOD = 147;
     static constexpr uint32_t SYT_PHASE_RESET = 1470;
     static constexpr uint32_t BASE_TICKS = 1386; // ~1/8 of TICKS_PER_CYCLE

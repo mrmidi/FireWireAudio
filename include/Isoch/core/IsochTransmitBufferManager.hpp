@@ -44,10 +44,10 @@ private:
     IOVirtualRange bufferRange_{};
 
     // Pointers into mainBuffer_
-    uint8_t* clientAudioArea_{nullptr};
+    uint8_t* clientAudioArea_{nullptr};  // HW writes here
     uint8_t* isochHeaderArea_{nullptr}; // Template area
     uint8_t* cipHeaderArea_{nullptr};   // Pre-filled area
-    uint32_t* timestampArea_{nullptr};  // HW writes here
+    uint32_t* timestampArea_{nullptr};  // Timestamp area
 
     // Buffer section sizes (aligned)
     size_t clientBufferSize_aligned_{0};

@@ -10,7 +10,7 @@
 #include <IOKit/firewire/IOFireWireLibIsoch.h>
 #include <spdlog/logger.h>
 #include "FWA/Error.h"
-#include "Isoch/core/Types.hpp" // For DCLCommandPtr, IOVirtualRange
+#include "Isoch/core/Types.hpp"
 
 namespace FWA {
 namespace Isoch {

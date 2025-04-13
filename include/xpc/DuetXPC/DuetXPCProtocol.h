@@ -23,7 +23,7 @@
 // Handshake method for verifying connection.
 - (void)handshakeWithReply:(void (^)(BOOL success))reply;
 
-// New method: register the client using its listener endpoint.
+// register the client using its listener endpoint.
 - (void)registerClientWithEndpoint:(NSXPCListenerEndpoint *)clientEndpoint;
 
 

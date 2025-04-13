@@ -7,7 +7,7 @@
 #include <mach/mach_time.h> // For mach_absolute_time
 #include <CoreServices/CoreServices.h> // For endian swap
 #include <vector>
-#include <chrono> // For timing/sleep (optional)
+#include <chrono> // For timing/sleep 
 
 namespace FWA {
 namespace Isoch {
@@ -452,9 +452,6 @@ void AmdtpTransmitter::TransportFinalize_Helper(void* refCon) {
 
 
 
-
-// --- ADD THE MISSING DEFINITIONS ---
-
 // Constructor
 AmdtpTransmitter::AmdtpTransmitter(const TransmitterConfig& config)
  : config_(config), logger_(config.logger ? config.logger : spdlog::default_logger()) {
@@ -675,19 +672,6 @@ void AmdtpTransmitter::prepareCIPHeader(CIPHeader* outHeader) {
     wasNoData_ = calculated_isNoData; // Store the type of packet we *just* prepared
     // Note: sytOffset_ and sytPhase_ were already updated during calculation
 }
-
-// --- Static Callback Helpers (Assumed Defined Elsewhere) ---
-// void AmdtpTransmitter::DCLCompleteCallback_Helper(...) ...
-// void AmdtpTransmitter::DCLOverrunCallback_Helper(...) ...
-// void AmdtpTransmitter::TransportFinalize_Helper(...) ...
-
-
-// --- Previously Implemented Methods ---
-// std::shared_ptr<AmdtpTransmitter> AmdtpTransmitter::create(...) ...
-// std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() ...
-// std::expected<void, IOKitError> AmdtpTransmitter::stopTransmit() ...
-// void AmdtpTransmitter::handleDCLOverrun() ...
-// void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) ...
 
 
 

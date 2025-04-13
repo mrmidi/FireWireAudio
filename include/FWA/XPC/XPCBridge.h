@@ -16,7 +16,7 @@ extern "C" {
 // The processor pointer is passed as a void* and internally cast to the correct type.
 void XPCBridgeInitialize(void* processor);
 
-// (Optional) You can add additional functions if needed.
+// TODO: expand to handle receiver, commands
 
 #ifdef __cplusplus
 }

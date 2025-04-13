@@ -12,7 +12,6 @@ AmdtpTransportManagerImpl::AmdtpTransportManagerImpl(std::shared_ptr<spdlog::log
     }
 }
 
-// TODO: fixupDCLJumpTargets();
 std::expected<void, IOKitError> AmdtpTransportManagerImpl::start(IOFireWireLibIsochChannelRef channel) {
     
     // Log callback execution using RunLoopHelper
@@ -117,7 +116,7 @@ std::expected<void, IOKitError> AmdtpTransportManagerImpl::prepareStart() {
     // Log callback execution using RunLoopHelper
     logCallbackThreadInfo("AmdtpTransportManager", "prepareStart", this);
     
-    // Implementation specific to your needs
+
     return {};
 }
 
@@ -125,7 +124,7 @@ std::expected<void, IOKitError> AmdtpTransportManagerImpl::finishStop() {
     // Log callback execution using RunLoopHelper
     logCallbackThreadInfo("AmdtpTransportManager", "finishStop", this);
     
-    // Implementation specific to your needs
+
     return {};
 }
 

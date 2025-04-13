@@ -14,11 +14,11 @@
 #include "FWA/Error.h"
 #include "FWA/AudioDevice.h"
 #include "Isoch/core/AmdtpReceiver.hpp"
-#include "Isoch/core/AmdtpTransmitter.hpp" // Include the transmitter
+#include "Isoch/core/AmdtpTransmitter.hpp" 
 #include "Isoch/core/ReceiverFactory.hpp"
 #include "Isoch/core/ReceiverTypes.hpp"
-#include "Isoch/utils/RingBuffer.hpp" // Include RingBuffer header
-#include "Isoch/interfaces/ITransmitPacketProvider.hpp" // Include interface
+#include "Isoch/utils/RingBuffer.hpp" 
+#include "Isoch/interfaces/ITransmitPacketProvider.hpp" 
 
 namespace FWA {
 
@@ -28,6 +28,7 @@ namespace FWA {
 enum class StreamType {
     AmdtpReceiver,           ///< AMDTP receiver stream for audio input
     AmdtpTransmitter,        ///< AMDTP transmitter stream for audio output
+    // todo: remove this two
     UniversalReceiver,       ///< Legacy universal receiver type
     UniversalTransmitter     ///< Legacy universal transmitter type
 };

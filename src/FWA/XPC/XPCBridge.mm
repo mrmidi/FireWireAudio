@@ -1,41 +1,35 @@
-//
-//  XPCBridge.mm
-//  avc-apple2
-//
-//  Created by Alexander Shabelnikov on 14.02.2025.
-//
-
 // XPCBridge.mm
 
 #import "FWA/XPC/XPCBridge.h"
 #import <Foundation/Foundation.h>
 #import "FWA/XPC/DuetXPCProtocol.h"
 #import "FWA/XPC/XPCReceiverClient.hpp"
-#import "FWA/XPC/MixedAudioBuffer.h" // Import MixedAudioBuffer definition
+#import "FWA/XPC/MixedAudioBuffer.h"
 
-// --- Include the necessary C++ header ---
+// C++ Headers
 #include "Isoch/interfaces/ITransmitPacketProvider.hpp"
 #include <chrono>
 
-// Global variable for our XPC connection to the service.
+// Global variable for our XPC connection TO the service.
 static NSXPCConnection *xpcConnection = nil;
 
-// Global variables for the client listener (for callbacks FROM the service TO the app).
+// Global variables for the client listener FOR the service.
 static NSXPCListener *clientListener = nil;
-static XPCReceiverClient *receiverClient = nil; // Handles callbacks *to* the app
+static XPCReceiverClient *receiverClient = nil; // Handles callbacks *to* this app
 
-// --- MOVED Delegate Definition UP ---
-// Delegate for the anonymous client listener.
+// --- SINGLE Global variable to store the Packet Provider pointer ---
+// --- This is passed in from C++ during initialization ---
+static FWA::Isoch::ITransmitPacketProvider* g_isoPacketProvider = nullptr; // Use ONE name
+
+// Delegate Definition
 @interface ClientListenerDelegate : NSObject <NSXPCListenerDelegate>
 @end
 
 @implementation ClientListenerDelegate
 - (BOOL)listener:(NSXPCListener *)listener shouldAcceptNewConnection:(NSXPCConnection *)newConnection {
-    NSLog(@"[XPCBridge] Accepting new connection for client callbacks...");
+    NSLog(@"[XPCBridge] Accepting new connection for client callbacks (from DuetXPC service)...");
 
     NSXPCInterface *clientInterface = [NSXPCInterface interfaceWithProtocol:@protocol(DuetXPCClientProtocol)];
-
-    // Allow MixedAudioBuffer for the receive buffer method (callback TO the app)
     [clientInterface setClasses:[NSSet setWithObject:[MixedAudioBuffer class]]
                     forSelector:@selector(didReceiveAudioBuffer:)
                   argumentIndex:0
@@ -44,36 +38,44 @@ static XPCReceiverClient *receiverClient = nil; // Handles callbacks *to* the ap
     newConnection.exportedInterface = clientInterface;
 
     // --- Initialize or reuse the XPCReceiverClient ---
-    // This object handles methods called *by* the daemon *on* the client app.
     if (!receiverClient) {
-         // --- Use default init ---
-        receiverClient = [[XPCReceiverClient alloc] init]; // Use default init
+        receiverClient = [[XPCReceiverClient alloc] init]; // processor is NULL here
         NSLog(@"[XPCBridge] XPCReceiverClient newly initialized: %@", receiverClient);
+
+        // Retrieve the globally stored pointer passed via XPCBridgeInitialize
+        if (g_isoPacketProvider) { 
+            receiverClient.processor = g_isoPacketProvider; 
+            NSLog(@"[XPCBridge] ---> Assigned IsochPacketProvider* (%p) to XPCReceiverClient.processor", (void*)g_isoPacketProvider); // <<< USE THE CORRECT GLOBAL VARIABLE
+        } else {
+            NSLog(@"[XPCBridge] ---> WARNING: g_isoPacketProvider is NULL when delegate ran! Cannot assign processor.");
+            receiverClient.processor = nullptr; // Ensure it's null
+        }
+        // --- END FIX ---
+
+    } else {
+         NSLog(@"[XPCBridge] Reusing existing XPCReceiverClient: %@", receiverClient);
+         // Assign again, just in case it wasn't set or got invalidated
+         if (!receiverClient.processor && g_isoPacketProvider) { 
+             receiverClient.processor = g_isoPacketProvider; 
+             NSLog(@"[XPCBridge] ---> Re-assigned IsochPacketProvider* (%p) to reused XPCReceiverClient", (void*)g_isoPacketProvider); // <<< USE THE CORRECT GLOBAL VARIABLE
+         } else if (!receiverClient.processor) {
+             NSLog(@"[XPCBridge] ---> Warning: Reused XPCReceiverClient has NULL processor and global pointer is also NULL!");
+         }
     }
-    // ----------------------------------------------------
 
     newConnection.exportedObject = receiverClient;
     [newConnection resume];
     return YES;
 }
 @end
-// --- END Delegate Definition Move ---
 
-
-// --- Global delegate variable declared AFTER the definition ---
-static ClientListenerDelegate *clientListenerDelegate = nil; // Delegate for the listener
-// ------------------------------------------------------------
-
-
-// Global variable to store the Packet Provider pointer (for transmitting TO the daemon)
-static FWA::Isoch::ITransmitPacketProvider* g_packetProvider = nullptr;
-
+// Global delegate variable
+static ClientListenerDelegate *clientListenerDelegate = nil;
 
 // Sets up an anonymous listener and returns its endpoint.
 NSXPCListenerEndpoint *InitializeClientListenerEndpoint() {
     if (!clientListener) {
         clientListener = [NSXPCListener anonymousListener];
-        // Create delegate only once
         if (!clientListenerDelegate) {
              clientListenerDelegate = [[ClientListenerDelegate alloc] init];
         }
@@ -84,83 +86,76 @@ NSXPCListenerEndpoint *InitializeClientListenerEndpoint() {
     return clientListener.endpoint;
 }
 
-// Initializes the XPC connection.
+// Initializes the XPC connection TO the service.
 void InitializeXPCConnection() {
     if (!xpcConnection) {
-        NSLog(@"[XPCBridge] Initializing XPC connection...");
+        NSLog(@"[XPCBridge] Initializing XPC connection to DuetXPC service...");
         xpcConnection = [[NSXPCConnection alloc] initWithMachServiceName:@"net.mrmidi.DuetXPC"
                                                                   options:NSXPCConnectionPrivileged];
         xpcConnection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(DuetXPCProtocol)];
         xpcConnection.invalidationHandler = ^{
-            NSLog(@"[XPCBridge] XPC connection invalidated.");
+            NSLog(@"[XPCBridge] XPC connection TO DuetXPC invalidated.");
             xpcConnection = nil; // Allow re-initialization
-            g_packetProvider = nullptr; // Clear provider pointer on invalidation
+            g_isoPacketProvider = nullptr; // Clear the global pointer too if connection dies
+            if (receiverClient) {
+                 // Also clear the processor on the receiver if connection is lost
+                 receiverClient.processor = nullptr;
+            }
         };
         [xpcConnection resume];
-        NSLog(@"[XPCBridge] XPC connection resumed.");
+        NSLog(@"[XPCBridge] XPC connection TO DuetXPC resumed.");
     }
 }
 
-// --- UPDATED: Public interface ---
-// Initializes the XPC bridge, storing the packet provider pointer.
-void XPCBridgeInitialize(void* provider) { // Renamed arg for clarity
+
+// Initializes the XPC bridge, storing the packet provider pointer GLOBALLY.
+void XPCBridgeInitialize(void* provider) { // provider is ITransmitPacketProvider*
     NSLog(@"[XPCBridge] XPCBridgeInitialize called with provider: %p", provider);
 
-    // Ensure the XPC connection to the service is set up.
-    InitializeXPCConnection();
+    // --- Store the provider pointer globally ---
+    // It will be used later by the listener delegate and potentially by XPCBridgePushAudioData
+    g_isoPacketProvider = static_cast<FWA::Isoch::ITransmitPacketProvider*>(provider); // <<< STORE IN THE SINGLE GLOBAL
+    if (g_isoPacketProvider) {
+         NSLog(@"[XPCBridge] Stored GLOBAL IsochPacketProvider pointer: %p", (void*)g_isoPacketProvider);
 
-    // Set up the client listener endpoint (for callbacks *from* the service).
-    NSXPCListenerEndpoint *clientEndpoint = InitializeClientListenerEndpoint();
+        // --- If receiverClient ALREADY exists, set its processor NOW ---
+        // --- This handles cases where Initialize might be called again ---
+        // --- after the delegate has already created the receiverClient ---
+        if (receiverClient) {
+            if (!receiverClient.processor) { // Only set if currently null
+                receiverClient.processor = g_isoPacketProvider;
+                NSLog(@"[XPCBridge] Updated existing receiverClient.processor = %p", (void*)g_isoPacketProvider);
+            } else {
+                 NSLog(@"[XPCBridge] Existing receiverClient.processor already set (%p).", (void*)receiverClient.processor);
+            }
+        }
+        // -------------------------------------------------------------
 
-    // --- Store the ITransmitPacketProvider pointer globally ---
-    // Cast the void* to the correct C++ type
-    g_packetProvider = static_cast<FWA::Isoch::ITransmitPacketProvider*>(provider);
-    if (g_packetProvider) {
-         NSLog(@"[XPCBridge] Stored ITransmitPacketProvider pointer: %p", (void*)g_packetProvider);
     } else {
-         NSLog(@"[XPCBridge] WARNING: Initialized with NULL ITransmitPacketProvider pointer.");
+         NSLog(@"[XPCBridge] WARNING: Initialized with NULL IsochPacketProvider pointer.");
+         // If initialized with null, ensure any existing receiver client processor is also nulled
+         if (receiverClient) {
+             receiverClient.processor = nullptr;
+         }
     }
     // -------------------------------------------------------
 
-    // --- Remove XPCReceiverClient initialization/update from here ---
-    // This was mixing transmitter setup with receiver callback handling.
-    // The XPCReceiverClient instance used by the listener delegate
-    // is managed within the delegate callback itself.
-    // ------------------------------------------------------------
+    // --- Initialize connection TO service and listener FOR service ---
+    InitializeXPCConnection();
+    NSXPCListenerEndpoint *clientEndpoint = InitializeClientListenerEndpoint();
+    // -------------------------------------------------------------
 
-    // Register the client's listener endpoint with the XPC service.
+    // Register *this process's* listener endpoint with the DuetXPC service.
     if (xpcConnection && xpcConnection.remoteObjectProxy) {
-        // Use ARC's inference or explicitly cast if needed for respondsToSelector
-        id<DuetXPCProtocol> proxy = [xpcConnection remoteObjectProxy];
-        // The respondsToSelector warning should be resolved if proxy type is known.
-        // If it persists, you might need @try/@catch or cast `proxy` to `NSObject*`
-        // for this check, but that's usually unnecessary.
-        if ([proxy respondsToSelector:@selector(registerClientWithEndpoint:)]) {
-            [proxy registerClientWithEndpoint:clientEndpoint];
-            NSLog(@"[XPCBridge] Client listener endpoint registration requested with service.");
-        } else {
-            NSLog(@"[XPCBridge] Warning: XPC proxy does not respond to registerClientWithEndpoint:");
-        }
+        id<DuetXPCProtocol> proxy = [xpcConnection remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
+             NSLog(@"[XPCBridge] Error getting proxy to register client endpoint: %@", error);
+        }];
+        // No need for respondsToSelector check with protocol adoption
+        [proxy registerClientWithEndpoint:clientEndpoint];
+        NSLog(@"[XPCBridge] Client listener endpoint registration requested with DuetXPC service.");
+
     } else {
-        NSLog(@"[XPCBridge] Warning: XPC connection or proxy is nil, cannot register client endpoint.");
+        NSLog(@"[XPCBridge] Warning: XPC connection to DuetXPC or proxy is nil, cannot register endpoint.");
     }
 }
 
-// --- NEW C Function to be called by XPC handler when audio data arrives ---
-// --- This function pushes data TO the daemon's transmitter ---
-extern "C" bool XPCBridgePushAudioData(const void* buffer, size_t bufferSizeInBytes) {
-    if (!g_packetProvider) {
-        // Log periodically if needed
-        static auto lastLogTime = std::chrono::steady_clock::now();
-        auto now = std::chrono::steady_clock::now();
-         if (now - lastLogTime > std::chrono::seconds(5)) {
-             NSLog(@"[XPCBridge] Error: XPCBridgePushAudioData called but g_packetProvider is NULL.");
-             lastLogTime = now;
-         }
-        return false;
-    }
-
-    // Call the pushAudioData method on the stored provider instance
-    return g_packetProvider->pushAudioData(buffer, bufferSizeInBytes);
-}
-// -------------------------------------------------------------------------
