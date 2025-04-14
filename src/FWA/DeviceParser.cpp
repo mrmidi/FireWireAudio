@@ -1,4 +1,8 @@
 #include "FWA/DeviceParser.hpp"
+
+// Define AV/C Read Descriptor Opcode if not defined elsewhere
+constexpr uint8_t kAVCReadDescriptorOpcode = 0x09; // <-- Set to correct value if different
+
 #include "FWA/CommandInterface.h" // Need full definition
 #include "FWA/AudioDevice.h"       // Need full definition
 #include "FWA/DeviceInfo.hpp"      // Need full definition
@@ -516,8 +520,7 @@ std::expected<AudioStreamFormat, IOKitError> DeviceParser::queryPlugStreamFormat
     auto respResult = commandInterface_->sendCommand(cmd);
     
     // If not implemented, try with alternate opcode
-    if (respResult && !respResult.error().empty() && 
-         respResult.error()[0] == kAVCNotImplementedStatus) {
+    if (respResult && respResult.value()[0] == kAVCNotImplementedStatus) {
          spdlog::debug("Stream format opcode 0x{:02x} not implemented, trying alternate 0x{:02x}",
                      streamFormatOpcode_, kAlternateStreamFormatOpcode);
          
@@ -526,8 +529,7 @@ std::expected<AudioStreamFormat, IOKitError> DeviceParser::queryPlugStreamFormat
     }
     
     // If we have a response, check its success status
-    if (respResult && !respResult.error().empty() &&
-         (respResult.error()[0] == kAVCImplementedStatus || respResult.error()[0] == kAVCAcceptedStatus)) {
+    if (respResult && (respResult.value()[0] == kAVCImplementedStatus || respResult.value()[0] == kAVCAcceptedStatus)) {
          return parseStreamFormatResponse(respResult.value());
     }
     
@@ -538,7 +540,7 @@ std::expected<AudioStreamFormat, IOKitError> DeviceParser::queryPlugStreamFormat
          return std::unexpected(respResult.error());
     } else {
          spdlog::warn("Unexpected response status 0x{:02x} when querying stream format", 
-                      static_cast<int>(respResult.error()[0]));
+                      static_cast<int>(respResult.error()));
          return std::unexpected(IOKitError(kIOReturnError));
     }
 }
@@ -655,8 +657,7 @@ std::expected<std::vector<uint8_t>, IOKitError> DeviceParser::sendStreamFormatCo
     }
     
     auto respResult = commandInterface_->sendCommand(command);
-    if (respResult && !respResult.error().empty() &&
-        respResult.error()[0] == kAVCNotImplementedStatus) {
+    if (respResult && respResult.value()[0] == kAVCNotImplementedStatus) {
          uint8_t originalOpcode = command[2];
          uint8_t newOpcode = (originalOpcode == kStartingStreamFormatOpcode) ?
                              kAlternateStreamFormatOpcode : kStartingStreamFormatOpcode;
