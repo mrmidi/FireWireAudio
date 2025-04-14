@@ -175,6 +175,7 @@ set_source_files_properties(${FWA_XPC_OBJC_FILES} PROPERTIES LANGUAGE OBJC)
 add_library(FWA STATIC
     src/main.cpp
     src/FWA/AudioDevice.cpp
+    src/FWA/AudioStreamFormat.cpp
     src/FWA/CommandInterface.cpp
     src/FWA/DeviceController.cpp
     src/FWA/DeviceParser.cpp

@@ -1,126 +1,109 @@
+// include/FWA/AudioStreamFormat.hpp
 #pragma once
-#include "Enums.hpp"
+
+#include "Enums.hpp" // Include our defined enums
+#include "FWA/Error.h" // For IOKitError
 #include <string>
 #include <vector>
 #include <cstdint>
-#include <sstream>
+#include <sstream>      // For toString (needed for ChannelFormatInfo::toString declaration)
+#include <iomanip>     // For toString formatting
+#include <expected>    // For parse function return type declaration
+#include <utility>     // For std::move in constructor
+#include <optional>    // Useful for potential future extensions
+
+// Forward declaration (if needed, though not strictly necessary here as spdlog is only used in .cpp)
+// namespace spdlog { class logger; }
 
 namespace FWA {
 
 /**
- * @brief Represents per-channel (or per-field) information in an audio stream
+ * @brief Represents per-channel (or per-field) format information within an audio stream.
+ *        Defined according to AV/C Stream Format Information Specification.
  */
-struct ChannelFormat {
-    uint8_t channelCount;  ///< Number of channels for this format field
-    uint8_t formatCode;    ///< Format code (e.g., MBLA, IEC60958-3)
+struct ChannelFormatInfo {
+    uint8_t channelCount = 0;                                ///< Number of channels for this format field
+    StreamFormatCode formatCode = StreamFormatCode::DontCare; ///< Format code (e.g., MBLA, IEC60958-3)
+
+    // Default constructor, copy/move constructors/assignments are implicitly generated
+    ChannelFormatInfo() = default;
+    ChannelFormatInfo(uint8_t count, StreamFormatCode code) : channelCount(count), formatCode(code) {}
+
+    /**
+     * @brief Convert channel format info to a string.
+     * @return std::string Human-readable representation.
+     */
+    std::string toString() const; // Declare here, define in .cpp
 };
 
 /**
- * @brief Represents the format and capabilities of an audio stream
- * 
- * This class encapsulates the format type, sample rate, synchronization source status,
- * and channel format information for an audio stream.
+ * @brief Represents the format and capabilities of an audio stream,
+ *        typically derived from AV/C Stream Format Information responses (TA 2001002).
+ *        This class is designed to be copyable/movable for easy use across C++/Swift boundary.
  */
 class AudioStreamFormat {
 public:
+    /**
+     * @brief Default constructor. Initializes to an unknown state.
+     */
     AudioStreamFormat() = default;
 
     /**
-     * @brief Construct a new Audio Stream Format object
-     * @param type Format type of the stream
-     * @param sampleRate Sample rate of the stream
-     * @param syncSource Whether this stream is a sync source
-     * @param channels Vector of channel format information
+     * @brief Construct a new Audio Stream Format object.
+     * @param type Format type of the stream.
+     * @param sampleRate Sample rate of the stream.
+     * @param syncSource Whether this stream is a sync source.
+     * @param channels Vector of channel format information.
      */
-    AudioStreamFormat(FormatType type, SampleRate sampleRate, bool syncSource, std::vector<ChannelFormat> channels)
-      : formatType_(type), sampleRate_(sampleRate), syncSource_(syncSource), channels_(std::move(channels)) {}
+    AudioStreamFormat(FormatType type, SampleRate sampleRate, bool syncSource, std::vector<ChannelFormatInfo> channels)
+      : formatType_(type),
+        sampleRate_(sampleRate),
+        syncSource_(syncSource),
+        channels_(std::move(channels)) {} // Use move
+
+    // Default copy/move constructors and assignment operators are suitable
+
+    // --- Getters ---
 
     /**
-     * @brief Get the format type
-     * @return FormatType The stream's format type
+     * @brief Get the format type.
+     * @return FormatType The stream's format type.
      */
     FormatType getFormatType() const { return formatType_; }
 
     /**
-     * @brief Get the sample rate
-     * @return SampleRate The stream's sample rate
+     * @brief Get the sample rate.
+     * @return SampleRate The stream's sample rate.
      */
     SampleRate getSampleRate() const { return sampleRate_; }
 
     /**
-     * @brief Check if this stream is a sync source
-     * @return bool True if this stream is a sync source
+     * @brief Check if this stream is a sync source.
+     * @return bool True if this stream is a sync source.
      */
     bool isSyncSource() const { return syncSource_; }
 
     /**
-     * @brief Get the channel formats
-     * @return const std::vector<ChannelFormat>& Vector of channel format information
+     * @brief Get the channel formats. Returns a copy for Swift interop safety.
+     * @return std::vector<ChannelFormatInfo> Vector of channel format information.
      */
-    const std::vector<ChannelFormat>& getChannelFormats() const { return channels_; }
+    std::vector<ChannelFormatInfo> getChannelFormats() const { return channels_; }
+
+    // Parsing is now handled by DeviceParser::parseStreamFormatResponse
+
+    // --- Utility ---
 
     /**
-     * @brief Set the format type
-     * @param type New format type to set
+     * @brief Get a human-readable string representation of the stream format.
+     * @return std::string Description of the stream format.
      */
-    void setFormatType(FormatType type) { formatType_ = type; }
-
-    /**
-     * @brief Set the sample rate
-     * @param rate New sample rate to set
-     */
-    void setSampleRate(SampleRate rate) { sampleRate_ = rate; }
-
-    /**
-     * @brief Set the sync source status
-     * @param sync New sync source status
-     */
-    void setSyncSource(bool sync) { syncSource_ = sync; }
-
-    /**
-     * @brief Set the channel formats
-     * @param channels New vector of channel format information
-     */
-    void setChannelFormats(const std::vector<ChannelFormat>& channels) { channels_ = channels; }
-
-    /**
-     * @brief Get a human-readable string representation of the stream format
-     * @return std::string Description of the stream format
-     */
-    std::string toString() const {
-        std::ostringstream oss;
-        oss << "Format Type: ";
-        switch(formatType_) {
-            case FormatType::CompoundAM824: oss << "Compound AM824"; break;
-            case FormatType::AM824: oss << "AM824"; break;
-            default: oss << "Unknown"; break;
-        }
-        oss << ", Sample Rate: ";
-        switch(sampleRate_) {
-            case SampleRate::SR_22050: oss << "22.05KHz"; break;
-            case SampleRate::SR_24000: oss << "24KHz"; break;
-            case SampleRate::SR_32000: oss << "32KHz"; break;
-            case SampleRate::SR_44100: oss << "44.1KHz"; break;
-            case SampleRate::SR_48000: oss << "48KHz"; break;
-            case SampleRate::SR_96000: oss << "96KHz"; break;
-            case SampleRate::SR_176400: oss << "176.4KHz"; break;
-            case SampleRate::SR_192000: oss << "192KHz"; break;
-            case SampleRate::SR_88200: oss << "88.2KHz"; break;
-            default: oss << "Unknown"; break;
-        }
-        oss << ", Sync Source: " << (syncSource_ ? "Yes" : "No") << "\n";
-        oss << "Channel Formats: ";
-        for (const auto& cf : channels_) {
-            oss << cf.channelCount << " channels (Format Code: " << static_cast<int>(cf.formatCode) << ") ";
-        }
-        return oss.str();
-    }
+    std::string toString() const; // Declaration only
 
 private:
-    FormatType formatType_{FormatType::Unknown};      ///< Format type of the stream
-    SampleRate sampleRate_{SampleRate::Unknown};      ///< Sample rate of the stream
-    bool syncSource_{false};                          ///< Whether this stream is a sync source
-    std::vector<ChannelFormat> channels_;             ///< Channel format information
+    FormatType formatType_{FormatType::Unknown};              ///< Format type of the stream
+    SampleRate sampleRate_{SampleRate::Unknown};              ///< Sample rate of the stream
+    bool syncSource_{false};                                  ///< Whether this stream is a sync source
+    std::vector<ChannelFormatInfo> channels_;                 ///< Channel format information
 };
 
 } // namespace FWA

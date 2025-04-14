@@ -1,8 +1,10 @@
 #!/bin/bash
-# This script is for gathering source code of the isochronous stack
+# This script is for gathering source code from the FireWire Audio project
+# It can dump code from the isochronous stack (default) or FWA stack
 # It can also extract specific files from the generated output
 
 # Default values
+MODE="isoch"  # Default mode is "isoch"
 INPUT_FILE="isoch.txt"
 OUTPUT_FILE="isoch.txt"
 EXTRACT_FILE=""
@@ -22,16 +24,29 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_FILE="$2"
             shift 2
             ;;
+        -m|--mode)
+            MODE="$2"
+            if [[ "$MODE" != "isoch" && "$MODE" != "fwa" ]]; then
+                echo "Error: Mode must be either 'isoch' or 'fwa'"
+                exit 1
+            fi
+            # Set default output file based on mode if not explicitly specified
+            if [[ "$OUTPUT_FILE" == "isoch.txt" && "$MODE" == "fwa" ]]; then
+                OUTPUT_FILE="fwa.txt"
+            fi
+            shift 2
+            ;;
         -h|--help)
-            echo "Usage: $0 [-e|--extract file_to_extract] [-i|--input input_file] [-o|--output output_file]"
+            echo "Usage: $0 [-m|--mode mode] [-e|--extract file_to_extract] [-i|--input input_file] [-o|--output output_file]"
+            echo "  -m, --mode       Specify the code stack to gather: 'isoch' (default) or 'fwa'"
             echo "  -e, --extract    Specify a file to extract from the input file"
-            echo "  -i, --input      Specify the input file (default: isoch.txt)"
-            echo "  -o, --output     Specify the output file (default: isoch.txt)"
+            echo "  -i, --input      Specify the input file (default: isoch.txt or fwa.txt based on mode)"
+            echo "  -o, --output     Specify the output file (default: isoch.txt or fwa.txt based on mode)"
             exit 0
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [-e|--extract file_to_extract] [-i|--input input_file] [-o|--output output_file]"
+            echo "Usage: $0 [-m|--mode mode] [-e|--extract file_to_extract] [-i|--input input_file] [-o|--output output_file]"
             exit 1
             ;;
     esac
@@ -83,9 +98,14 @@ fi
 # Remove the output file if it already exists
 rm -f "$OUTPUT_FILE"
 
-# Define source and include directories
-SRC_DIR="src/Isoch"
-INCLUDE_DIR="include/Isoch"
+# Define source and include directories based on the selected mode
+if [[ "$MODE" == "isoch" ]]; then
+    SRC_DIR="src/Isoch"
+    INCLUDE_DIR="include/Isoch"
+elif [[ "$MODE" == "fwa" ]]; then
+    SRC_DIR="src/FWA"
+    INCLUDE_DIR="include/FWA"
+fi
 
 # Define ignored folders and files
 IGNORE_FOLDERS=("components")
@@ -143,16 +163,20 @@ process_directory() {
 }
 
 # Main execution
-echo "Creating $OUTPUT_FILE with isochronous stack source code..."
+if [[ "$MODE" == "isoch" ]]; then
+  echo "Creating $OUTPUT_FILE with isochronous stack source code..."
+elif [[ "$MODE" == "fwa" ]]; then
+  echo "Creating $OUTPUT_FILE with FWA stack source code..."
+fi
 
-# Process src/Isoch directory
+# Process source directory
 if [ -d "$SRC_DIR" ]; then
   process_directory "$SRC_DIR"
 else
   echo "Warning: $SRC_DIR directory not found!"
 fi
 
-# Process include/Isoch directory
+# Process include directory
 if [ -d "$INCLUDE_DIR" ]; then
   process_directory "$INCLUDE_DIR"
 else

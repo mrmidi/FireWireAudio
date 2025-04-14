@@ -1,3 +1,4 @@
+// include/FWA/DeviceParser.hpp
 #pragma once
 
 #include <cstdint>
@@ -5,92 +6,97 @@
 #include <memory>
 #include <vector>
 #include "FWA/Error.h"
-#include "FWA/AudioDevice.h"
-#include "FWA/AudioStreamFormat.hpp"
-#include "FWA/AudioPlug.hpp"
-#include "FWA/Subunit.hpp"
-#include "FWA/DeviceInfo.hpp"
+#include "FWA/Enums.hpp"             // Include Enums definition
+#include "FWA/AudioPlug.hpp"         // Include AudioPlug definition (needed for ConnectionInfo and parameters)
+#include "FWA/AudioStreamFormat.hpp" // Include AudioStreamFormat definition (needed for return types)
+
+// Forward Declarations (Still okay for types only used as pointers/references internally)
+namespace FWA {
+    class AudioDevice;
+    class CommandInterface;
+    class DeviceInfo;
+    class MusicSubunit;
+    class AudioSubunit;
+    class AVCInfoBlock;
+} // namespace FWA
 
 namespace FWA {
 
 /**
- * @brief Parser for discovering and configuring FireWire audio device capabilities
- *
- * DeviceParser is responsible for querying the device via its CommandInterface,
- * discovering plug counts, and then performing further discovery based on the
- * discovered plugs.
+ * @brief Parses FireWire audio device capabilities and populates DeviceInfo.
+ * (Documentation as before)
  */
 class DeviceParser {
 public:
-    /**
-     * @brief Construct a new Device Parser
-     * @param device Shared pointer to the AudioDevice to parse
-     */
-    explicit DeviceParser(std::shared_ptr<AudioDevice> device);
+    explicit DeviceParser(AudioDevice* device);
     ~DeviceParser() = default;
 
-    /**
-     * @brief Main parse routine to discover device capabilities
-     * @return Success or error status
-     */
+    DeviceParser(const DeviceParser&) = delete;
+    DeviceParser& operator=(const DeviceParser&) = delete;
+    DeviceParser(DeviceParser&&) = delete;
+    DeviceParser& operator=(DeviceParser&&) = delete;
+
     std::expected<void, IOKitError> parse();
 
-    /**
-     * @brief Get the discovered music subunit
-     * @return std::shared_ptr<MusicSubunit> Pointer to music subunit or nullptr if not found
-     */
-    std::shared_ptr<MusicSubunit> getMusicSubunit() const { return musicSubunit_; }
-
-    /**
-     * @brief Get the discovered audio subunit
-     * @return std::shared_ptr<AudioSubunit> Pointer to audio subunit or nullptr if not found
-     */
-    std::shared_ptr<AudioSubunit> getAudioSubunit() const { return audioSubunit_; }
-
 private:
+    AudioDevice* device_;
+    CommandInterface* commandInterface_;
     DeviceInfo& info_;
-    std::shared_ptr<AudioDevice> device_;
-    std::shared_ptr<MusicSubunit> musicSubunit_;
-    std::shared_ptr<AudioSubunit> audioSubunit_;
 
-    /**
-     * @brief Discover and enumerate unit plugs
-     * @return Success or error status
-     */
+    uint8_t streamFormatOpcode_ = kStartingStreamFormatOpcode;
+    static constexpr uint8_t kStartingStreamFormatOpcode = 0xBF;
+    static constexpr uint8_t kAlternateStreamFormatOpcode  = 0x2F;
+    static constexpr uint8_t kUnitAddress = 0xFF;
+
+    // --- Helper Methods for Parsing Stages (Corrected Names) ---
     std::expected<void, IOKitError> discoverUnitPlugs();
+    std::expected<void, IOKitError> parseUnitIsoPlugs();          // Correct name
+    std::expected<void, IOKitError> parseUnitExternalPlugs();     // Correct name
+    std::expected<void, IOKitError> discoverAndParseSubunits();
+    std::expected<void, IOKitError> parseMusicSubunitDetails();   // Correct name
+    std::expected<void, IOKitError> parseAudioSubunitDetails();   // Correct name
+    std::expected<std::vector<uint8_t>, IOKitError> fetchMusicSubunitStatusDescriptor(); // Correct name
+    std::expected<void, IOKitError> parseMusicSubunitStatusDescriptor(const std::vector<uint8_t>& descriptorData); // Correct name
+
+    // --- Helper Methods for Parsing Specific Items (Corrected Signatures) ---
+    /**
+     * @brief Parses details for a single plug (Unit or Subunit).
+     */
+    std::expected<std::shared_ptr<AudioPlug>, IOKitError> parsePlugDetails(
+        uint8_t subunitAddr, uint8_t plugNum, PlugDirection direction, PlugUsage usage); // Use defined enums
 
     /**
-     * @brief Parse isochronous input plugs
-     * @return Success or error status
+     * @brief Queries the current stream format for a specific plug.
      */
-    std::expected<void, IOKitError> parseIsoInPlugs();
+    std::expected<AudioStreamFormat, IOKitError> queryPlugStreamFormat( // Return type needs full definition
+        uint8_t subunitAddr, uint8_t plugNum, PlugDirection direction, PlugUsage usage); // Use defined enums
 
     /**
-     * @brief Parse isochronous output plugs
-     * @return Success or error status
+     * @brief Queries all supported stream formats for a specific plug.
      */
-    std::expected<void, IOKitError> parseIsoOutPlugs();
+    std::expected<std::vector<AudioStreamFormat>, IOKitError> querySupportedPlugStreamFormats( // Return type needs full definition
+         uint8_t subunitAddr, uint8_t plugNum, PlugDirection direction, PlugUsage usage); // Use defined enums
 
     /**
-     * @brief Parse music subunit capabilities
-     * @return Success or error status
+     * @brief Parses the format information block from a raw AV/C response.
      */
-    std::expected<void, IOKitError> parseMusicSubunit();
+    std::expected<AudioStreamFormat, IOKitError> parseStreamFormatResponse(const std::vector<uint8_t>& responseData); // Correct name & return type
 
     /**
-     * @brief Parse audio subunit capabilities
-     * @return Success or error status
+     * @brief Queries the source connected to a destination plug (Currently Placeholder).
      */
-    std::expected<void, IOKitError> parseAudioSubunit();
+    std::expected<AudioPlug::ConnectionInfo, IOKitError> querySignalSource( // Needs AudioPlug definition
+        uint8_t subunitAddr, uint8_t plugNum, PlugDirection direction, PlugUsage usage); // Use defined enums
 
     /**
-     * @brief Parse a stream format block from device response
-     * @param response Raw response data containing stream format information
-     * @return Parsed AudioStreamFormat or error status
+     * @brief Fetches a descriptor's raw data (Currently Placeholder).
      */
-    std::expected<AudioStreamFormat, IOKitError> parseStreamFormat(const std::vector<uint8_t>& response);
-    
-    static constexpr uint8_t kMusicSubunitSubUnitID = 0x60;  ///< Standard Music subunit ID
+    std::expected<std::vector<uint8_t>, IOKitError> readDescriptor(uint8_t subunitAddr, uint8_t descriptorType);
+
+     /**
+      * @brief Sends a command using the CommandInterface, handling stream format opcode fallback.
+      */
+    std::expected<std::vector<uint8_t>, IOKitError> sendStreamFormatCommand(std::vector<uint8_t>& command);
 };
 
 } // namespace FWA
