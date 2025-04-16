@@ -20,6 +20,8 @@ namespace FWA {
  */
 class DeviceInfo {
     friend class DeviceParser; // Allow parser to modify private members
+    friend class DeviceParser; // Allow parser to modify private members
+    friend class DeviceParser; // Allow parser to modify private members
 
 public:
     DeviceInfo() = default;
@@ -35,10 +37,11 @@ public:
     const AudioSubunit& getAudioSubunit() const { return audioSubunit_; }
     AudioSubunit& getAudioSubunit() { return audioSubunit_; }
     
-    uint32_t getNumIsoInputPlugs() const { return numIsoInputPlugs_; }
-    uint32_t getNumIsoOutputPlugs() const { return numIsoOutputPlugs_; }
-    uint32_t getNumExternalInputPlugs() const { return numExternalInputPlugs_; }
-    uint32_t getNumExternalOutputPlugs() const { return numExternalOutputPlugs_; }
+    // Unit Plug Counts
+    uint32_t getNumIsoInputPlugs() const { return numIsoInPlugs_; }
+    uint32_t getNumIsoOutputPlugs() const { return numIsoOutPlugs_; }
+    uint32_t getNumExternalInputPlugs() const { return numExtInPlugs_; }
+    uint32_t getNumExternalOutputPlugs() const { return numExtOutPlugs_; }
     
     const std::vector<std::shared_ptr<AudioPlug>>& getIsoInputPlugs() const { return isoInputPlugs_; }
     const std::vector<std::shared_ptr<AudioPlug>>& getIsoOutputPlugs() const { return isoOutputPlugs_; }
@@ -50,10 +53,10 @@ public:
 private:
     // --- Data members managed by DeviceParser ---
     // Unit Plug Counts
-    uint32_t numIsoInputPlugs_{0};
-    uint32_t numIsoOutputPlugs_{0};
-    uint32_t numExternalInputPlugs_{0};
-    uint32_t numExternalOutputPlugs_{0};
+    uint32_t numIsoInPlugs_ = 0;
+    uint32_t numIsoOutPlugs_ = 0;
+    uint32_t numExtInPlugs_ = 0;
+    uint32_t numExtOutPlugs_ = 0;
 
     // Subunit capabilities
     bool hasMusicSubunit_{false};

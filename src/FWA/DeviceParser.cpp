@@ -1,7 +1,25 @@
 #include "FWA/DeviceParser.hpp"
+#include "FWA/CommandInterface.h"
+#include "FWA/AudioDevice.h"
+#include "FWA/DeviceInfo.hpp"
+#include "FWA/DescriptorSpecifier.hpp" 
+#include "FWA/DescriptorUtils.hpp"
+#include <IOKit/avc/IOFireWireAVCConsts.h>
+#include <spdlog/spdlog.h>
+#include <stdexcept>
+#include <thread>
+#include <chrono>
+#include <algorithm> // For std::min
 
-// Define AV/C Read Descriptor Opcode if not defined elsewhere
-constexpr uint8_t kAVCReadDescriptorOpcode = 0x09; // <-- Set to correct value if different
+constexpr uint8_t kAVCReadDescriptorOpcode = 0x09;
+constexpr uint8_t kAVCOpenDescriptorOpcode = 0x08;
+
+#ifndef kIOReturnBadResponse
+#define kIOReturnBadResponse kIOReturnError
+#endif
+#ifndef kIOReturnIOError
+#define kIOReturnIOError kIOReturnError
+#endif
 
 #include "FWA/CommandInterface.h" // Need full definition
 #include "FWA/AudioDevice.h"       // Need full definition
@@ -65,50 +83,42 @@ std::expected<void, IOKitError> DeviceParser::parse() {
     // --- Stage 1: Discover Unit Plugs ---
     spdlog::debug("Stage 1: Discovering Unit Plugs...");
     if (auto result = discoverUnitPlugs(); !result) {
-        spdlog::error("Stage 1 FAILED: Could not discover unit plugs: 0x{:x}",
-                      static_cast<int>(result.error()));
+        spdlog::error("FATAL: Failed to discover unit plugs: 0x{:x}", static_cast<int>(result.error()));
         return result;
     }
 
     // --- Stage 2: Parse Unit Plug Details ---
     spdlog::debug("Stage 2: Parsing Unit Plug Details...");
     if (auto result = parseUnitIsoPlugs(); !result) {
-         spdlog::error("Stage 2 FAILED: Could not parse unit Iso plugs: 0x{:x}",
-                      static_cast<int>(result.error()));
-         return result;
+        spdlog::warn("Stage 2 WARNING: Some unit Iso plugs failed: 0x{:x}", static_cast<int>(result.error()));
+        // Non-fatal: continue
     }
     if (auto result = parseUnitExternalPlugs(); !result) {
-         spdlog::error("Stage 2 FAILED: Could not parse unit External plugs: 0x{:x}",
-                      static_cast<int>(result.error()));
-         return result;
+        spdlog::warn("Stage 2 WARNING: Some unit External plugs failed: 0x{:x}", static_cast<int>(result.error()));
+        // Non-fatal: continue
     }
 
     // --- Stage 3: Discover and Parse Subunits ---
     spdlog::debug("Stage 3: Discovering and Parsing Subunits...");
     if (auto result = discoverAndParseSubunits(); !result) {
-         spdlog::error("Stage 3 FAILED: Could not discover or parse subunits: 0x{:x}",
-                      static_cast<int>(result.error()));
-         return result;
+        spdlog::error("FATAL: Failed to discover/parse subunits: 0x{:x}", static_cast<int>(result.error()));
+        return result;
     }
 
-    // --- Stage 4: Fetch and Parse Music Subunit Descriptor (if present) ---
-    if (info_.hasMusicSubunit()) { // Use the flag in DeviceInfo
-        spdlog::debug("Stage 4: Fetching and Parsing Music Subunit Status Descriptor...");
+    // --- Stage 4: Music Subunit Status Descriptor (optional, non-fatal) ---
+    if (info_.hasMusicSubunit()) {
         if (auto result = fetchMusicSubunitStatusDescriptor(); !result) {
-            spdlog::warn("Stage 4 WARNING: Could not fetch Music Subunit Status Descriptor: 0x{:x}",
-                         static_cast<int>(result.error()));
+            spdlog::warn("Stage 4 WARNING: Could not fetch Music Subunit Status Descriptor: 0x{:x}", static_cast<int>(result.error()));
         } else {
-            // Parse the descriptor if we successfully fetched it
             if (auto parseResult = parseMusicSubunitStatusDescriptor(result.value()); !parseResult) {
-                spdlog::warn("Stage 4 WARNING: Could not parse Music Subunit Status Descriptor: 0x{:x}",
-                             static_cast<int>(parseResult.error()));
+                spdlog::warn("Stage 4 WARNING: Could not parse Music Subunit Status Descriptor: 0x{:x}", static_cast<int>(parseResult.error()));
             }
         }
     }
 
     // --- Stage 5: Audio Subunit Specific Parsing (Deferred) ---
-    if (info_.hasAudioSubunit()) { // Use the flag in DeviceInfo
-         spdlog::debug("Stage 5: Audio Subunit detailed parsing deferred.");
+    if (info_.hasAudioSubunit()) {
+        spdlog::debug("Stage 5: Audio Subunit detailed parsing deferred.");
     }
 
     spdlog::info("Device capability parsing finished successfully for GUID: 0x{:x}", device_->getGuid());
@@ -140,10 +150,10 @@ std::expected<void, IOKitError> DeviceParser::discoverUnitPlugs() {
         return std::unexpected(IOKitError(kIOReturnError));
     }
 
-    info_.numIsoInputPlugs_ = response[4];
-    info_.numIsoOutputPlugs_ = response[5];
-    info_.numExternalInputPlugs_ = response[6];
-    info_.numExternalOutputPlugs_ = response[7];
+    info_.numIsoInPlugs_  = response[4];
+    info_.numIsoOutPlugs_ = response[5];
+    info_.numExtInPlugs_  = response[6];
+    info_.numExtOutPlugs_ = response[7];
 
     spdlog::info("Discovered unit plugs: IsoIn = {}, IsoOut = {}, ExtIn = {}, ExtOut = {}",
                  info_.getNumIsoInputPlugs(), info_.getNumIsoOutputPlugs(),
@@ -421,8 +431,11 @@ std::expected<std::vector<uint8_t>, IOKitError> DeviceParser::fetchMusicSubunitS
     spdlog::debug("Fetching Music Subunit Status Descriptor...");
     
     // This is just the descriptor type for the Music Subunit General Status Descriptor
-    return readDescriptor(static_cast<uint8_t>(SubunitType::Music), 
-                          static_cast<uint8_t>(InfoBlockType::GeneralMusicStatus));
+    return readDescriptor(
+    static_cast<uint8_t>(SubunitType::Music),
+    DescriptorSpecifierType::UnitSubunitIdentifier, // Use the correct type for Music Subunit Status Descriptor
+    {} // No additional specifier data needed
+);
 }
 
 //--------------------------------------------------------------------------
@@ -613,36 +626,165 @@ std::expected<AudioPlug::ConnectionInfo, IOKitError> DeviceParser::querySignalSo
 // DeviceParser::readDescriptor()
 //--------------------------------------------------------------------------
 std::expected<std::vector<uint8_t>, IOKitError> DeviceParser::readDescriptor(
-    uint8_t subunitAddr, uint8_t descriptorType) {
-    
-    spdlog::debug("Reading descriptor type 0x{:02x} from subunit 0x{:02x}", 
-                 descriptorType, subunitAddr);
-    
-    std::vector<uint8_t> cmd = {
-         kAVCStatusInquiryCommand,
-         subunitAddr,
-         kAVCReadDescriptorOpcode,
-         0x00,
-         static_cast<uint8_t>(descriptorType >> 8),
-         static_cast<uint8_t>(descriptorType & 0xFF),
-         0x00,
-         0x00
-    };
-    
-    auto respResult = commandInterface_->sendCommand(cmd);
-    if (!respResult) {
-         spdlog::warn("Failed to read descriptor: 0x{:x}", static_cast<int>(respResult.error()));
-         return std::unexpected(respResult.error());
+    uint8_t subunitAddr,
+    DescriptorSpecifierType descriptorSpecifierType,
+    const std::vector<uint8_t>& descriptorSpecifierSpecificData) {
+    spdlog::debug("Reading descriptor: Subunit=0x{:02x}, SpecifierType=0x{:02x}",
+                  subunitAddr, static_cast<uint8_t>(descriptorSpecifierType));
+
+    // --- Build Specifiers ---
+    std::vector<uint8_t> openSpecifierBytes;
+    std::vector<uint8_t> readSpecifierBytes;
+    std::vector<uint8_t> closeSpecifierBytes;
+
+    if (descriptorSpecifierType == DescriptorSpecifierType::UnitSubunitIdentifier) {
+        openSpecifierBytes = DescriptorUtils::buildDescriptorSpecifier(
+            descriptorSpecifierType,
+            DescriptorUtils::DEFAULT_SIZE_OF_LIST_ID,
+            DescriptorUtils::DEFAULT_SIZE_OF_OBJECT_ID,
+            DescriptorUtils::DEFAULT_SIZE_OF_ENTRY_POS
+        );
+        readSpecifierBytes = openSpecifierBytes;
+        closeSpecifierBytes = openSpecifierBytes;
+    } else {
+        spdlog::error("readDescriptor: Building descriptor specifier for type 0x{:02x} not fully implemented.",
+                      static_cast<uint8_t>(descriptorSpecifierType));
+        return std::unexpected(IOKitError(kIOReturnUnsupported));
     }
-    
-    const auto& response = respResult.value();
-    if (response.size() < 8 || response[0] != kAVCImplementedStatus) {
-         spdlog::warn("Invalid descriptor response status: 0x{:02x} or size: {}", 
-                      static_cast<int>(response[0]), response.size());
-         return std::unexpected(IOKitError(kIOReturnError));
+    if (openSpecifierBytes.empty() || readSpecifierBytes.empty() || closeSpecifierBytes.empty()) {
+        spdlog::error("readDescriptor: Failed to build necessary descriptor specifiers.");
+        return std::unexpected(IOKitError(kIOReturnInternalError));
     }
-    
-    return response;
+
+    // --- 1. OPEN DESCRIPTOR ---
+    std::vector<uint8_t> openCmd;
+    openCmd.push_back(kAVCOpenDescriptorOpcode); // 0x08
+    openCmd.push_back(subunitAddr);
+    openCmd.insert(openCmd.end(), openSpecifierBytes.begin(), openSpecifierBytes.end());
+    openCmd.push_back(0x01); // Subfunction: Read Open
+
+    auto openRespResult = commandInterface_->sendCommand(openCmd);
+    if (!openRespResult || openRespResult.value().empty() ||
+        (openRespResult.value()[0] != kAVCAcceptedStatus && openRespResult.value()[0] != kAVCImplementedStatus)) {
+        spdlog::error("readDescriptor: OPEN DESCRIPTOR failed. Status=0x{:02x}",
+                      openRespResult ? static_cast<int>(openRespResult.value()[0]) : -1);
+        return std::unexpected(openRespResult ? IOKitError(kIOReturnError) : openRespResult.error());
+    }
+    spdlog::debug("readDescriptor: OPEN DESCRIPTOR successful.");
+
+    // --- 2. READ DESCRIPTOR (with Pagination) ---
+    std::vector<uint8_t> descriptorData;
+    uint32_t currentOffset = 0;
+    bool readComplete = false;
+    IOReturn lastReadStatus = kIOReturnSuccess;
+    constexpr uint16_t MAX_READ_CHUNK = 490;
+    int readAttempts = 0;
+    const int MAX_READ_ATTEMPTS = 256;
+
+    do {
+        readAttempts++;
+        if (readAttempts > MAX_READ_ATTEMPTS) {
+            spdlog::error("readDescriptor: Exceeded maximum read attempts ({}), aborting.", MAX_READ_ATTEMPTS);
+            lastReadStatus = kIOReturnOverrun;
+            break;
+        }
+        std::vector<uint8_t> readCmd;
+        readCmd.push_back(kAVCReadDescriptorOpcode); // 0x09
+        readCmd.push_back(subunitAddr);
+        readCmd.insert(readCmd.end(), readSpecifierBytes.begin(), readSpecifierBytes.end());
+        readCmd.push_back(0xFF); // read_result_status = FF
+        uint16_t readChunkSize = (currentOffset == 0 && descriptorData.empty()) ? 0 : MAX_READ_CHUNK;
+        readCmd.push_back(static_cast<uint8_t>(readChunkSize >> 8));
+        readCmd.push_back(static_cast<uint8_t>(readChunkSize & 0xFF));
+        readCmd.push_back(static_cast<uint8_t>(currentOffset >> 8));
+        readCmd.push_back(static_cast<uint8_t>(currentOffset & 0xFF));
+        auto readRespResult = commandInterface_->sendCommand(readCmd);
+        if (!readRespResult || readRespResult.value().empty()) {
+            spdlog::error("readDescriptor: READ DESCRIPTOR command failed at offset {}: 0x{:x}",
+                          currentOffset, readRespResult ? kIOReturnError : static_cast<int>(readRespResult.error()));
+            lastReadStatus = readRespResult ? kIOReturnError : static_cast<int>(readRespResult.error());
+            break;
+        }
+        const auto& readResponse = readRespResult.value();
+        if (readResponse.size() < 8) {
+            spdlog::error("readDescriptor: READ DESCRIPTOR response too short ({}) at offset {}", readResponse.size(), currentOffset);
+            lastReadStatus = kIOReturnUnderrun;
+            break;
+        }
+        ParsedDescriptorSpecifier parsedSpecifier = DescriptorUtils::parseDescriptorSpecifier(
+            readResponse.data() + 2, readResponse.size() - 2,
+            DescriptorUtils::DEFAULT_SIZE_OF_LIST_ID,
+            DescriptorUtils::DEFAULT_SIZE_OF_OBJECT_ID,
+            DescriptorUtils::DEFAULT_SIZE_OF_ENTRY_POS
+        );
+        if (parsedSpecifier.consumedSize == 0) {
+            spdlog::error("readDescriptor: Failed to parse returned descriptor specifier in response header at offset {}", currentOffset);
+            lastReadStatus = kIOReturnBadResponse;
+            break;
+        }
+        size_t responseHeaderSize = 2 + parsedSpecifier.consumedSize + 1 + 2 + 2;
+        if (readResponse.size() < responseHeaderSize) {
+            spdlog::error("readDescriptor: READ DESCRIPTOR response too short ({}) for calculated header size ({}) at offset {}",
+                         readResponse.size(), responseHeaderSize, currentOffset);
+            lastReadStatus = kIOReturnUnderrun;
+            break;
+        }
+        uint8_t readResultStatus = readResponse[2 + parsedSpecifier.consumedSize];
+        uint16_t bytesReadInChunk = static_cast<uint16_t>((readResponse[2 + parsedSpecifier.consumedSize + 1] << 8) |
+                                                    readResponse[2 + parsedSpecifier.consumedSize + 2]);
+        if (bytesReadInChunk > 0) {
+            if (readResponse.size() < responseHeaderSize + bytesReadInChunk) {
+                spdlog::error("readDescriptor: READ response data length mismatch. Claimed {}, Available {}.", bytesReadInChunk, readResponse.size() - responseHeaderSize);
+                lastReadStatus = kIOReturnUnderrun;
+                break;
+            }
+            if (descriptorData.empty() || readResultStatus == 0x11 || readResultStatus == 0x12) {
+                descriptorData.insert(descriptorData.end(),
+                                     readResponse.begin() + responseHeaderSize,
+                                     readResponse.begin() + responseHeaderSize + bytesReadInChunk);
+                currentOffset += bytesReadInChunk;
+            } else if (readResultStatus == 0x10 && !descriptorData.empty()) {
+                spdlog::debug("readDescriptor: Received 'Complete Read' (0x10) on subsequent read, assuming end.");
+            }
+        }
+        if (readResultStatus == 0x10) {
+            readComplete = true;
+        } else if (readResultStatus == 0x11) {
+            readComplete = false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        } else if (readResultStatus == 0x12) {
+            readComplete = true;
+            spdlog::debug("readDescriptor: Read past end of descriptor (Status 0x12). Read completed.");
+        } else {
+            spdlog::error("readDescriptor: Received error status 0x{:02x} during read at offset {}", readResultStatus, currentOffset);
+            lastReadStatus = kIOReturnIOError;
+            break;
+        }
+    } while (!readComplete);
+
+    // --- 3. CLOSE DESCRIPTOR ---
+    std::vector<uint8_t> closeCmd;
+    closeCmd.push_back(kAVCOpenDescriptorOpcode); // 0x08
+    closeCmd.push_back(subunitAddr);
+    closeCmd.insert(closeCmd.end(), closeSpecifierBytes.begin(), closeSpecifierBytes.end());
+    closeCmd.push_back(0x00); // Subfunction: Close
+    auto closeRespResult = commandInterface_->sendCommand(closeCmd);
+    if (!closeRespResult || closeRespResult.value().empty() ||
+         (closeRespResult.value()[0] != kAVCAcceptedStatus && closeRespResult.value()[0] != kAVCImplementedStatus)) {
+        spdlog::warn("readDescriptor: CLOSE DESCRIPTOR failed or returned unexpected status: 0x{:02x}",
+                     closeRespResult ? static_cast<int>(closeRespResult.value()[0]) : -1);
+    } else {
+        spdlog::debug("readDescriptor: CLOSE DESCRIPTOR successful.");
+    }
+    if (lastReadStatus == kIOReturnSuccess) {
+        spdlog::info("Successfully read descriptor (Specifier Type 0x{:02x}), size {} bytes",
+                     static_cast<uint8_t>(descriptorSpecifierType), descriptorData.size());
+        return descriptorData;
+    } else {
+        spdlog::error("Failed to read descriptor (Specifier Type 0x{:02x}), final status 0x{:x}",
+                     static_cast<uint8_t>(descriptorSpecifierType), lastReadStatus);
+        return std::unexpected(IOKitError(lastReadStatus));
+    }
 }
 
 //--------------------------------------------------------------------------

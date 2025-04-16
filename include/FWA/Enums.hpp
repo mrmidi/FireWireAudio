@@ -5,6 +5,26 @@
 namespace FWA {
 
 /**
+ * @brief Descriptor specifier type (matches AV/C specification)
+ */
+enum class DescriptorSpecifierType : uint8_t {
+    UnitSubunitIdentifier              = 0x00,
+    ListById                           = 0x10,
+    ListByType                         = 0x11,
+    EntryByPositionInListId            = 0x20,
+    EntryByObjectIdInListTypeRoot      = 0x21,
+    EntryByTypeCreate                  = 0x22,
+    EntryByObjectIdGeneral             = 0x23,
+    EntryByObjectIdInSubunitListTypeRoot = 0x24, // Not fully implemented
+    EntryByObjectIdInSubunit           = 0x25,   // Not fully implemented
+    // Subunit-dependent types (0x80-0xFF) are not fully implemented
+    SubunitDependentStart              = 0x80,
+    SubunitDependentEnd                = 0xFF,
+    Unknown                            = 0xFF
+};
+
+
+/**
  * @brief Direction of audio plug (input or output)
  */
 enum class PlugDirection : uint8_t {

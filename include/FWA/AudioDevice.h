@@ -51,6 +51,15 @@ public:
     std::expected<void, IOKitError> init();
 
     /**
+     * @brief Discover the capabilities of this device.
+     *
+     * This method triggers the DeviceParser to query the device and populate
+     * the DeviceInfo structure. It should be called after init().
+     * @return Success or error status
+     */
+    std::expected<void, IOKitError> discoverCapabilities();
+
+    /**
      * @brief Get the device's GUID
      * @return uint64_t The device's Global Unique Identifier
      */

@@ -179,6 +179,8 @@ add_library(FWA STATIC
     src/FWA/CommandInterface.cpp
     src/FWA/DeviceController.cpp
     src/FWA/DeviceParser.cpp
+    src/FWA/DescriptorSpecifier.cpp
+    src/FWA/DescriptorUtils.cpp
     src/FWA/Helpers.cpp
     src/FWA/IOKitFireWireDeviceDiscovery.cpp
     # Base headers
@@ -190,6 +192,8 @@ add_library(FWA STATIC
     include/FWA/DeviceController.h
     include/FWA/DeviceInfo.hpp
     include/FWA/DeviceParser.hpp
+    include/FWA/DescriptorSpecifier.hpp
+    include/FWA/DescriptorUtils.hpp
     include/FWA/Enums.hpp
     include/FWA/Error.h
     include/FWA/Helpers.h

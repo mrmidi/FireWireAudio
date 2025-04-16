@@ -7,6 +7,7 @@
 #include <vector>
 #include "FWA/Error.h"
 #include "FWA/Enums.hpp"             // Include Enums definition
+#include "FWA/DescriptorSpecifier.hpp"
 #include "FWA/AudioPlug.hpp"         // Include AudioPlug definition (needed for ConnectionInfo and parameters)
 #include "FWA/AudioStreamFormat.hpp" // Include AudioStreamFormat definition (needed for return types)
 
@@ -91,7 +92,11 @@ private:
     /**
      * @brief Fetches a descriptor's raw data (Currently Placeholder).
      */
-    std::expected<std::vector<uint8_t>, IOKitError> readDescriptor(uint8_t subunitAddr, uint8_t descriptorType);
+    std::expected<std::vector<uint8_t>, IOKitError> readDescriptor(
+        uint8_t subunitAddr,
+        DescriptorSpecifierType descriptorSpecifierType,
+        const std::vector<uint8_t>& descriptorSpecifierSpecificData);
+
 
      /**
       * @brief Sends a command using the CommandInterface, handling stream format opcode fallback.
