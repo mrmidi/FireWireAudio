@@ -179,6 +179,11 @@ add_library(FWA STATIC
     src/FWA/CommandInterface.cpp
     src/FWA/DeviceController.cpp
     src/FWA/DeviceParser.cpp
+    src/FWA/UnitPlugDiscoverer.cpp
+    src/FWA/SubunitDiscoverer.cpp
+    src/FWA/PlugDetailParser.cpp
+    src/FWA/DescriptorReader.cpp
+    src/FWA/MusicSubunitDescriptorParser.cpp
     src/FWA/DescriptorSpecifier.cpp
     src/FWA/DescriptorUtils.cpp
     src/FWA/Helpers.cpp
@@ -192,6 +197,11 @@ add_library(FWA STATIC
     include/FWA/DeviceController.h
     include/FWA/DeviceInfo.hpp
     include/FWA/DeviceParser.hpp
+    include/FWA/UnitPlugDiscoverer.hpp
+    include/FWA/SubunitDiscoverer.hpp
+    include/FWA/PlugDetailParser.hpp
+    include/FWA/DescriptorReader.hpp
+    include/FWA/MusicSubunitDescriptorParser.hpp
     include/FWA/DescriptorSpecifier.hpp
     include/FWA/DescriptorUtils.hpp
     include/FWA/Enums.hpp
@@ -342,6 +352,13 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX "Source Files" FILES
     src/FWA/CommandInterface.cpp
     src/FWA/DeviceController.cpp
     src/FWA/DeviceParser.cpp
+    src/FWA/UnitPlugDiscoverer.cpp
+    src/FWA/SubunitDiscoverer.cpp
+    src/FWA/PlugDetailParser.cpp
+    src/FWA/DescriptorReader.cpp
+    src/FWA/MusicSubunitDescriptorParser.cpp
+    src/FWA/DescriptorSpecifier.cpp
+    src/FWA/DescriptorUtils.cpp
     src/FWA/Helpers.cpp
     src/FWA/IOKitFireWireDeviceDiscovery.cpp
     src/FWA/XPC/XPCBridge.mm

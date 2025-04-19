@@ -78,7 +78,7 @@ std::vector<uint8_t> DescriptorUtils::buildDescriptorSpecifier(
             break;
         case DescriptorSpecifierType::SubunitDependentStart: // Range 0x80 - 0xBF
         case DescriptorSpecifierType::SubunitDependentEnd:
-            spdlog::trace("buildDescriptorSpecifier: Built subunit-dependent specifier 0x{:02x} with type byte only.", static_cast<uint8_t>(type));
+            spdlog::debug("buildDescriptorSpecifier: Built subunit-dependent specifier 0x{:02x} with type byte only.", static_cast<uint8_t>(type));
             break;
         default:
             spdlog::error("buildDescriptorSpecifier: Unknown or unsupported type 0x{:02x}", static_cast<uint8_t>(type));
@@ -192,7 +192,7 @@ size_t DescriptorUtils::getDescriptorSpecifierExpectedSize(
             break;
         case DescriptorSpecifierType::SubunitDependentStart:
         case DescriptorSpecifierType::SubunitDependentEnd:
-            spdlog::trace("getDescriptorSpecifierExpectedSize: Subunit-dependent type 0x{:02x}, returning base size 1.", static_cast<uint8_t>(type));
+            spdlog::debug("getDescriptorSpecifierExpectedSize: Subunit-dependent type 0x{:02x}, returning base size 1.", static_cast<uint8_t>(type));
             break;
         default:
             spdlog::warn("getDescriptorSpecifierExpectedSize: Unknown or unsupported type 0x{:02x}", static_cast<uint8_t>(type));

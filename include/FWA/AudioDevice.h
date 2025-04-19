@@ -151,6 +151,12 @@ public:
 
     io_service_t avcUnit_ = 0;  
 
+    /**
+     * @brief Get the device's discovered capabilities and configuration
+     * @return const DeviceInfo&
+     */
+    const DeviceInfo& getDeviceInfo() const { return info_; }
+
 private:
     std::uint64_t guid_;
     std::string deviceName_;

@@ -23,7 +23,12 @@ public:
      * @brief Virtual destructor to ensure proper cleanup in derived classes.
      */
     virtual ~Subunit() = default;
-
+    uint8_t getId() const { return id_; }
+protected:
+    Subunit(uint8_t id = 0) : id_(id) {}
+    void setId(uint8_t id) { id_ = id; }
+private:
+    uint8_t id_ = 0;
     /**
      * @brief Get the specific type of this subunit.
      * @return SubunitType The enum value representing the subunit type.
@@ -59,7 +64,7 @@ class MusicSubunit : public Subunit {
     friend class DeviceParser; // Allow parser to modify private members
 
 public:
-    MusicSubunit() = default;
+    MusicSubunit() : Subunit(0) {}
     ~MusicSubunit() override = default;
 
     // --- Subunit Interface Implementation ---
@@ -115,7 +120,7 @@ class AudioSubunit : public Subunit {
      friend class DeviceParser; // Allow parser to modify private members
 
 public:
-    AudioSubunit() = default;
+    AudioSubunit() : Subunit(0) {}
     ~AudioSubunit() override = default;
 
     // --- Subunit Interface Implementation ---

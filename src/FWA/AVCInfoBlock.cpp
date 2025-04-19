@@ -34,62 +34,66 @@ AVCInfoBlock::AVCInfoBlock(std::vector<uint8_t> rawData)
 // AVCInfoBlock::parseInternal() - Called by constructor
 //--------------------------------------------------------------------------
 void AVCInfoBlock::parseInternal() {
+    spdlog::debug("AVCInfoBlock::parseInternal: Starting parse for block data size {}", rawData_.size());
     nestedBlocks_.clear();
-    // Parse Primary fields first to populate optional members
-    parsePrimaryFields();
-
-    nestedBlocks_.clear(); // Ensure clean state
 
     if (rawData_.size() < 4) {
         spdlog::error("AVCInfoBlock::parseInternal: Raw data size ({}) too small for header.", rawData_.size());
-        return; // Cannot parse header
+        type_ = 0xFFFF; compoundLength_ = 0; primaryFieldsLength_ = 0; // Mark as invalid
+        return;
     }
 
-    // Read lengths and type from the first 6 bytes
+    // Read lengths and type
     compoundLength_ = (static_cast<uint16_t>(rawData_[0]) << 8) | rawData_[1];
     type_ = (static_cast<uint16_t>(rawData_[2]) << 8) | rawData_[3];
+    spdlog::debug("  Parsed compoundLength={}, type=0x{:04X}", compoundLength_, type_);
 
-    // Basic sanity check on compound length vs actual data size
     size_t expectedTotalSize = compoundLength_ + 2;
     if (rawData_.size() < expectedTotalSize) {
-        spdlog::warn("AVCInfoBlock::parseInternal: Raw data size ({}) is less than indicated by compound length ({}). Type=0x{:04X}. Parsing truncated data.",
+        spdlog::warn("AVCInfoBlock::parseInternal: Raw data size ({}) < indicated total size ({}). Type=0x{:04X}. Parsing truncated.",
                      rawData_.size(), expectedTotalSize, type_);
-        // Adjust compoundLength internally for bounds checking? Or just limit parsing?
-        // Let's limit parsing based on actual data size.
     }
+    size_t actualDataLimit = rawData_.size(); // Use actual size as the limit
 
-    if (rawData_.size() < 6) {
-        spdlog::warn("AVCInfoBlock::parseInternal: Raw data size ({}) too small for primary_fields_length. Type=0x{:04X}", rawData_.size(), type_);
-        primaryFieldsLength_ = 0; // Assume no primary fields
+    if (actualDataLimit < 6) {
+        spdlog::debug("  Raw data size ({}) too small for primary_fields_length. Assuming 0.", actualDataLimit);
+        primaryFieldsLength_ = 0;
     } else {
         primaryFieldsLength_ = (static_cast<uint16_t>(rawData_[4]) << 8) | rawData_[5];
+        spdlog::debug("  Parsed primaryFieldsLength={}", primaryFieldsLength_);
     }
 
     // Calculate end of primary fields, respecting actual data size
-    size_t actualDataLimit = rawData_.size();
     size_t primaryFieldsEndOffset = 6 + primaryFieldsLength_;
-
     if (primaryFieldsEndOffset > actualDataLimit) {
-        spdlog::error("AVCInfoBlock::parseInternal: Primary fields length ({}) exceeds block data size ({}). Type=0x{:04X}",
+        spdlog::warn("  Primary fields length ({}) exceeds block data size ({}). Type=0x{:04X}. Truncating primary fields parse area.",
                      primaryFieldsLength_, actualDataLimit, type_);
-        primaryFieldsEndOffset = actualDataLimit; // Limit parsing to actual data
+        primaryFieldsEndOffset = actualDataLimit; // Limit parsing
     }
+    spdlog::debug("  Primary fields end at offset {}", primaryFieldsEndOffset);
+
+    // --- Parse Primary fields to populate optional members ---
+    parsePrimaryFields(); // Already happens in constructor/this call path
 
     // --- Parse Nested Blocks (Secondary Fields Area) ---
     size_t currentOffset = primaryFieldsEndOffset;
+    spdlog::debug("  Starting nested block parse at offset {}", currentOffset);
+
     while (currentOffset < actualDataLimit) {
+        spdlog::debug("  Checking for nested block at offset {}", currentOffset);
         if (currentOffset + 2 > actualDataLimit) { // Need 2 bytes for nested compound length
-            spdlog::warn("AVCInfoBlock::parseInternal: Truncated nested info block header found at offset {}. Type=0x{:04X}", currentOffset, type_);
-            break; // Stop parsing nested blocks
+            spdlog::debug("  Not enough bytes ({}) left for nested compound length. Stopping nested parse.", actualDataLimit - currentOffset);
+            break;
         }
 
         uint16_t nestedCompoundLength = (static_cast<uint16_t>(rawData_[currentOffset]) << 8) | rawData_[currentOffset + 1];
         size_t nestedInfoBlockSize = nestedCompoundLength + 2;
+        spdlog::debug("  Potential nested block: compoundLength={}, totalSize={}", nestedCompoundLength, nestedInfoBlockSize);
 
         if (currentOffset + nestedInfoBlockSize > actualDataLimit) {
-            spdlog::error("AVCInfoBlock::parseInternal: Nested info block size ({}) exceeds remaining data at offset {}. Type=0x{:04X}",
-                         nestedInfoBlockSize, currentOffset, type_);
-            break; // Stop parsing nested blocks
+            spdlog::error("AVCInfoBlock::parseInternal: Nested info block size ({}) would exceed remaining data ({}) at offset {}. Type=0x{:04X}. Stopping nested parse.",
+                         nestedInfoBlockSize, actualDataLimit - currentOffset, currentOffset, type_);
+            break;
         }
 
         // Extract raw data for the nested block
@@ -97,22 +101,23 @@ void AVCInfoBlock::parseInternal() {
                                            rawData_.begin() + currentOffset + nestedInfoBlockSize);
 
         try {
+            spdlog::debug("    Creating nested AVCInfoBlock...");
             // Create and implicitly parse the nested block
             nestedBlocks_.push_back(std::make_shared<AVCInfoBlock>(std::move(nestedRawData)));
-             spdlog::trace("Parsed nested info block of size {} at offset {}", nestedInfoBlockSize, currentOffset);
+            spdlog::debug("    Successfully created and added nested info block of size {} at offset {}", nestedInfoBlockSize, currentOffset);
         } catch (const std::exception& e) {
-             spdlog::error("AVCInfoBlock::parseInternal: Exception creating nested block at offset {}: {}", currentOffset, e.what());
-             // Decide whether to continue parsing or stop
+            spdlog::error("AVCInfoBlock::parseInternal: Exception creating nested block at offset {}: {}", currentOffset, e.what());
+            // Stop parsing nested blocks on exception
+            break;
         }
 
         currentOffset += nestedInfoBlockSize; // Move to next potential block
     }
+    spdlog::debug("  Finished nested block parse loop. Final offset: {}", currentOffset);
 
-    // Optional final check
-    if (currentOffset != actualDataLimit && currentOffset < expectedTotalSize) { // Check against original expected size too
-         spdlog::warn("AVCInfoBlock::parseInternal: Parsing finished at offset {}, but expected end was {}. Type=0x{:04X}", currentOffset, expectedTotalSize, type_);
-    } else if (currentOffset > actualDataLimit) {
-         spdlog::error("AVCInfoBlock::parseInternal: Parsing went beyond actual data size. Offset={}, ActualSize={}. Type=0x{:04X}", currentOffset, actualDataLimit, type_);
+    // Optional final check against expected size based on initial compoundLength
+    if (currentOffset != expectedTotalSize) {
+         spdlog::warn("AVCInfoBlock::parseInternal: Parsing finished at offset {}, but expected end based on initial compoundLength was {}. Type=0x{:04X}", currentOffset, expectedTotalSize, type_);
     }
 }
 
@@ -278,7 +283,6 @@ void AVCInfoBlock::parsePrimaryFields() {
 void AVCInfoBlock::parsePrimaryFields(const uint8_t* primaryData, size_t length, std::ostringstream& oss) const {
     oss << formatHex(primaryData, length);
     // (existing presentation logic follows...)
-}
     // Default: just print hex dump for unknown/unparsed types
     oss << formatHex(primaryData, length);
 

@@ -135,6 +135,21 @@ public:
     std::optional<ClusterInfoData> getClusterInfo() const { return parsed_clusterInfo_; }
     std::optional<MusicPlugInfoData> getMusicPlugInfo() const { return parsed_musicPlugInfo_; }
 
+    /**
+     * @brief Get a pointer to the primary fields data (or nullptr if not available)
+     */
+    const uint8_t* getPrimaryFieldsDataPtr() const {
+        if (rawData_.size() < 6 + primaryFieldsLength_) return nullptr;
+        return rawData_.data() + 6;
+    }
+    /**
+     * @brief Get the primary fields as a vector of bytes
+     */
+    std::vector<uint8_t> getPrimaryFieldsBytes() const {
+        if (rawData_.size() < 6 + primaryFieldsLength_) return {};
+        return std::vector<uint8_t>(rawData_.begin() + 6, rawData_.begin() + 6 + primaryFieldsLength_);
+    }
+
 private:
     uint16_t type_{0};                 ///< Type identifier of the info block
     uint16_t compoundLength_{0};       ///< Length of compound data
