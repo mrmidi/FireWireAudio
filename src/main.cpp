@@ -266,8 +266,9 @@ int main() {
 void printInfoBlockTree(const FWA::AVCInfoBlock& block, int indentLevel) {
     std::string indent(indentLevel * 2, ' ');
     std::cout << indent << "+ AVCInfoBlock:\n";
-    std::cout << indent << "  Type: 0x" << std::hex << std::setw(4) << std::setfill('0') << block.getType()
-              << " (" << MusicSubunitInfoBlockTypeDescriptions(block.getType()) << ")\n";
+    std::cout << indent << "  Type: 0x" << std::hex << std::setw(4) << std::setfill('0')
+              << static_cast<uint16_t>(block.getType())
+              << " (" << MusicSubunitInfoBlockTypeDescriptions(static_cast<uint16_t>(block.getType())) << ")\n";
     std::cout << indent << "  Compound Length: " << std::dec << block.getCompoundLength()
               << " (Total Size: " << block.getCompoundLength() + 2 << ")\n";
     std::cout << indent << "  Primary Fields Length: " << std::dec << block.getPrimaryFieldsLength() << "\n";

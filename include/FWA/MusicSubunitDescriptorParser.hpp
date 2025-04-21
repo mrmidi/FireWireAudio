@@ -26,7 +26,6 @@ private:
     std::expected<void, IOKitError> parseMusicSubunitStatusDescriptor(
         const std::vector<uint8_t>& descriptorData,
         MusicSubunit& musicSubunit);
-    static uint8_t getSubunitAddress(SubunitType type, uint8_t id);
 };
 
 } // namespace FWA

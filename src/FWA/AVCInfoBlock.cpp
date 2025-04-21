@@ -11,113 +11,219 @@
 namespace FWA {
 
 //--------------------------------------------------------------------------
-// AVCInfoBlock Constructor (from raw data only)
+// AVCInfoBlock Constructor (from movable r-value - likely used by make_shared)
 //--------------------------------------------------------------------------
 AVCInfoBlock::AVCInfoBlock(std::vector<uint8_t> rawData)
-  : rawData_(std::move(rawData))
+  : rawData_(std::move(rawData)) // Take ownership via move
 {
+    // --- Perform parsing directly ---
     if (rawData_.size() < 4) {
-        // Cannot even determine type or length reliably
-        spdlog::error("AVCInfoBlock constructed with insufficient raw data ({} bytes). Needs at least 4.", rawData_.size());
-        type_ = 0xFFFF; // Mark as unknown
+        spdlog::error("AVCInfoBlock (move ctor): Insufficient raw data ({} bytes). Needs at least 4.", rawData_.size());
+        type_ = static_cast<InfoBlockType>(0xFFFF); // Mark as unknown
         compoundLength_ = 0;
         primaryFieldsLength_ = 0;
-        // Consider throwing an exception if this state is unacceptable
-        // throw std::runtime_error("AVCInfoBlock raw data too short for header.");
-        return; // Exit early
+        return;
     }
-    // Proceed with parsing header info
-    parseInternal();
+    compoundLength_ = (static_cast<uint16_t>(rawData_[0]) << 8) | rawData_[1];
+    type_ = static_cast<InfoBlockType>((static_cast<uint16_t>(rawData_[2]) << 8) | rawData_[3]);
+    if (rawData_.size() >= 6) {
+        primaryFieldsLength_ = (static_cast<uint16_t>(rawData_[4]) << 8) | rawData_[5];
+    } else {
+        primaryFieldsLength_ = 0;
+    }
+    spdlog::debug("AVCInfoBlock (move ctor): Parsed header. Type=0x{:04X}, CompoundLength={}, PrimaryFieldsLength={}",
+               static_cast<uint16_t>(type_), compoundLength_, primaryFieldsLength_);
+
+    // Now parse primary fields and nested blocks based on parsed header
+    parse(); // Call the separate parse method
 }
 
 //--------------------------------------------------------------------------
-// AVCInfoBlock::parseInternal() - Called by constructor
+// AVCInfoBlock::parse() - Renamed from parseInternal
 //--------------------------------------------------------------------------
-void AVCInfoBlock::parseInternal() {
-    spdlog::debug("AVCInfoBlock::parseInternal: Starting parse for block data size {}", rawData_.size());
+void AVCInfoBlock::parse() {
+    // DEBUGGING INFO
+        spdlog::debug("AVCInfoBlock::parse: Instance Data Check: Size={}, Type=0x{:04X}, CompLen={}, PrimLen={}",
+                  rawData_.size(),
+                  static_cast<uint16_t>(type_),
+                  compoundLength_,
+                  primaryFieldsLength_);
+    size_t previewLen = std::min(rawData_.size(), static_cast<size_t>(20));
+    // BP HERE
+    if (previewLen > 0) { // Only create preview if there's data
+        std::vector<uint8_t> preview(rawData_.begin(), rawData_.begin() + previewLen);
+        spdlog::debug("AVCInfoBlock::parse: Instance Preview (first {}): {}", previewLen, Helpers::formatHexBytes(preview));
+    } else {
+        spdlog::debug("AVCInfoBlock::parse: Instance Preview: (No data)");
+    }
+
+    spdlog::debug("AVCInfoBlock::parse: Starting parse for Type=0x{:04X}, CompLen={}, PrimLen={}",
+               static_cast<uint16_t>(type_), compoundLength_, primaryFieldsLength_);
     nestedBlocks_.clear();
 
-    if (rawData_.size() < 4) {
-        spdlog::error("AVCInfoBlock::parseInternal: Raw data size ({}) too small for header.", rawData_.size());
-        type_ = 0xFFFF; compoundLength_ = 0; primaryFieldsLength_ = 0; // Mark as invalid
-        return;
+    if (type_ == static_cast<InfoBlockType>(0xFFFF)) {
+         spdlog::warn("AVCInfoBlock::parse: Skipping parse due to invalid initial state (likely from construction error).");
+         return;
     }
 
-    // Read lengths and type
-    compoundLength_ = (static_cast<uint16_t>(rawData_[0]) << 8) | rawData_[1];
-    type_ = (static_cast<uint16_t>(rawData_[2]) << 8) | rawData_[3];
-    spdlog::debug("  Parsed compoundLength={}, type=0x{:04X}", compoundLength_, type_);
+    size_t actualDataLimit = rawData_.size(); // The actual size of the buffer we *have* for this block
+    size_t expectedTotalSizeBasedOnHeader = compoundLength_ + 2;
 
-    size_t expectedTotalSize = compoundLength_ + 2;
-    if (rawData_.size() < expectedTotalSize) {
-        spdlog::warn("AVCInfoBlock::parseInternal: Raw data size ({}) < indicated total size ({}). Type=0x{:04X}. Parsing truncated.",
-                     rawData_.size(), expectedTotalSize, type_);
-    }
-    size_t actualDataLimit = rawData_.size(); // Use actual size as the limit
-
+    // Validate primaryFieldsLength against the actual data we have for THIS block
     if (actualDataLimit < 6) {
-        spdlog::debug("  Raw data size ({}) too small for primary_fields_length. Assuming 0.", actualDataLimit);
-        primaryFieldsLength_ = 0;
-    } else {
-        primaryFieldsLength_ = (static_cast<uint16_t>(rawData_[4]) << 8) | rawData_[5];
-        spdlog::debug("  Parsed primaryFieldsLength={}", primaryFieldsLength_);
+        if (primaryFieldsLength_ > 0) {
+            spdlog::warn("AVCInfoBlock::parse: primaryFieldsLength_ is {} but only {} bytes available. Resetting primaryFieldsLength_ to 0. Type=0x{:04X}",
+                         primaryFieldsLength_, actualDataLimit, static_cast<uint16_t>(type_));
+            primaryFieldsLength_ = 0;
+        }
+    } else if (6 + primaryFieldsLength_ > actualDataLimit) {
+        spdlog::warn("AVCInfoBlock::parse: Claimed primary fields length ({}) exceeds available data ({} bytes total). Parsing only available primary fields. Type=0x{:04X}",
+                     primaryFieldsLength_, actualDataLimit, static_cast<uint16_t>(type_));
+        // Adjust effective length for parsing, keep original for comparison
+        // primaryFieldsLength_ is kept as reported by header for logic below
     }
 
-    // Calculate end of primary fields, respecting actual data size
-    size_t primaryFieldsEndOffset = 6 + primaryFieldsLength_;
-    if (primaryFieldsEndOffset > actualDataLimit) {
-        spdlog::warn("  Primary fields length ({}) exceeds block data size ({}). Type=0x{:04X}. Truncating primary fields parse area.",
-                     primaryFieldsLength_, actualDataLimit, type_);
-        primaryFieldsEndOffset = actualDataLimit; // Limit parsing
-    }
-    spdlog::debug("  Primary fields end at offset {}", primaryFieldsEndOffset);
+    size_t primaryFieldsEndOffset = std::min(static_cast<size_t>(6 + primaryFieldsLength_), actualDataLimit);
+    spdlog::debug("  Parse Check: Primary fields data ends at effective offset {}", primaryFieldsEndOffset);
 
-    // --- Parse Primary fields to populate optional members ---
-    parsePrimaryFields(); // Already happens in constructor/this call path
+    // --- Parse Primary fields ---
+    parsePrimaryFields(); // This should now internally respect boundaries via getPrimaryFieldsDataPtr()
+
+    // --- Memory Check Log ---
+    spdlog::debug("  Memory Check before nested loop: Size={}, Type=0x{:04X}", rawData_.size(), static_cast<uint16_t>(type_));
+    size_t checkPreviewLen = std::min(rawData_.size(), static_cast<size_t>(30)); // Check more bytes
+    if (checkPreviewLen > 0) {
+        std::vector<uint8_t> checkPreview(rawData_.begin(), rawData_.begin() + checkPreviewLen);
+        spdlog::debug("  Memory Check Preview (first {}): {}", checkPreviewLen, Helpers::formatHexBytes(checkPreview));
+    }
+    // --- End Memory Check ---
 
     // --- Parse Nested Blocks (Secondary Fields Area) ---
-    size_t currentOffset = primaryFieldsEndOffset;
+    size_t currentOffset = primaryFieldsEndOffset; // Start after primary fields
     spdlog::debug("  Starting nested block parse at offset {}", currentOffset);
 
-    while (currentOffset < actualDataLimit) {
-        spdlog::debug("  Checking for nested block at offset {}", currentOffset);
-        if (currentOffset + 2 > actualDataLimit) { // Need 2 bytes for nested compound length
-            spdlog::debug("  Not enough bytes ({}) left for nested compound length. Stopping nested parse.", actualDataLimit - currentOffset);
-            break;
-        }
+    // Determine the effective limit for parsing nested blocks within *this* block
+    size_t parseLimit = actualDataLimit; // Start with the actual buffer size
+    if (expectedTotalSizeBasedOnHeader < actualDataLimit) {
+         spdlog::warn("AVCInfoBlock::parse: This block's compound_length ({}) indicates total size {} which is *less* than available data ({}). Limiting nested parse to indicated length.",
+                      compoundLength_, expectedTotalSizeBasedOnHeader, actualDataLimit);
+         parseLimit = expectedTotalSizeBasedOnHeader;
+    } else if (expectedTotalSizeBasedOnHeader > actualDataLimit) {
+         spdlog::warn("AVCInfoBlock::parse: This block's compound_length ({}) indicates total size {} which *exceeds* available data ({}). Limiting nested parse to available data.",
+                       compoundLength_, expectedTotalSizeBasedOnHeader, actualDataLimit);
+         // parseLimit is already actualDataLimit
+    }
+    spdlog::debug("  Parsing nested blocks up to effective limit: {}", parseLimit);
 
+    bool encounteredErrorInNested = false; // Track errors during nested parsing
+
+    while (currentOffset < parseLimit) {
+        size_t nestedBlockStartOffset = currentOffset;
+
+        if (currentOffset + 4 > parseLimit) {
+            // Don't log as error if it's just the normal end of parsing
+            if (currentOffset != parseLimit) {
+                spdlog::warn("  Not enough bytes ({}) left for nested block header at offset {}. Stopping nested parse within Type=0x{:04X}.",
+                             parseLimit - currentOffset, currentOffset, static_cast<uint16_t>(type_));
+            }
+            break; // Normal or truncated end
+        }
+        // BP HERE
         uint16_t nestedCompoundLength = (static_cast<uint16_t>(rawData_[currentOffset]) << 8) | rawData_[currentOffset + 1];
-        size_t nestedInfoBlockSize = nestedCompoundLength + 2;
-        spdlog::debug("  Potential nested block: compoundLength={}, totalSize={}", nestedCompoundLength, nestedInfoBlockSize);
+        size_t claimedNestedBlockSize = nestedCompoundLength + 2;
+        size_t availableBytesForNestedBlock = parseLimit - currentOffset;
 
-        if (currentOffset + nestedInfoBlockSize > actualDataLimit) {
-            spdlog::error("AVCInfoBlock::parseInternal: Nested info block size ({}) would exceed remaining data ({}) at offset {}. Type=0x{:04X}. Stopping nested parse.",
-                         nestedInfoBlockSize, actualDataLimit - currentOffset, currentOffset, type_);
-            break;
+
+        // --- LOG DEBUGGING INFO ---
+        spdlog::debug("  Nested loop: currentOffset={}, Reading header bytes rawData_[{}] = 0x{:02X}, rawData_[{}] = 0x{:02X}",
+              currentOffset,
+              currentOffset, rawData_[currentOffset],
+              currentOffset + 1, rawData_[currentOffset + 1]);
+
+        // --- Check for invalid claimed size ---
+        if (claimedNestedBlockSize < 4 || nestedCompoundLength == 0xFFFF) {
+            spdlog::error("AVCInfoBlock::parse: Invalid nested block size ({}, compound_length=0x{:04X}) reported by block at offset {} within Type=0x{:04X}. Stopping nested parse for this parent.",
+                          claimedNestedBlockSize, nestedCompoundLength, nestedBlockStartOffset, static_cast<uint16_t>(type_));
+            encounteredErrorInNested = true;
+        
+            // break; // Stop parsing nested blocks for this parent
         }
 
-        // Extract raw data for the nested block
-        std::vector<uint8_t> nestedRawData(rawData_.begin() + currentOffset,
-                                           rawData_.begin() + currentOffset + nestedInfoBlockSize);
+        size_t bytesToParseForNestedBlock = std::min(claimedNestedBlockSize, availableBytesForNestedBlock);
+        bool wasTruncated = (claimedNestedBlockSize > availableBytesForNestedBlock);
+
+        if (wasTruncated) {
+            spdlog::warn("AVCInfoBlock::parse: Nested block at offset {} (within Type=0x{:04X}) claims size {} ({}+2), exceeding remaining {} bytes. Parsing only available {} bytes.",
+                         nestedBlockStartOffset, static_cast<uint16_t>(type_), claimedNestedBlockSize, nestedCompoundLength, availableBytesForNestedBlock, bytesToParseForNestedBlock);
+             if (bytesToParseForNestedBlock < 4) {
+                 spdlog::error("AVCInfoBlock::parse: Not enough available bytes ({}) to parse even the header of the oversized nested block at offset {}. Stopping nested parse.", bytesToParseForNestedBlock, nestedBlockStartOffset);
+                 encounteredErrorInNested = true;
+                 break; // Stop parsing nested blocks for this parent
+             }
+            encounteredErrorInNested = true; // Mark that this block had issues
+        }
+
+        // --- Manual Copy Instead of Slice Constructor ---
+        std::vector<uint8_t> nestedRawData;
+        nestedRawData.reserve(bytesToParseForNestedBlock); // Pre-allocate
+        spdlog::debug("  Parent Parse: Manually copying {} bytes starting at parent offset {}", bytesToParseForNestedBlock, nestedBlockStartOffset);
+        for (size_t i = 0; i < bytesToParseForNestedBlock; ++i) {
+            if (nestedBlockStartOffset + i >= rawData_.size()) {
+                spdlog::error("  Parent Parse: Manual copy boundary error! i={}, offset={}, rawData_.size()={}", i, nestedBlockStartOffset, rawData_.size());
+                break;
+            }
+            nestedRawData.push_back(rawData_[nestedBlockStartOffset + i]);
+        }
+        // --- End Manual Copy ---
+
+        // Log the manually copied data
+        spdlog::debug("  Parent Parse: Verifying MANUAL nestedRawData before move (Size={})", nestedRawData.size());
+        size_t nestedPreviewLen = std::min(nestedRawData.size(), static_cast<size_t>(20));
+        if (nestedPreviewLen > 0) {
+            std::vector<uint8_t> nestedPreview(nestedRawData.begin(), nestedRawData.begin() + nestedPreviewLen);
+            spdlog::debug("  Parent Parse: MANUAL nestedRawData Preview (first {}): {}", nestedPreviewLen, Helpers::formatHexBytes(nestedPreview));
+        }
 
         try {
-            spdlog::debug("    Creating nested AVCInfoBlock...");
-            // Create and implicitly parse the nested block
             nestedBlocks_.push_back(std::make_shared<AVCInfoBlock>(std::move(nestedRawData)));
-            spdlog::debug("    Successfully created and added nested info block of size {} at offset {}", nestedInfoBlockSize, currentOffset);
+            uint16_t nestedType = static_cast<uint16_t>(nestedBlocks_.back()->getType());
+            spdlog::debug("    Successfully created nested block (Type=0x{:04X}, Parsed Size: {}) from parent offset {}",
+                          nestedType, bytesToParseForNestedBlock, nestedBlockStartOffset);
         } catch (const std::exception& e) {
-            spdlog::error("AVCInfoBlock::parseInternal: Exception creating nested block at offset {}: {}", currentOffset, e.what());
-            // Stop parsing nested blocks on exception
-            break;
+            spdlog::error("AVCInfoBlock::parse: Exception creating nested block from slice at offset {}: {}", nestedBlockStartOffset, e.what());
+            encounteredErrorInNested = true;
+            currentOffset += bytesToParseForNestedBlock;
+            spdlog::warn("AVCInfoBlock::parse: Attempting to continue after exception by skipping {} bytes.", bytesToParseForNestedBlock);
+            continue; // Try next potential sibling
+        } catch (...) {
+             spdlog::error("AVCInfoBlock::parse: Unknown exception constructing/parsing nested block from slice at offset {}.", nestedBlockStartOffset);
+             encounteredErrorInNested = true;
+             currentOffset += bytesToParseForNestedBlock;
+             spdlog::warn("AVCInfoBlock::parse: Attempting to continue after unknown exception by skipping {} bytes.", bytesToParseForNestedBlock);
+             continue; // Try next potential sibling
         }
 
-        currentOffset += nestedInfoBlockSize; // Move to next potential block
-    }
-    spdlog::debug("  Finished nested block parse loop. Final offset: {}", currentOffset);
+        // --- Advancement Logic ---
+        // Advance offset based on the size parsed/available for *this* nested block
+        currentOffset += bytesToParseForNestedBlock;
 
-    // Optional final check against expected size based on initial compoundLength
-    if (currentOffset != expectedTotalSize) {
-         spdlog::warn("AVCInfoBlock::parseInternal: Parsing finished at offset {}, but expected end based on initial compoundLength was {}. Type=0x{:04X}", currentOffset, expectedTotalSize, type_);
+        // If the nested block *claimed* more than was available, stop processing siblings.
+        if (wasTruncated) {
+            spdlog::warn("AVCInfoBlock::parse: Stopping parsing further nested blocks within Type=0x{:04X} because nested block at offset {} was truncated (claimed {}, parsed {}).",
+                         static_cast<uint16_t>(type_), nestedBlockStartOffset, claimedNestedBlockSize, bytesToParseForNestedBlock);
+            break; // Cannot reliably find next sibling
+        }
+    } // End while loop
+
+    // Final logging checks
+    if (currentOffset < parseLimit && !encounteredErrorInNested) {
+         spdlog::warn("AVCInfoBlock::parse: Nested parsing loop for Type=0x{:04X} finished unexpectedly at offset {} (expected end {}).",
+                      static_cast<uint16_t>(type_), currentOffset, parseLimit);
+    } else if (currentOffset > parseLimit) {
+        spdlog::error("AVCInfoBlock::parse: Nested parsing logic error: currentOffset {} somehow exceeded parseLimit {}.",
+                      currentOffset, parseLimit);
+    } else {
+        spdlog::debug("  Finished nested block parse loop for Type=0x{:04X}. Final offset: {}", static_cast<uint16_t>(type_), currentOffset);
     }
 }
 
@@ -130,7 +236,7 @@ std::string AVCInfoBlock::toString(uint32_t indent) const {
     std::string indentStr(indent * 2, ' ');
 
     oss << indentStr << "AVCInfoBlock:\n";
-    oss << indentStr << "  Type: 0x" << std::hex << std::setw(4) << std::setfill('0') << type_ << "\n";
+    oss << indentStr << "  Type: 0x" << std::hex << std::setw(4) << std::setfill('0') << static_cast<uint16_t>(type_) << "\n";
     oss << indentStr << "  Compound Length: " << std::dec << compoundLength_ << " (Total Size: " << compoundLength_ + 2 << ")\n";
     oss << indentStr << "  Primary Fields Length: " << std::dec << primaryFieldsLength_ << "\n";
 
@@ -227,6 +333,7 @@ void AVCInfoBlock::parsePrimaryFields() {
                 parsed_routingStatus_ = data;
             } break;
         case InfoBlockType::SubunitPlugInfo:
+            spdlog::debug("AVCInfoBlock::parsePrimaryFields: Entering Parse SubunitPlugInfo (0x8109) with length {}", length);
             if (length >= 8) {
                 SubunitPlugInfoData data;
                 data.subunitPlugId = primaryData[0];
@@ -235,6 +342,11 @@ void AVCInfoBlock::parsePrimaryFields() {
                 data.numberOfClusters = (static_cast<uint16_t>(primaryData[4]) << 8) | primaryData[5];
                 data.numberOfChannels = (static_cast<uint16_t>(primaryData[6]) << 8) | primaryData[7];
                 parsed_subunitPlugInfo_ = data;
+                // Debugging output
+                spdlog::debug("AVCInfoBlock::parsePrimaryFields: Parsed SubunitPlugInfo: PlugId=0x{:02X}, SignalFormat=0x{:04X}, PlugType=0x{:02X}, Clusters={}, Channels={}",
+                              data.subunitPlugId, data.signalFormat, data.plugType, data.numberOfClusters, data.numberOfChannels);
+                // RAW hex dump of the data
+                spdlog::debug("AVCInfoBlock::parsePrimaryFields: Raw data: {}", formatHex(primaryData, length));
             } break;
         case InfoBlockType::ClusterInfo:
             if (length >= 3) {
@@ -386,7 +498,7 @@ void AVCInfoBlock::parsePrimaryFields(const uint8_t* primaryData, size_t length,
                      << ", StrLoc=" << static_cast<int>(primaryData[8]) << "]"
                      << " Dst:[FuncType=0x" << std::hex << static_cast<int>(primaryData[9])
                      << ", PlugID=0x" << static_cast<int>(primaryData[10])
-                     << ", BlockID=0x" << static_cast<int>(primaryData[11])
+                     << ", BlockID=0x" << static_cast<uint16_t>(primaryData[11])
                      << ", StrPos=" << std::dec << static_cast<int>(primaryData[12])
                      << ", StrLoc=" << static_cast<int>(primaryData[13]) << "]"
                      << ")";
@@ -394,58 +506,6 @@ void AVCInfoBlock::parsePrimaryFields(const uint8_t* primaryData, size_t length,
                  oss << " (MusicPlugInfo: Malformed - length=" << length << ")";
             }
             break;
-        case InfoBlockType::RawText:
-             oss << " (Raw Text: \"";
-             for (size_t i = 0; i < length; ++i) {
-                 char c = primaryData[i];
-                 oss << (isprint(c) ? c : '.');
-             }
-             oss << "\")";
-             break;
-
-        case InfoBlockType::Name:
-            if (length >= 4) {
-                 uint8_t refType = primaryData[0];
-                 uint8_t attributes = primaryData[1];
-                 uint16_t maxChars = (static_cast<uint16_t>(primaryData[2]) << 8) | primaryData[3];
-                 oss << " (Name: RefType=0x" << std::hex << static_cast<int>(refType)
-                     << ", Attrs=0x" << static_cast<int>(attributes)
-                     << ", MaxChars=" << std::dec << maxChars << ")";
-                 // Note: Nested blocks within the name block's primary fields (if any)
-                 // would need separate handling here if the structure demands it,
-                 // but typically they appear in the secondary fields area.
-            } else {
-                 oss << " (Name: Malformed - length=" << length << ")";
-            }
-             break;
-
-        // --- Music Subunit Specific ---
-        case InfoBlockType::GeneralMusicStatus:
-             if (length >= 6) {
-                 oss << " (GenMusicStatus: TxCap=0x" << std::hex << static_cast<int>(primaryData[0])
-                     << ", RxCap=0x" << static_cast<int>(primaryData[1])
-                     << ", LatCap=0x" << static_cast<int>(primaryData[2]) << static_cast<int>(primaryData[3])
-                                       << static_cast<int>(primaryData[4]) << static_cast<int>(primaryData[5]) << ")";
-             } else {
-                 oss << " (GenMusicStatus: Malformed - length=" << length << ")";
-             }
-            break;
-        case InfoBlockType::MusicOutputPlugStatus:
-            if (length >= 1) {
-                 oss << " (MusicOutPlugStatus: NumSrcPlugs=" << std::dec << static_cast<int>(primaryData[0]) << ")";
-            } else {
-                 oss << " (MusicOutPlugStatus: Malformed - length=" << length << ")";
-            }
-            break;
-        case InfoBlockType::SourcePlugStatus:
-             if (length >= 1) {
-                 oss << " (SrcPlugStatus: SrcPlugNum=" << std::dec << static_cast<int>(primaryData[0]) << ")";
-             } else {
-                 oss << " (SrcPlugStatus: Malformed - length=" << length << ")";
-             }
-            break;
-        // Add cases for 0x8103 through 0x810B based on TA 2001007 if needed...
-
         default:
             // No specific parsing for this type, hex dump already provided.
             break;
@@ -455,7 +515,7 @@ void AVCInfoBlock::parsePrimaryFields(const uint8_t* primaryData, size_t length,
 //--------------------------------------------------------------------------
 // AVCInfoBlock::formatHex() - Static Helper
 //--------------------------------------------------------------------------
-std::string AVCInfoBlock::formatHex(const uint8_t* data, size_t length) {
+std::string AVCInfoBlock::formatHex(const uint8_t* data, size_t length) const {
      std::ostringstream oss;
      oss << std::hex << std::uppercase << std::setfill('0');
      for (size_t i = 0; i < length; ++i) {

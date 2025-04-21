@@ -109,4 +109,8 @@ namespace FWA {
         return oss.str();
     }
 
+    uint8_t Helpers::getSubunitAddress(SubunitType type, uint8_t id) {
+    return (static_cast<uint8_t>(type) << 3) | (id & 0x07);
+}
+
 } // namespace FWA

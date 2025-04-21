@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21..4.0.0) 
+cmake_minimum_required(VERSION 3.26..4.0.0) # better SWIFT support requires 3.26 or later
 
 # Set policies before project() command
 cmake_policy(SET CMP0114 NEW) # For Xcode new build system
@@ -9,6 +9,50 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment ve
 
 # Include Objective-C++ language support
 project(FireWireAudioDaemon LANGUAGES CXX OBJC OBJCXX)
+
+# --- Sanitizer Setup ---
+option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
+option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
+option(ENABLE_TSAN "Enable ThreadSanitizer (cannot use with ASan)" OFF)
+
+if(ENABLE_ASAN AND ENABLE_TSAN)
+    message(FATAL_ERROR "AddressSanitizer (ASan) and ThreadSanitizer (TSan) cannot be enabled simultaneously.")
+endif()
+
+set(SANITIZER_FLAGS "") # Initialize empty
+set(SANITIZER_LINK_FLAGS "")
+
+# Helper macro to append flags cleanly
+macro(append_flag variable flag)
+    if(${variable})
+        set(${variable} "${${variable}} ${flag}") # Add space if not empty
+    else()
+        set(${variable} "${flag}") # No leading space if empty
+    endif()
+endmacro()
+
+if(ENABLE_ASAN)
+    message(STATUS "AddressSanitizer (ASan) Enabled")
+    append_flag(SANITIZER_FLAGS "-fsanitize=address")
+    append_flag(SANITIZER_FLAGS "-fno-omit-frame-pointer")
+    append_flag(SANITIZER_LINK_FLAGS "-fsanitize=address")
+endif()
+
+if(ENABLE_UBSAN)
+    message(STATUS "UndefinedBehaviorSanitizer (UBSan) Enabled")
+    append_flag(SANITIZER_FLAGS "-fsanitize=undefined")
+    if(NOT ENABLE_ASAN)
+        append_flag(SANITIZER_FLAGS "-fno-omit-frame-pointer")
+    endif()
+    append_flag(SANITIZER_LINK_FLAGS "-fsanitize=undefined")
+endif()
+
+if(ENABLE_TSAN)
+    message(STATUS "ThreadSanitizer (TSan) Enabled")
+    append_flag(SANITIZER_FLAGS "-fsanitize=thread")
+    append_flag(SANITIZER_LINK_FLAGS "-fsanitize=thread")
+endif()
+# --- End Sanitizer Variable Setup ---
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -157,23 +201,17 @@ target_link_libraries(FWAIsoch
         "-framework Foundation"  # Required for Objective-C/Cocoa
 )
 
+# --- Apply Sanitizers to FWAIsoch ---
+if(SANITIZER_FLAGS)
+    string(REPLACE " " ";" SANITIZER_FLAGS_LIST ${SANITIZER_FLAGS})
+    target_compile_options(FWAIsoch PRIVATE ${SANITIZER_FLAGS_LIST})
+endif()
+# --- End Apply Sanitizers to FWAIsoch ---
+
 # --- Create a Library for the Application Code ---
-# Define Objective-C and Objective-C++ file lists
-set(FWA_XPC_OBJCXX_FILES
-    src/FWA/XPC/XPCBridge.mm
-    src/FWA/XPC/XPCReceiverClient.mm
-)
-
-set(FWA_XPC_OBJC_FILES
-    src/FWA/XPC/MixedAudioBuffer.m
-)
-
-# Set language properties for the files
-set_source_files_properties(${FWA_XPC_OBJCXX_FILES} PROPERTIES LANGUAGE OBJCXX)
-set_source_files_properties(${FWA_XPC_OBJC_FILES} PROPERTIES LANGUAGE OBJC)
-
 add_library(FWA STATIC
     src/main.cpp
+    src/FWA/AVCInfoBlock.cpp  
     src/FWA/AudioDevice.cpp
     src/FWA/AudioStreamFormat.cpp
     src/FWA/CommandInterface.cpp
@@ -183,7 +221,7 @@ add_library(FWA STATIC
     src/FWA/SubunitDiscoverer.cpp
     src/FWA/PlugDetailParser.cpp
     src/FWA/DescriptorReader.cpp
-    src/FWA/MusicSubunitDescriptorParser.cpp
+    src/FWA/MusicSubunitDescriptorParser.cpp  # add parser implementation
     src/FWA/DescriptorSpecifier.cpp
     src/FWA/DescriptorUtils.cpp
     src/FWA/Helpers.cpp
@@ -236,6 +274,13 @@ target_link_libraries(FWA
         "-framework Foundation"  # Required for Objective-C/Cocoa
 )
 
+# --- Apply Sanitizers to FWA ---
+if(SANITIZER_FLAGS)
+    string(REPLACE " " ";" SANITIZER_FLAGS_LIST_FWA ${SANITIZER_FLAGS})
+    target_compile_options(FWA PRIVATE ${SANITIZER_FLAGS_LIST_FWA})
+endif()
+# --- End Apply Sanitizers to FWA ---
+
 # --- XPC Service Target ---
 set(XPC_SERVICE_NAME "FWADaemon")
 set(XPC_SERVICE_SOURCES
@@ -284,6 +329,12 @@ add_custom_command(TARGET ${XPC_SERVICE_NAME} POST_BUILD
 # --- Main Executable ---
 # Renamed to avoid case conflict with FWADaemon
 add_executable(FireWireAudioDaemon src/main.cpp)
+# --- Apply Sanitizer Linker Flags to Main Executable ---
+if(SANITIZER_LINK_FLAGS)
+    string(REPLACE " " ";" SANITIZER_LINK_FLAGS_LIST ${SANITIZER_LINK_FLAGS})
+    target_link_options(FireWireAudioDaemon PRIVATE ${SANITIZER_LINK_FLAGS_LIST})
+endif()
+# --- End Apply Sanitizer Linker Flags ---
 
 # Link macOS frameworks and the FWA library
 target_link_libraries(FireWireAudioDaemon

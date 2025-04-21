@@ -4,6 +4,8 @@
 #include <memory>
 #include <string>
 #include <optional>
+#include <sstream>  // for std::ostringstream
+#include "FWA/Enums.hpp"  // for InfoBlockType
 
 namespace FWA {
 
@@ -64,13 +66,7 @@ struct MusicPlugInfoData {
 
 class AVCInfoBlock {
 public:
-    /**
-     * @brief Construct a new AVC Info Block
-     * @param type Type identifier of the info block
-     * @param rawData Raw data bytes from the device
-     */
-    AVCInfoBlock(uint16_t type, std::vector<uint8_t> rawData)
-      : type_(type), rawData_(std::move(rawData)) {}
+    explicit AVCInfoBlock(std::vector<uint8_t> rawData);
 
     ~AVCInfoBlock() = default;
     
@@ -78,7 +74,7 @@ public:
      * @brief Get the type identifier
      * @return uint16_t Type of the info block
      */
-    uint16_t getType() const { return type_; }
+    InfoBlockType getType() const { return type_; }
 
     /**
      * @brief Get the raw data bytes
@@ -151,7 +147,7 @@ public:
     }
 
 private:
-    uint16_t type_{0};                 ///< Type identifier of the info block
+    InfoBlockType type_{InfoBlockType::Unknown};                 ///< Type identifier of the info block
     uint16_t compoundLength_{0};       ///< Length of compound data
     uint16_t primaryFieldsLength_{0};  ///< Length of primary fields
     std::vector<uint8_t> rawData_;     ///< Raw data from device
@@ -177,6 +173,10 @@ private:
      * @brief Parse primary fields from raw data
      */
     void parsePrimaryFields();
+    // Add overload for legacy presentation
+    void parsePrimaryFields(const uint8_t* primaryData, size_t length, std::ostringstream& oss) const;
+    // Add formatHex declaration
+    std::string formatHex(const uint8_t* data, size_t length) const;
 };
 
 } // namespace FWA

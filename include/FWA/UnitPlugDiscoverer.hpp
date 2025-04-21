@@ -4,6 +4,7 @@
 #include <expected>
 #include <cstdint>
 #include <vector>
+#include "FWA/DeviceInfo.hpp"
 
 namespace FWA {
 

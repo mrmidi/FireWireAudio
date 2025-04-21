@@ -26,22 +26,24 @@ while [[ $# -gt 0 ]]; do
             ;;
         -m|--mode)
             MODE="$2"
-            if [[ "$MODE" != "isoch" && "$MODE" != "fwa" ]]; then
-                echo "Error: Mode must be either 'isoch' or 'fwa'"
+            if [[ "$MODE" != "isoch" && "$MODE" != "fwa" && "$MODE" != "modified" ]]; then
+                echo "Error: Mode must be either 'isoch', 'fwa', or 'modified'"
                 exit 1
             fi
             # Set default output file based on mode if not explicitly specified
             if [[ "$OUTPUT_FILE" == "isoch.txt" && "$MODE" == "fwa" ]]; then
                 OUTPUT_FILE="fwa.txt"
+            elif [[ "$OUTPUT_FILE" == "isoch.txt" && "$MODE" == "modified" ]]; then
+                OUTPUT_FILE="modified.txt"
             fi
             shift 2
             ;;
         -h|--help)
             echo "Usage: $0 [-m|--mode mode] [-e|--extract file_to_extract] [-i|--input input_file] [-o|--output output_file]"
-            echo "  -m, --mode       Specify the code stack to gather: 'isoch' (default) or 'fwa'"
+            echo "  -m, --mode       Specify the code stack to gather: 'isoch' (default), 'fwa', or 'modified'"
             echo "  -e, --extract    Specify a file to extract from the input file"
-            echo "  -i, --input      Specify the input file (default: isoch.txt or fwa.txt based on mode)"
-            echo "  -o, --output     Specify the output file (default: isoch.txt or fwa.txt based on mode)"
+            echo "  -i, --input      Specify the input file (default: isoch.txt, fwa.txt, or modified.txt based on mode)"
+            echo "  -o, --output     Specify the output file (default: isoch.txt, fwa.txt, or modified.txt based on mode)"
             exit 0
             ;;
         *)
@@ -91,6 +93,22 @@ extract_file() {
 # If extraction is requested, do it and exit
 if [ ! -z "$EXTRACT_FILE" ]; then
     extract_file "$EXTRACT_FILE" "$INPUT_FILE" "$OUTPUT_FILE"
+    exit 0
+fi
+
+# Modified mode: collect all modified files from git status
+if [[ "$MODE" == "modified" ]]; then
+    rm -f "$OUTPUT_FILE"
+    echo "Creating $OUTPUT_FILE with all modified files from git..."
+    git status --porcelain | grep -E '^( M|A |AM|MM|\?\?)' | cut -c4- | while read -r file; do
+        if [ -f "$file" ]; then
+            echo "=== $file ===" >> "$OUTPUT_FILE"
+            cat "$file" >> "$OUTPUT_FILE"
+            echo -e "\n\n" >> "$OUTPUT_FILE"
+        fi
+    done
+    chmod +x "$0"
+    echo "Done! Created $OUTPUT_FILE"
     exit 0
 fi
 

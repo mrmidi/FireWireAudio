@@ -44,6 +44,17 @@ public:
     const std::optional<std::vector<uint8_t>>& getStatusDescriptorData() const { return statusDescriptorData_; }
     const std::vector<std::shared_ptr<AVCInfoBlock>>& getParsedStatusInfoBlocks() const { return parsedStatusInfoBlocks_; }
 
+    void setMusicDestPlugCount(uint32_t count) { musicDestPlugCount_ = count; }
+    void setMusicSourcePlugCount(uint32_t count) { musicSourcePlugCount_ = count; }
+    void addMusicDestPlug(std::shared_ptr<AudioPlug> plug) { musicDestPlugs_.push_back(plug); }
+    void addMusicSourcePlug(std::shared_ptr<AudioPlug> plug) { musicSourcePlugs_.push_back(plug); }
+    void setStatusDescriptorData(const std::vector<uint8_t>& data) { statusDescriptorData_ = data; }
+    void addParsedStatusInfoBlock(std::shared_ptr<AVCInfoBlock> block) { parsedStatusInfoBlocks_.push_back(block); }
+    void clearParsedStatusInfoBlocks() { parsedStatusInfoBlocks_.clear(); }
+    void clearPlugs() { musicDestPlugs_.clear(); musicSourcePlugs_.clear(); }
+    void clearMusicDestPlugs() { musicDestPlugs_.clear(); }
+    void clearMusicSourcePlugs() { musicSourcePlugs_.clear(); }
+
 private:
     // --- Data members managed by DeviceParser ---
     uint32_t musicDestPlugCount_{0};
@@ -54,16 +65,6 @@ private:
 
     std::optional<std::vector<uint8_t>> statusDescriptorData_;          ///< Raw status descriptor bytes
     std::vector<std::shared_ptr<AVCInfoBlock>> parsedStatusInfoBlocks_; ///< Parsed info blocks from status descriptor
-
-    // --- Private setters/helpers for DeviceParser ---
-    void setMusicDestPlugCount(uint32_t count) { musicDestPlugCount_ = count; }
-    void setMusicSourcePlugCount(uint32_t count) { musicSourcePlugCount_ = count; }
-    void addMusicDestPlug(std::shared_ptr<AudioPlug> plug) { musicDestPlugs_.push_back(plug); }
-    void addMusicSourcePlug(std::shared_ptr<AudioPlug> plug) { musicSourcePlugs_.push_back(plug); }
-    void setStatusDescriptorData(const std::vector<uint8_t>& data) { statusDescriptorData_ = data; }
-    void addParsedStatusInfoBlock(std::shared_ptr<AVCInfoBlock> block) { parsedStatusInfoBlocks_.push_back(block); }
-    void clearParsedStatusInfoBlocks() { parsedStatusInfoBlocks_.clear(); }
-    void clearPlugs() { musicDestPlugs_.clear(); musicSourcePlugs_.clear(); }
 
     // Prevent copying/moving directly if managing resources uniquely
     MusicSubunit(const MusicSubunit&) = delete;

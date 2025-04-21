@@ -23,7 +23,6 @@ public:
     SubunitDiscoverer& operator=(SubunitDiscoverer&&) = delete;
 private:
     CommandInterface* commandInterface_;
-    static uint8_t getSubunitAddress(SubunitType type, uint8_t id);
 };
 
 } // namespace FWA

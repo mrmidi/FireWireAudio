@@ -41,21 +41,22 @@ public:
     const std::vector<std::shared_ptr<AudioPlug>>& getAudioSourcePlugs() const { return audioSourcePlugs_; }
     // Add accessors for function blocks, etc. when implemented
 
-private:
-    // --- Data members managed by DeviceParser ---
-    uint32_t audioDestPlugCount_{0};
-    uint32_t audioSourcePlugCount_{0};
-
-    std::vector<std::shared_ptr<AudioPlug>> audioDestPlugs_;
-    std::vector<std::shared_ptr<AudioPlug>> audioSourcePlugs_;
-    // Add members for function blocks, descriptors etc.
-
-     // --- Private setters/helpers for DeviceParser ---
+    // --- Setters/helpers for plug counts and plug management ---
     void setAudioDestPlugCount(uint32_t count) { audioDestPlugCount_ = count; }
     void setAudioSourcePlugCount(uint32_t count) { audioSourcePlugCount_ = count; }
     void addAudioDestPlug(std::shared_ptr<AudioPlug> plug) { audioDestPlugs_.push_back(plug); }
     void addAudioSourcePlug(std::shared_ptr<AudioPlug> plug) { audioSourcePlugs_.push_back(plug); }
     void clearPlugs() { audioDestPlugs_.clear(); audioSourcePlugs_.clear(); }
+    void clearAudioDestPlugs() { audioDestPlugs_.clear(); }
+    void clearAudioSourcePlugs() { audioSourcePlugs_.clear(); }
+
+private:
+    // --- Data members managed by DeviceParser ---
+    uint32_t audioDestPlugCount_{0};
+    uint32_t audioSourcePlugCount_{0};
+    std::vector<std::shared_ptr<AudioPlug>> audioDestPlugs_;
+    std::vector<std::shared_ptr<AudioPlug>> audioSourcePlugs_;
+    // Add members for function blocks, descriptors etc.
 
     // Prevent copying/moving directly if managing resources uniquely
     AudioSubunit(const AudioSubunit&) = delete;

@@ -4,6 +4,19 @@
 
 namespace FWA {
 
+constexpr uint8_t kAVCOpenDescriptorOpcode = 0x08;
+constexpr uint8_t kAVCReadDescriptorOpcode = 0x09;
+constexpr uint8_t kMusicSubunitIdentifierSpecifier = 0x80; // For Music/Audio subunit status descriptor
+constexpr uint8_t kReadResultComplete = 0x10;
+constexpr uint8_t kReadResultMoreData = 0x11;
+
+#ifndef kIOReturnBadResponse
+#define kIOReturnBadResponse kIOReturnError
+#endif
+#ifndef kIOReturnIOError
+#define kIOReturnIOError kIOReturnError
+#endif
+
 /**
  * @brief Descriptor specifier type (matches AV/C specification)
  */
