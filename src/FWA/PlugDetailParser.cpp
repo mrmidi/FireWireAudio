@@ -460,7 +460,7 @@ std::expected<AudioPlug::DestPlugConnectionInfo, IOKitError> PlugDetailParser::q
         return destInfo;
     }
     // --- End Fix ---
-    else if (subcmdResultStatus == kAVCDestPlugResultUnknownSubfunction) { // 0x01 (No Connection)
+    else if (subcmdResultStatus == kAVCDestPlugResultNoConnection) { // 0x01 (No Connection)
         spdlog::debug("PlugDetailParser: Music plug 0x{:04x} has no connection (Status 0x01).", musicPlugID);
         return std::unexpected(IOKitError::NotFound); // Return NotFound for "No Connection"
     } else if (subcmdResultStatus == kAVCDestPlugResultMusicPlugNotExist) { // 0x03

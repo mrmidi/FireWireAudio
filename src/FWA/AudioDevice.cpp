@@ -3,6 +3,7 @@
 #include "FWA/DeviceParser.hpp"
 #include "FWA/DeviceController.h"
 #include "FWA/Helpers.h" // For cfStringToString
+#include "FWA/Enums.hpp"
 #include <spdlog/spdlog.h>
 #include <IOKit/IOMessage.h>
 #include <CoreFoundation/CFNumber.h> // For CFNumber*
@@ -243,6 +244,198 @@ IOReturn AudioDevice::readVendorAndModelInfo() {
     }
     CFRelease(properties);
     return kIOReturnSuccess;
+}
+
+// --- PRIVATE HELPERS ---
+std::expected<void, IOKitError> AudioDevice::checkControlResponse(
+    const std::expected<std::vector<uint8_t>, IOKitError>& result,
+    const char* commandName)
+{
+    if (!result) {
+        spdlog::error("{} command failed: 0x{:x}", commandName, static_cast<int>(result.error()));
+        return std::unexpected(result.error());
+    }
+    const auto& response = result.value();
+    if (response.empty()) {
+        spdlog::error("{} command returned empty response.", commandName);
+        return std::unexpected(IOKitError::BadArgument);
+    }
+    uint8_t avcStatus = response[0];
+    spdlog::debug("{} response status: 0x{:02x}", commandName, avcStatus);
+    if (avcStatus == kAVCAcceptedStatus) {
+        return {};
+    } else if (avcStatus == kAVCRejectedStatus) {
+        spdlog::warn("{} command REJECTED.", commandName);
+        return std::unexpected(IOKitError::NotPermitted);
+    } else if (avcStatus == kAVCNotImplementedStatus) {
+        spdlog::error("{} command NOT IMPLEMENTED.", commandName);
+        return std::unexpected(IOKitError::Unsupported);
+    } else if (avcStatus == kAVCInterimStatus) {
+         spdlog::info("{} command returned INTERIM. Further NOTIFY expected.", commandName);
+         return {};
+    } else {
+        spdlog::error("{} command failed with unexpected status 0x{:02x}", commandName, avcStatus);
+        return std::unexpected(IOKitError::BadArgument);
+    }
+}
+
+std::expected<void, IOKitError> AudioDevice::checkDestPlugConfigureControlSubcommandResponse(
+   const std::vector<uint8_t>& response,
+   const char* commandName)
+{
+    if (response.size() < 13) {
+         spdlog::error("{} response too short ({}) for subcommand status.", commandName, response.size());
+         return std::unexpected(IOKitError::BadArgument);
+    }
+    uint8_t subcmdResultStatus = response[6];
+    spdlog::debug("{} subcommand result status: 0x{:02x}", commandName, subcmdResultStatus);
+    if (subcmdResultStatus == kAVCDestPlugResultStatusOK) {
+        return {};
+    } else if (subcmdResultStatus == kAVCDestPlugResultMusicPlugNotExist) {
+         spdlog::error("{} failed: Music Plug does not exist.", commandName);
+         return std::unexpected(IOKitError::NotFound);
+    } else if (subcmdResultStatus == kAVCDestPlugResultSubunitPlugNotExist) {
+         spdlog::error("{} failed: Destination Subunit Plug does not exist.", commandName);
+         return std::unexpected(IOKitError::NotFound);
+    } else if (subcmdResultStatus == kAVCDestPlugResultMusicPlugConnected) {
+         spdlog::error("{} failed: Music Plug already connected.", commandName);
+         return std::unexpected(IOKitError::StillOpen);
+    } else if (subcmdResultStatus == kAVCDestPlugResultNoConnection) {
+         spdlog::error("{} failed: No connection (Unknown subfunction) reported in subcommand status.", commandName);
+         return std::unexpected(IOKitError::BadArgument);
+    } else if (subcmdResultStatus == kAVCDestPlugResultUnknownMusicPlugType) {
+         spdlog::error("{} failed: Unknown music plug type reported.", commandName);
+         return std::unexpected(IOKitError::BadArgument);
+    }
+    else {
+         spdlog::error("{} failed with subcommand status 0x{:02x}", commandName, subcmdResultStatus);
+         return std::unexpected(IOKitError::Error);
+    }
+}
+
+std::vector<uint8_t> AudioDevice::buildDestPlugConfigureControlCmd(
+    uint8_t subfunction,
+    uint8_t musicPlugType,
+    uint16_t musicPlugID,
+    uint8_t destSubunitPlugID,
+    uint8_t streamPosition0,
+    uint8_t streamPosition1)
+{
+    std::vector<uint8_t> cmd;
+    uint8_t subunitAddr = Helpers::getSubunitAddress(SubunitType::Music, info_.getMusicSubunit().getId());
+    cmd.push_back(kAVCControlCommand);
+    cmd.push_back(subunitAddr);
+    cmd.push_back(kAVCDestinationPlugConfigureOpcode);
+    cmd.push_back(1);
+    cmd.push_back(0xFF);
+    cmd.push_back(0xFF);
+    cmd.push_back(subfunction);
+    cmd.push_back(musicPlugType);
+    cmd.push_back(static_cast<uint8_t>(musicPlugID >> 8));
+    cmd.push_back(static_cast<uint8_t>(musicPlugID & 0xFF));
+    cmd.push_back(destSubunitPlugID);
+    cmd.push_back(streamPosition0);
+    cmd.push_back(streamPosition1);
+    return cmd;
+}
+
+std::vector<uint8_t> AudioDevice::buildSetStreamFormatControlCmd(
+    PlugDirection direction,
+    uint8_t plugNum,
+    const std::vector<uint8_t>& formatBytes)
+{
+     std::vector<uint8_t> cmd;
+     uint8_t subunitAddr = kAVCUnitAddress;
+     uint8_t streamFormatOpcode = kAVCStreamFormatOpcodePrimary;
+     cmd.push_back(kAVCControlCommand);
+     cmd.push_back(subunitAddr);
+     cmd.push_back(streamFormatOpcode);
+     cmd.push_back(kAVCStreamFormatSetSubfunction);
+     cmd.push_back((direction == PlugDirection::Input) ? 0x00 : 0x01);
+     uint8_t plugType = (plugNum < 0x80) ? 0x00 : 0x01;
+     if(plugType != 0x00) {
+         spdlog::error("buildSetStreamFormatControlCmd: Can only set format for Iso plugs (num < 128).");
+         return {};
+     }
+     cmd.push_back(plugType);
+     cmd.push_back(plugType);
+     cmd.push_back(plugNum);
+     cmd.push_back(0xFF);
+     cmd.insert(cmd.end(), formatBytes.begin(), formatBytes.end());
+     return cmd;
+}
+
+std::expected<void, IOKitError> AudioDevice::connectMusicPlug(
+    uint8_t musicPlugType,
+    uint16_t musicPlugID,
+    uint8_t destSubunitPlugID,
+    uint8_t streamPosition0,
+    uint8_t streamPosition1)
+{
+    if (!commandInterface_) return std::unexpected(IOKitError::NotReady);
+    if (!info_.hasMusicSubunit()) return std::unexpected(IOKitError::NotFound);
+    spdlog::info("AudioDevice::connectMusicPlug: Type=0x{:02x}, ID={}, DestPlug={}, StreamPos=[{}, {}]",
+                 musicPlugType, musicPlugID, destSubunitPlugID, streamPosition0, streamPosition1);
+    std::vector<uint8_t> cmd = buildDestPlugConfigureControlCmd(
+        kAVCDestPlugSubfuncConnect,
+        musicPlugType,
+        musicPlugID,
+        destSubunitPlugID,
+        streamPosition0,
+        streamPosition1);
+    spdlog::trace(" -> Sending Connect Music Plug command (0x40/00): {}", Helpers::formatHexBytes(cmd));
+    auto result = commandInterface_->sendCommand(cmd);
+    auto check = checkControlResponse(result, "ConnectMusicPlug(0x40/00)");
+    if (!check) return check;
+    return checkDestPlugConfigureControlSubcommandResponse(result.value(), "ConnectMusicPlug(0x40/00)");
+}
+
+std::expected<void, IOKitError> AudioDevice::disconnectMusicPlug(
+    uint8_t musicPlugType,
+    uint16_t musicPlugID)
+{
+     if (!commandInterface_) return std::unexpected(IOKitError::NotReady);
+     if (!info_.hasMusicSubunit()) return std::unexpected(IOKitError::NotFound);
+     spdlog::info("AudioDevice::disconnectMusicPlug: Type=0x{:02x}, ID={}", musicPlugType, musicPlugID);
+     std::vector<uint8_t> cmd = buildDestPlugConfigureControlCmd(
+        kAVCDestPlugSubfuncDisconnect,
+        musicPlugType,
+        musicPlugID,
+        0xFF,
+        0xFF,
+        0xFF);
+    spdlog::trace(" -> Sending Disconnect Music Plug command (0x40/02): {}", Helpers::formatHexBytes(cmd));
+    auto result = commandInterface_->sendCommand(cmd);
+    auto check = checkControlResponse(result, "DisconnectMusicPlug(0x40/02)");
+     if (!check) return check;
+     return checkDestPlugConfigureControlSubcommandResponse(result.value(), "DisconnectMusicPlug(0x40/02)");
+}
+
+std::expected<void, IOKitError> AudioDevice::setUnitIsochPlugStreamFormat(
+    PlugDirection direction,
+    uint8_t plugNum,
+    const AudioStreamFormat& format)
+{
+    if (!commandInterface_) return std::unexpected(IOKitError::NotReady);
+    if (plugNum >= 0x80) {
+        spdlog::error("setUnitIsochPlugStreamFormat: Invalid plug number {} for Iso plug.", plugNum);
+        return std::unexpected(IOKitError::BadArgument);
+    }
+    spdlog::info("AudioDevice::setUnitIsochPlugStreamFormat: Dir={}, PlugNum={}, Format=[{}]",
+                 (direction == PlugDirection::Input ? "Input" : "Output"), plugNum, format.toString());
+    std::vector<uint8_t> formatBytes = format.serializeToBytes();
+    if (formatBytes.empty()) {
+        spdlog::error("setUnitIsochPlugStreamFormat: Failed to serialize the provided AudioStreamFormat.");
+        return std::unexpected(IOKitError::BadArgument);
+    }
+     spdlog::trace(" -> Serialized format bytes: {}", Helpers::formatHexBytes(formatBytes));
+    std::vector<uint8_t> cmd = buildSetStreamFormatControlCmd(direction, plugNum, formatBytes);
+     if (cmd.empty()) {
+          return std::unexpected(IOKitError::BadArgument);
+     }
+    spdlog::trace(" -> Sending Set Stream Format command (0xBF/C2): {}", Helpers::formatHexBytes(cmd));
+    auto result = commandInterface_->sendCommand(cmd);
+    return checkControlResponse(result, "SetUnitIsochPlugStreamFormat(0xBF/C2)");
 }
 
 } // namespace FWA

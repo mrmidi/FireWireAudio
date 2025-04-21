@@ -9,6 +9,7 @@
 #include "FWA/Error.h"
 #include "FWA/DeviceInfo.hpp"
 #include <IOKit/avc/IOFireWireAVCLib.h>
+#include "FWA/AudioStreamFormat.hpp"
 
 // Forward declarations
 namespace FWA {
@@ -163,6 +164,24 @@ public:
     uint32_t getModelID() const { return modelID_; }
     // -------------------
 
+    // --- NEW CONTROL METHODS ---
+    std::expected<void, IOKitError> connectMusicPlug(
+        uint8_t musicPlugType,
+        uint16_t musicPlugID,
+        uint8_t destSubunitPlugID,
+        uint8_t streamPosition0,
+        uint8_t streamPosition1);
+
+    std::expected<void, IOKitError> disconnectMusicPlug(
+        uint8_t musicPlugType,
+        uint16_t musicPlugID);
+
+    std::expected<void, IOKitError> setUnitIsochPlugStreamFormat(
+        PlugDirection direction,
+        uint8_t plugNum,
+        const AudioStreamFormat& format);
+    // --- END NEW CONTROL METHODS ---
+
 private:
     std::uint64_t guid_;
     std::string deviceName_;
@@ -211,6 +230,29 @@ private:
     uint32_t vendorID_ = 0;
     uint32_t modelID_ = 0;
     // -------------------
+
+    // --- NEW PRIVATE HELPERS ---
+    std::vector<uint8_t> buildDestPlugConfigureControlCmd(
+        uint8_t subfunction,
+        uint8_t musicPlugType,
+        uint16_t musicPlugID,
+        uint8_t destSubunitPlugID,
+        uint8_t streamPosition0,
+        uint8_t streamPosition1);
+
+    std::vector<uint8_t> buildSetStreamFormatControlCmd(
+        PlugDirection direction,
+        uint8_t plugNum,
+        const std::vector<uint8_t>& formatBytes);
+
+    std::expected<void, IOKitError> checkControlResponse(
+        const std::expected<std::vector<uint8_t>, IOKitError>& result,
+        const char* commandName);
+
+    std::expected<void, IOKitError> checkDestPlugConfigureControlSubcommandResponse(
+        const std::vector<uint8_t>& response,
+        const char* commandName);
+    // --- END NEW PRIVATE HELPERS ---
 
     friend class DeviceParser;
 };

@@ -99,7 +99,16 @@ public:
      */
     std::string toString() const; // Declaration only
 
+    /**
+     * @brief Serialize the format object back into AV/C stream format block bytes.
+     * Currently primarily supports Compound AM824 used by the target device.
+     * @return std::vector<uint8_t> The serialized format block, or empty on error/unsupported type.
+     */
+    std::vector<uint8_t> serializeToBytes() const;
+
 private:
+    static uint8_t sampleRateToByte(SampleRate sr);
+
     FormatType formatType_{FormatType::Unknown};              ///< Format type of the stream
     SampleRate sampleRate_{SampleRate::Unknown};              ///< Sample rate of the stream
     bool syncSource_{false};                                  ///< Whether this stream is a sync source
