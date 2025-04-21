@@ -2,8 +2,10 @@
 #include "FWA/CommandInterface.h"
 #include "FWA/DeviceParser.hpp"
 #include "FWA/DeviceController.h"
+#include "FWA/Helpers.h" // For cfStringToString
 #include <spdlog/spdlog.h>
 #include <IOKit/IOMessage.h>
+#include <CoreFoundation/CFNumber.h> // For CFNumber*
 
 namespace FWA {
 
@@ -56,27 +58,37 @@ AudioDevice::~AudioDevice()
 
 std::expected<void, IOKitError> AudioDevice::init()
 {
-
+    spdlog::debug("AudioDevice::init - Initializing device GUID: 0x{:x}", guid_);
     // 1. Retrieve the FireWire objects.
     IOReturn result = IORegistryEntryGetParentEntry(avcUnit_, kIOServicePlane, &fwUnit_);
-    if (result != kIOReturnSuccess) {
+    if (result != kIOReturnSuccess || !fwUnit_) {
         spdlog::error("AudioDevice::init: Failed to get fwUnit: 0x{:x}", result);
-        return std::unexpected(static_cast<IOKitError>(result));
+        return std::unexpected(static_cast<IOKitError>(result != kIOReturnSuccess ? result : kIOReturnNotFound));
     }
+    spdlog::debug("AudioDevice::init: Got fwUnit_ service: {}", (void*)fwUnit_);
 
     result = IORegistryEntryGetParentEntry(fwUnit_, kIOServicePlane, &fwDevice_);
-    if (result != kIOReturnSuccess) {
+    if (result != kIOReturnSuccess || !fwDevice_) {
         spdlog::error("AudioDevice::init: Failed to get fwDevice: 0x{:x}", result);
-        IOObjectRelease(fwUnit_);
-        return std::unexpected(static_cast<IOKitError>(result));
+        return std::unexpected(static_cast<IOKitError>(result != kIOReturnSuccess ? result : kIOReturnNotFound));
     }
+    spdlog::debug("AudioDevice::init: Got fwDevice_ service: {}", (void*)fwDevice_);
+
     result = IORegistryEntryGetParentEntry(fwDevice_, kIOServicePlane, &busController_);
-    if (result != kIOReturnSuccess) {
+    if (result != kIOReturnSuccess || !busController_) {
         spdlog::error("AudioDevice::init: Failed to get busController: 0x{:x}", result);
-        IOObjectRelease(fwUnit_);
-        IOObjectRelease(fwDevice_);
-        return std::unexpected(static_cast<IOKitError>(result));
+        return std::unexpected(static_cast<IOKitError>(result != kIOReturnSuccess ? result : kIOReturnNotFound));
     }
+    spdlog::debug("AudioDevice::init: Got busController_ service: {}", (void*)busController_);
+
+    // ---- Call the new method to read Vendor/Model Info ----
+    IOReturn infoResult = readVendorAndModelInfo();
+    if (infoResult != kIOReturnSuccess) {
+        spdlog::warn("AudioDevice::init: Failed to read vendor/model info: 0x{:x}. Continuing initialization.", infoResult);
+    } else {
+        spdlog::info("AudioDevice::init: Read VendorID=0x{:08X}, ModelID=0x{:08X}, VendorName='{}'", vendorID_, modelID_, vendorName_);
+    }
+    // ---------------------------------------------------------
 
     // 2. Create the notification port.
     notificationPort_ = IONotificationPortCreate(kIOMainPortDefault);
@@ -170,30 +182,67 @@ IOReturn AudioDevice::createFWDeviceInterface() {
 }
 
 IOReturn AudioDevice::readVendorAndModelInfo() {
-    CFMutableDictionaryRef properties = nullptr;
-    IOReturn result = IORegistryEntryCreateCFProperties(fwUnit_, &properties, kCFAllocatorDefault, 0);
-    if (result == kIOReturnSuccess && properties) {
-        CFNumberRef unitVendorID = (CFNumberRef)CFDictionaryGetValue(properties, CFSTR("Vendor_ID"));
-        if (unitVendorID) {
-            UInt32 vendorID = 0;
-            CFNumberGetValue(unitVendorID, kCFNumberLongType, &vendorID);
-            spdlog::info(" *** Vendor ID: 0x{:08x}", vendorID);
-        }
-        CFNumberRef unitModelID = (CFNumberRef)CFDictionaryGetValue(properties, CFSTR("Model_ID"));
-        if (unitModelID) {
-            UInt32 modelID = 0;
-            CFNumberGetValue(unitModelID, kCFNumberLongType, &modelID);
-            spdlog::info(" *** Model ID: 0x{:08x}", modelID);
-        }
-        CFStringRef unitVendorStrDesc = (CFStringRef)CFDictionaryGetValue(properties, CFSTR("FireWire Vendor Name"));
-        if (unitVendorStrDesc) {
-            char vbuf[256];
-            if (CFStringGetCString(unitVendorStrDesc, vbuf, sizeof(vbuf), kCFStringEncodingMacRoman))
-                vendorName_ = vbuf;
-        }
-        CFRelease(properties);
+    if (!fwUnit_) {
+        spdlog::error("AudioDevice::readVendorAndModelInfo: fwUnit_ is null.");
+        return kIOReturnNotReady;
     }
-    return result;
+    CFMutableDictionaryRef properties = nullptr;
+    IOReturn result = IORegistryEntryCreateCFProperties(fwUnit_, &properties, kCFAllocatorDefault, kNilOptions);
+    if (result != kIOReturnSuccess) {
+        spdlog::error("AudioDevice::readVendorAndModelInfo: IORegistryEntryCreateCFProperties failed: 0x{:x}", result);
+        return result;
+    }
+    if (!properties) {
+        spdlog::error("AudioDevice::readVendorAndModelInfo: IORegistryEntryCreateCFProperties succeeded but returned null properties.");
+        return kIOReturnNotFound;
+    }
+    // Get Vendor ID
+    CFNumberRef unitVendorIDRef = (CFNumberRef)CFDictionaryGetValue(properties, CFSTR("Vendor_ID"));
+    if (unitVendorIDRef) {
+        if (CFGetTypeID(unitVendorIDRef) == CFNumberGetTypeID()) {
+            if (!CFNumberGetValue(unitVendorIDRef, kCFNumberLongType, &vendorID_)) {
+                spdlog::warn("AudioDevice::readVendorAndModelInfo: CFNumberGetValue failed for Vendor_ID.");
+            }
+            spdlog::debug("AudioDevice::readVendorAndModelInfo: Found Vendor ID: 0x{:08X}", vendorID_);
+        } else {
+            spdlog::warn("AudioDevice::readVendorAndModelInfo: Vendor_ID property is not a CFNumber.");
+        }
+    } else {
+        spdlog::warn("AudioDevice::readVendorAndModelInfo: Vendor_ID property not found.");
+    }
+    // Get Model ID
+    CFNumberRef unitModelIDRef = (CFNumberRef)CFDictionaryGetValue(properties, CFSTR("Model_ID"));
+    if (unitModelIDRef) {
+        if (CFGetTypeID(unitModelIDRef) == CFNumberGetTypeID()) {
+            if (!CFNumberGetValue(unitModelIDRef, kCFNumberLongType, &modelID_)) {
+                spdlog::warn("AudioDevice::readVendorAndModelInfo: CFNumberGetValue failed for Model_ID.");
+            }
+            spdlog::debug("AudioDevice::readVendorAndModelInfo: Found Model ID: 0x{:08X}", modelID_);
+        } else {
+            spdlog::warn("AudioDevice::readVendorAndModelInfo: Model_ID property is not a CFNumber.");
+        }
+    } else {
+        spdlog::warn("AudioDevice::readVendorAndModelInfo: Model_ID property not found.");
+    }
+    // Get Vendor Name
+    CFStringRef unitVendorStrDesc = (CFStringRef)CFDictionaryGetValue(properties, CFSTR("FireWire Vendor Name"));
+    if (unitVendorStrDesc) {
+        if (CFGetTypeID(unitVendorStrDesc) == CFStringGetTypeID()) {
+            std::string name = Helpers::cfStringToString(unitVendorStrDesc);
+            if (!name.empty()) {
+                vendorName_ = name;
+                spdlog::debug("AudioDevice::readVendorAndModelInfo: Found Vendor Name: '{}'", vendorName_);
+            } else {
+                spdlog::warn("AudioDevice::readVendorAndModelInfo: cfStringToString failed for FireWire Vendor Name.");
+            }
+        } else {
+            spdlog::warn("AudioDevice::readVendorAndModelInfo: FireWire Vendor Name property is not a CFString.");
+        }
+    } else {
+        spdlog::warn("AudioDevice::readVendorAndModelInfo: FireWire Vendor Name property not found.");
+    }
+    CFRelease(properties);
+    return kIOReturnSuccess;
 }
 
 } // namespace FWA

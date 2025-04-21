@@ -190,7 +190,7 @@ std::expected<std::vector<uint8_t>, IOKitError> DescriptorReader::readDescriptor
                 currentOffset += bytesToAppend; // Advance offset by bytes actually appended
                 successfullyReadBytes += bytesToAppend; // Only increment here
                 // log new descriptorData hex values
-                spdlog::debug("DescriptorReader: Current descriptorData: {}", Helpers::formatHexBytes(descriptorData));
+                spdlog::trace("DescriptorReader: Current descriptorData: {}", Helpers::formatHexBytes(descriptorData));
             } else {
                 spdlog::debug("DescriptorReader: Standard read received 0 bytes in this chunk.");
             }

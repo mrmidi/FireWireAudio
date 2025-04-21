@@ -90,11 +90,11 @@ void AVCInfoBlock::parse() {
     parsePrimaryFields(); // This should now internally respect boundaries via getPrimaryFieldsDataPtr()
 
     // --- Memory Check Log ---
-    spdlog::debug("  Memory Check before nested loop: Size={}, Type=0x{:04X}", rawData_.size(), static_cast<uint16_t>(type_));
+    spdlog::trace("  Memory Check before nested loop: Size={}, Type=0x{:04X}", rawData_.size(), static_cast<uint16_t>(type_));
     size_t checkPreviewLen = std::min(rawData_.size(), static_cast<size_t>(30)); // Check more bytes
     if (checkPreviewLen > 0) {
         std::vector<uint8_t> checkPreview(rawData_.begin(), rawData_.begin() + checkPreviewLen);
-        spdlog::debug("  Memory Check Preview (first {}): {}", checkPreviewLen, Helpers::formatHexBytes(checkPreview));
+        spdlog::trace("  Memory Check Preview (first {}): {}", checkPreviewLen, Helpers::formatHexBytes(checkPreview));
     }
     // --- End Memory Check ---
 
@@ -166,7 +166,7 @@ void AVCInfoBlock::parse() {
         // --- Manual Copy Instead of Slice Constructor ---
         std::vector<uint8_t> nestedRawData;
         nestedRawData.reserve(bytesToParseForNestedBlock); // Pre-allocate
-        spdlog::debug("  Parent Parse: Manually copying {} bytes starting at parent offset {}", bytesToParseForNestedBlock, nestedBlockStartOffset);
+        spdlog::trace("  Parent Parse: Manually copying {} bytes starting at parent offset {}", bytesToParseForNestedBlock, nestedBlockStartOffset);
         for (size_t i = 0; i < bytesToParseForNestedBlock; ++i) {
             if (nestedBlockStartOffset + i >= rawData_.size()) {
                 spdlog::error("  Parent Parse: Manual copy boundary error! i={}, offset={}, rawData_.size()={}", i, nestedBlockStartOffset, rawData_.size());
@@ -177,11 +177,11 @@ void AVCInfoBlock::parse() {
         // --- End Manual Copy ---
 
         // Log the manually copied data
-        spdlog::debug("  Parent Parse: Verifying MANUAL nestedRawData before move (Size={})", nestedRawData.size());
+        spdlog::trace("  Parent Parse: Verifying MANUAL nestedRawData before move (Size={})", nestedRawData.size());
         size_t nestedPreviewLen = std::min(nestedRawData.size(), static_cast<size_t>(20));
         if (nestedPreviewLen > 0) {
             std::vector<uint8_t> nestedPreview(nestedRawData.begin(), nestedRawData.begin() + nestedPreviewLen);
-            spdlog::debug("  Parent Parse: MANUAL nestedRawData Preview (first {}): {}", nestedPreviewLen, Helpers::formatHexBytes(nestedPreview));
+            spdlog::trace("  Parent Parse: MANUAL nestedRawData Preview (first {}): {}", nestedPreviewLen, Helpers::formatHexBytes(nestedPreview));
         }
 
         try {

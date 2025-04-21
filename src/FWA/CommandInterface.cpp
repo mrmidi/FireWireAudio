@@ -5,6 +5,7 @@
 #include <sstream>
 #include <iomanip>
 #include <IOKit/IOMessage.h>
+#include "FWA/Helpers.h" // For formatHexBytes
 
 namespace FWA {
 
@@ -131,41 +132,49 @@ std::expected<std::vector<uint8_t>, IOKitError> CommandInterface::sendCommand(
     const std::vector<uint8_t>& command)
 {
     if (!avcInterface_) {
+        spdlog::error("CommandInterface::sendCommand: Attempted to send command but avcInterface_ is null.");
         return std::unexpected(static_cast<IOKitError>(kIOReturnNotOpen));
     }
 
-    std::stringstream ss;
-    ss << "Sending command: ";
-    for (const auto& byte : command) {
-        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte) << " ";
-    }
-    spdlog::info("{}", ss.str());
+    // --- Enhanced Logging ---
+    spdlog::debug("CommandInterface::sendCommand: Sending command with avcInterface_ = {}", (void*)avcInterface_);
+    spdlog::debug(" --> CMD Bytes ({}): {}", command.size(), Helpers::formatHexBytes(command));
+    // -----------------------
 
     UInt32 cmdLen = static_cast<UInt32>(command.size());
-    UInt32 respCapacity = 512;
+    UInt32 respCapacity = 512; // Start with a reasonable capacity
     std::vector<uint8_t> response(respCapacity, 0);
+    UInt32 actualRespLen = respCapacity; // Store original capacity for logging
 
     IOReturn result = (*avcInterface_)->AVCCommand(avcInterface_,
                                                     command.data(),
                                                     cmdLen,
                                                     response.data(),
-                                                    &respCapacity);
+                                                    &actualRespLen); // Use actualRespLen here
+
+    // --- Enhanced Logging ---
+    spdlog::debug("CommandInterface::sendCommand: AVCCommand call returned IOReturn: 0x{:x} ({})", result, result);
+    // Log response even if result is not kIOReturnSuccess, but check actualRespLen validity
+    if (actualRespLen > 0 && actualRespLen <= respCapacity) {
+         response.resize(actualRespLen); // Resize to actual length *before* logging
+         spdlog::debug(" --> RSP Bytes ({}): {}", response.size(), Helpers::formatHexBytes(response));
+    } else if (actualRespLen == 0) {
+         response.clear(); // Clear if no bytes returned
+         spdlog::debug(" --> RSP Bytes (0): (Empty response)");
+    } else { // actualRespLen > respCapacity (Shouldn't happen if API works correctly)
+         response.clear(); // Clear response as it's invalid
+         spdlog::error(" --> RSP Error: Invalid actualRespLen ({}) returned, exceeds capacity ({}).", actualRespLen, respCapacity);
+         // Continue to handle the IOReturn error below, but response is invalid
+    }
+    // -----------------------
 
     if (result != kIOReturnSuccess) {
-        spdlog::error("Error sending command: 0x{:x}", result);
+        spdlog::error("CommandInterface::sendCommand: Error sending command (IOReturn: 0x{:x})", result);
+        // Return the specific IOReturn code mapped to our error type
         return std::unexpected(static_cast<IOKitError>(result));
     }
 
-    response.resize(respCapacity);
-
-    ss.str("");
-    ss.clear();
-    ss << "Response: ";
-    for (const auto& byte : response) {
-        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte) << " ";
-    }
-    spdlog::info("{}", ss.str());
-    return response;
+    return response; // Return the resized response vector
 }
 
 std::expected<void, IOKitError> CommandInterface::setNotificationCallback(DeviceStatusCallback callback, void* refCon)

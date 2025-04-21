@@ -27,6 +27,7 @@ namespace FWA {
  * methods to interact with the device's capabilities.
  */
 class AudioDevice : public std::enable_shared_from_this<AudioDevice> {
+    friend class DeviceParser; // Grant DeviceParser access
 public:
     /**
      * @brief Construct a new Audio Device object
@@ -42,6 +43,13 @@ public:
                 DeviceController *deviceController); // TODO: make shared pointer
     
     ~AudioDevice();
+
+    // Prevent copying
+    AudioDevice(const AudioDevice&) = delete;
+    AudioDevice& operator=(const AudioDevice&) = delete;
+    // Prevent moving (due to shared_from_this and IOKit objects)
+    AudioDevice(AudioDevice&&) = delete;
+    AudioDevice& operator=(AudioDevice&&) = delete;
 
     /**
      * @brief Initialize the device after construction
@@ -113,13 +121,6 @@ public:
      */
     std::shared_ptr<CommandInterface> getCommandInterface() const { return commandInterface_; }
 
-    // Prevent copying
-    AudioDevice(const AudioDevice&) = delete;
-    AudioDevice& operator=(const AudioDevice&) = delete;
-
-    // Make DeviceParser a friend
-    friend class DeviceParser;
-
     /**
      * @brief Get the number of isochronous input plugs
      * @return uint32_t Number of iso input plugs
@@ -156,6 +157,11 @@ public:
      * @return const DeviceInfo&
      */
     const DeviceInfo& getDeviceInfo() const { return info_; }
+
+    // ---- NEW GETTERS ----
+    uint32_t getVendorID() const { return vendorID_; }
+    uint32_t getModelID() const { return modelID_; }
+    // -------------------
 
 private:
     std::uint64_t guid_;
@@ -200,6 +206,11 @@ private:
 
     // Device capabilities container
     DeviceInfo info_;
+
+    // ---- NEW MEMBERS ----
+    uint32_t vendorID_ = 0;
+    uint32_t modelID_ = 0;
+    // -------------------
 
     friend class DeviceParser;
 };

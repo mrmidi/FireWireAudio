@@ -17,6 +17,29 @@ constexpr uint8_t kReadResultMoreData = 0x11;
 #define kIOReturnIOError kIOReturnError
 #endif
 
+// Move all AVC constants from FWA::AVC to FWA namespace directly
+constexpr uint8_t kAVCStreamFormatOpcodePrimary   = 0xBF;
+constexpr uint8_t kAVCStreamFormatOpcodeAlternate = 0x2F;
+constexpr uint8_t kAVCDestinationPlugConfigureOpcode = 0x40;
+constexpr uint8_t kAVCSourcePlugConfigureOpcode      = 0x41;
+constexpr uint8_t kAVCDestinationConfigurationsOpcode= 0x42;
+constexpr uint8_t kAVCSourceConfigurationsOpcode     = 0x43;
+constexpr uint8_t kAVCMusicPlugInfoOpcode            = 0xC0;
+constexpr uint8_t kAVCCurrentCapabilityOpcode        = 0xC1;
+constexpr uint8_t kAVCStreamFormatCurrentQuerySubfunction    = 0xC0;
+constexpr uint8_t kAVCStreamFormatSupportedQuerySubfunction  = 0xC1;
+constexpr uint8_t kAVCDestPlugSubfuncConnect             = 0x00;
+constexpr uint8_t kAVCDestPlugSubfuncChangeConnection    = 0x01;
+constexpr uint8_t kAVCDestPlugSubfuncDisconnect          = 0x02;
+constexpr uint8_t kAVCDestPlugSubfuncDisconnectAll       = 0x03;
+constexpr uint8_t kAVCDestPlugSubfuncDefaultConfigure    = 0x04;
+constexpr uint8_t kAVCDestPlugResultStatusOK              = 0x00;
+constexpr uint8_t kAVCDestPlugResultUnknownSubfunction    = 0x01;
+constexpr uint8_t kAVCDestPlugResultUnknownMusicPlugType  = 0x02;
+constexpr uint8_t kAVCDestPlugResultMusicPlugNotExist     = 0x03;
+constexpr uint8_t kAVCDestPlugResultSubunitPlugNotExist   = 0x04;
+constexpr uint8_t kAVCDestPlugResultMusicPlugConnected    = 0x05;
+
 /**
  * @brief Descriptor specifier type (matches AV/C specification)
  */

@@ -69,6 +69,14 @@ private:
         uint8_t subfunction,
         uint8_t listIndex = 0xFF
     );
+
+    /**
+     * @brief Query Music Subunit input plug connection using TA 2001007 (0x40 status command)
+     */
+    std::expected<AudioPlug::DestPlugConnectionInfo, IOKitError> queryMusicInputPlugConnection_TA(
+        uint8_t musicSubunitAddr,
+        uint8_t musicPlugType,
+        uint16_t musicPlugID);
 };
 
 } // namespace FWA

@@ -82,6 +82,15 @@ public:
         uint8_t sourcePlugNum;    ///< Source plug number
         uint8_t sourcePlugStatus; ///< Status of the source plug
     };
+
+    /**
+     * @brief Structure containing connection information from Music Subunit DESTINATION PLUG CONFIGURE status (0x40) command.
+     */
+    struct DestPlugConnectionInfo {
+        uint8_t destSubunitPlugId; ///< The destination subunit plug ID this music plug is connected *to*.
+        uint8_t streamPosition0;   ///< Stream position byte 0 from response.
+        uint8_t streamPosition1;   ///< Stream position byte 1 from response.
+    };
     
     /**
      * @brief Get the current connection information
@@ -130,6 +139,18 @@ public:
      * @param name Name to set for the plug
      */
     void setPlugName(const std::string& name) { plugName_ = name; }
+
+    /**
+     * @brief Get the destination connection information
+     * @return const std::optional<DestPlugConnectionInfo>& Optional destination connection info
+     */
+    const std::optional<DestPlugConnectionInfo>& getDestConnectionInfo() const { return destConnectionInfo_; }
+
+    /**
+     * @brief Set the destination connection information
+     * @param info Destination connection information to set
+     */
+    void setDestConnectionInfo(const DestPlugConnectionInfo& info) { destConnectionInfo_ = info; }
     
 private:
     uint8_t subUnit_;               ///< Subunit ID
@@ -141,6 +162,7 @@ private:
     std::optional<AudioStreamFormat> currentFormat_;     ///< Current stream format
     std::vector<AudioStreamFormat> supportedFormats_;    ///< Supported stream formats
     std::optional<std::string> plugName_;               ///< Optional plug name
+    std::optional<DestPlugConnectionInfo> destConnectionInfo_; ///< Populated by Music Subunit 0x40 status query.
 };
 
 } // namespace FWA

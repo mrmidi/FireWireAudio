@@ -10,18 +10,14 @@
 #include <memory>
 #include <algorithm>
 #include <stdexcept>
+#include "FWA/Error.h"
 
 namespace FWA {
 
-// todo: move to enums
-constexpr uint8_t kAVCStreamFormatCurrentQuerySubfunction = 0xC0;
-constexpr uint8_t kAVCStreamFormatSupportedQuerySubfunction = 0xC1;
-constexpr uint8_t kStartingStreamFormatOpcode = 0xBF;
-constexpr uint8_t kAlternateStreamFormatOpcode  = 0x2F;
 constexpr uint8_t kUnitAddress = 0xFF;
 
 PlugDetailParser::PlugDetailParser(CommandInterface* commandInterface)
-    : commandInterface_(commandInterface), streamFormatOpcode_(kStartingStreamFormatOpcode)
+    : commandInterface_(commandInterface), streamFormatOpcode_(kAVCStreamFormatOpcodePrimary)
 {
     if (!commandInterface_) {
         spdlog::critical("PlugDetailParser: CommandInterface pointer is null.");
@@ -53,11 +49,43 @@ std::expected<std::shared_ptr<AudioPlug>, IOKitError> PlugDetailParser::parsePlu
         spdlog::warn("PlugDetailParser: Failed to retrieve supported stream formats for plug: 0x{:x}", static_cast<int>(supportedFormatsResult.error()));
     }
     if (direction == PlugDirection::Input) {
-        auto connInfoResult = querySignalSource(subunitAddr, plugNum, direction, usage);
-        if (connInfoResult) {
-            plug->setConnectionInfo(connInfoResult.value());
+        if (usage == PlugUsage::MusicSubunit) {
+            uint16_t musicPlugID = plugNum;
+            uint8_t musicPlugType = 0x00;
+            if (plug->getCurrentStreamFormat() && !plug->getCurrentStreamFormat()->getChannelFormats().empty()) {
+                 switch(plug->getCurrentStreamFormat()->getChannelFormats()[0].formatCode) {
+                    case StreamFormatCode::MidiConf:      musicPlugType = 0x01; break;
+                    case StreamFormatCode::SMPTETimeCode: musicPlugType = 0x02; break;
+                    case StreamFormatCode::SampleCount:   musicPlugType = 0x03; break;
+                    case StreamFormatCode::SyncStream:    musicPlugType = 0x80; break;
+                    default: /* all others */ break;
+                 }
+            }
+            spdlog::debug("PlugDetailParser: Trying TA connection query (0x40) for Music plug 0x{:02x}/{} type=0x{:02x}", subunitAddr, plugNum, musicPlugType);
+            auto destConnResult = queryMusicInputPlugConnection_TA(subunitAddr, musicPlugType, musicPlugID);
+            if (destConnResult) {
+                plug->setDestConnectionInfo(destConnResult.value());
+            } else if (destConnResult.error() == IOKitError::NotFound) {
+                 spdlog::debug("PlugDetailParser: No connection found via 0x40 query for Music plug 0x{:02x}/{}.", subunitAddr, plugNum);
+            } else if (destConnResult.error() == IOKitError::Unsupported) {
+                 spdlog::warn("PlugDetailParser: 0x40 status query unsupported, falling back to 0x1A for Music plug 0x{:02x}/{}", subunitAddr, plugNum);
+                 auto signalSourceResult = querySignalSource(subunitAddr, plugNum, direction, usage);
+                 if (signalSourceResult) {
+                      plug->setConnectionInfo(signalSourceResult.value());
+                 } else {
+                      spdlog::warn("PlugDetailParser: Fallback connection query (0x1A) also failed for plug 0x{:02x}/{}: 0x{:x}", subunitAddr, plugNum, static_cast<int>(signalSourceResult.error()));
+                 }
+            } else {
+                 spdlog::warn("PlugDetailParser: Failed to retrieve TA connection info (0x40) for plug 0x{:02x}/{}: 0x{:x}", subunitAddr, plugNum, static_cast<int>(destConnResult.error()));
+            }
         } else {
-            spdlog::warn("PlugDetailParser: Failed to retrieve signal source for plug: 0x{:x}", static_cast<int>(connInfoResult.error()));
+             spdlog::debug("PlugDetailParser: Trying standard connection query (0x1A) for plug 0x{:02x}/{}", subunitAddr, plugNum);
+             auto signalSourceResult = querySignalSource(subunitAddr, plugNum, direction, usage);
+             if (signalSourceResult) {
+                  plug->setConnectionInfo(signalSourceResult.value());
+             } else {
+                  spdlog::warn("PlugDetailParser: Failed to retrieve standard connection info (0x1A) for plug 0x{:02x}/{}: 0x{:x}", subunitAddr, plugNum, static_cast<int>(signalSourceResult.error()));
+             }
         }
     }
     return plug;
@@ -69,13 +97,22 @@ std::expected<AudioStreamFormat, IOKitError> PlugDetailParser::queryPlugStreamFo
     spdlog::debug("PlugDetailParser: Querying current stream format for plug: subunit=0x{:02x}, num={}, direction={}, usage={}",
                  subunitAddr, plugNum, (direction == PlugDirection::Input ? "Input" : "Output"), static_cast<int>(usage));
     std::vector<uint8_t> cmd;
+    // --- Add Logging BEFORE building ---
+    spdlog::trace(" -> Building command for Current Stream Format (Subfunction 0x{:02x})", kAVCStreamFormatCurrentQuerySubfunction);
+    // ---------------------------------
     buildStreamFormatCommandBase(cmd, subunitAddr, plugNum, direction, kAVCStreamFormatCurrentQuerySubfunction);
     cmd[2] = streamFormatOpcode_;
+    // --- Add Logging AFTER building ---
+    spdlog::trace(" -> Built initial command (opcode 0x{:02x}): {}", streamFormatOpcode_, Helpers::formatHexBytes(cmd));
+    // --------------------------------
     auto respResult = commandInterface_->sendCommand(cmd);
-    if (respResult && !respResult.value().empty() && respResult.value()[0] == kAVCNotImplementedStatus && streamFormatOpcode_ == kStartingStreamFormatOpcode) {
-        spdlog::debug("PlugDetailParser: Stream format opcode 0x{:02x} (Current) not implemented, trying alternate 0x{:02x}", streamFormatOpcode_, kAlternateStreamFormatOpcode);
-        streamFormatOpcode_ = kAlternateStreamFormatOpcode;
+    if (respResult && !respResult.value().empty() && respResult.value()[0] == kAVCNotImplementedStatus && streamFormatOpcode_ == kAVCStreamFormatOpcodePrimary) {
+        spdlog::debug("PlugDetailParser: Stream format opcode 0x{:02x} (Current) not implemented, trying alternate 0x{:02x}", streamFormatOpcode_, kAVCStreamFormatOpcodeAlternate);
+        streamFormatOpcode_ = kAVCStreamFormatOpcodeAlternate;
         cmd[2] = streamFormatOpcode_;
+        // --- Add Logging for Fallback ---
+        spdlog::trace(" -> Built fallback command (opcode 0x{:02x}): {}", streamFormatOpcode_, Helpers::formatHexBytes(cmd));
+        // ------------------------------
         respResult = commandInterface_->sendCommand(cmd);
     }
     if (!respResult) {
@@ -98,21 +135,34 @@ std::expected<std::vector<AudioStreamFormat>, IOKitError> PlugDetailParser::quer
                  subunitAddr, plugNum, (direction == PlugDirection::Input ? "Input" : "Output"));
     std::vector<AudioStreamFormat> supportedFormats;
     uint8_t listIndex = 0;
-    const uint8_t MAX_FORMAT_INDEX = 16;
+    const uint8_t MAX_FORMAT_INDEX = 16; // Reduced for faster testing if needed
+    bool triedFallback = false; // Track if we already tried the fallback opcode in this loop
+
     while (true) {
         if (listIndex > MAX_FORMAT_INDEX) {
             spdlog::warn("PlugDetailParser: Reached max supported format index {} for plug 0x{:02x}/{} {}", MAX_FORMAT_INDEX, subunitAddr, plugNum, (direction == PlugDirection::Input ? "Input" : "Output"));
             break;
         }
         std::vector<uint8_t> cmd;
+        // --- Add Logging BEFORE building ---
+        spdlog::trace(" -> Building command for Supported Stream Format (Subfunction 0x{:02x}, Index {})", kAVCStreamFormatSupportedQuerySubfunction, listIndex);
+        // ---------------------------------
         buildStreamFormatCommandBase(cmd, subunitAddr, plugNum, direction, kAVCStreamFormatSupportedQuerySubfunction, listIndex);
         cmd[2] = streamFormatOpcode_;
+        // --- Add Logging AFTER building ---
+        spdlog::trace(" -> Built initial command (opcode 0x{:02x}): {}", streamFormatOpcode_, Helpers::formatHexBytes(cmd));
+        // --------------------------------
         auto respResult = commandInterface_->sendCommand(cmd);
-        if (respResult && !respResult.value().empty() && respResult.value()[0] == kAVCNotImplementedStatus && streamFormatOpcode_ == kStartingStreamFormatOpcode) {
-            spdlog::debug("PlugDetailParser: Stream format opcode 0x{:02x} (Supported) not implemented, trying alternate 0x{:02x}", streamFormatOpcode_, kAlternateStreamFormatOpcode);
-            streamFormatOpcode_ = kAlternateStreamFormatOpcode;
-            cmd[2] = streamFormatOpcode_;
-            respResult = commandInterface_->sendCommand(cmd);
+        // Fallback logic for Supported Formats Query
+        if (respResult && !respResult.value().empty() && respResult.value()[0] == kAVCNotImplementedStatus && streamFormatOpcode_ == kAVCStreamFormatOpcodePrimary && !triedFallback) {
+            spdlog::debug("PlugDetailParser: Stream format opcode 0x{:02x} (Supported) not implemented, trying alternate 0x{:02x}", streamFormatOpcode_, kAVCStreamFormatOpcodeAlternate);
+            streamFormatOpcode_ = kAVCStreamFormatOpcodeAlternate; // Switch opcode for subsequent iterations too
+            triedFallback = true; // Mark that we tried it
+            cmd[2] = streamFormatOpcode_; // Update opcode byte
+            // --- Add Logging for Fallback ---
+            spdlog::trace(" -> Built fallback command (opcode 0x{:02x}): {}", streamFormatOpcode_, Helpers::formatHexBytes(cmd));
+            // ------------------------------
+            respResult = commandInterface_->sendCommand(cmd); // Re-send with new opcode
         }
         if (!respResult) {
             spdlog::warn("PlugDetailParser: Command error when querying supported stream format index {}: 0x{:x}", listIndex, static_cast<int>(respResult.error()));
@@ -133,6 +183,9 @@ std::expected<std::vector<AudioStreamFormat>, IOKitError> PlugDetailParser::quer
         }
         ++listIndex;
     }
+    // Reset opcode back to default *after* finishing the loop for this plug,
+    // in case another plug needs the default first.
+    streamFormatOpcode_ = kAVCStreamFormatOpcodePrimary;
     spdlog::info("PlugDetailParser: Finished querying supported formats. Found {} formats for plug 0x{:02x}/{} {}", supportedFormats.size(), subunitAddr, plugNum, (direction == PlugDirection::Input ? "Input" : "Output"));
     return supportedFormats;
 }
@@ -141,19 +194,25 @@ std::expected<AudioPlug::ConnectionInfo, IOKitError> PlugDetailParser::querySign
     uint8_t subunitAddr, uint8_t plugNum, PlugDirection direction, PlugUsage usage)
 {
     if (direction != PlugDirection::Input) {
+        // This should ideally not happen if called correctly, but good to check.
+        spdlog::error("PlugDetailParser::querySignalSource called for non-input plug.");
         return std::unexpected(IOKitError(kIOReturnBadArgument));
     }
     spdlog::debug("PlugDetailParser: Querying signal source for destination plug: subunit=0x{:02x}, num={}", subunitAddr, plugNum);
+    // Define the SIGNAL SOURCE command (0x1A) - inquiry type
     std::vector<uint8_t> cmd = {
-        kAVCStatusInquiryCommand,
-        subunitAddr,
-        0x1A, // kAVCSignalSourceOpcode
-        0xFF,
-        plugNum,
-        0xFF,
-        0xFF,
-        0xFF
+        kAVCStatusInquiryCommand, // 0x01 (Status)
+        subunitAddr,              // Target subunit (or 0xFF for unit)
+        kAVCDestinationPlugConfigureOpcode, // Opcode: SIGNAL SOURCE
+        0xFF,                     // Operand[0]: Subunit_type = N/A for inquiry
+        plugNum,                  // Operand[1]: Destination plug ID
+        0xFF,                     // Operand[2]: Source Subunit Type = N/A (response field)
+        0xFF,                     // Operand[3]: Source Plug ID = N/A (response field)
+        0xFF                      // Operand[4]: Source Plug Status = N/A (response field)
     };
+    // --- Add Logging BEFORE sending ---
+    spdlog::trace(" -> Built Signal Source command (0x1A): {}", Helpers::formatHexBytes(cmd));
+    // ----------------------------------
     auto respResult = commandInterface_->sendCommand(cmd);
     if (!respResult) {
         spdlog::warn("PlugDetailParser: Command error querying signal source for plug 0x{:02x}/{}: 0x{:x}", subunitAddr, plugNum, static_cast<int>(respResult.error()));
@@ -310,30 +369,110 @@ void PlugDetailParser::buildStreamFormatCommandBase(
     uint8_t subfunction,
     uint8_t listIndex)
 {
+    spdlog::trace("  -> buildStreamFormatCommandBase called with: subunit=0x{:02x}, plugNum=0x{:02x}, direction={}, subfunc=0x{:02x}, listIndex={}",
+                  subunitAddr, plugNum, (direction == PlugDirection::Input ? "Input" : "Output"), subfunction, (listIndex == 0xFF ? "N/A" : std::to_string(listIndex)));
+
     cmd.clear();
     cmd.push_back(kAVCStatusInquiryCommand);
     cmd.push_back(subunitAddr);
-    cmd.push_back(streamFormatOpcode_); // Will be overwritten by caller if needed
-    cmd.push_back(subfunction);
-    if (subunitAddr == kUnitAddress) {
-        cmd.push_back((direction == PlugDirection::Input) ? 0x00 : 0x01);
-        cmd.push_back(0x00);
-        cmd.push_back((plugNum < 0x80) ? 0x00 : 0x01);
-        cmd.push_back(plugNum);
-        cmd.push_back(0xFF);
-    } else {
-        cmd.push_back((direction == PlugDirection::Input) ? 0x00 : 0x01);
-        cmd.push_back(0x01);
-        cmd.push_back(plugNum);
-        cmd.push_back(0xFF);
-        cmd.push_back(0xFF);
+    cmd.push_back(streamFormatOpcode_); // Use the member variable (BF or 2F)
+    cmd.push_back(subfunction);         // e.g., C0 or C1
+
+    if (subunitAddr == kUnitAddress) { // Unit plugs (PCRs and External)
+        cmd.push_back((direction == PlugDirection::Input) ? 0x00 : 0x01); // operand[0]: plug_direction
+        uint8_t plugType = (plugNum < 0x80) ? 0x00 : 0x01; // 0=Iso, 1=External
+        cmd.push_back(plugType);                                          // operand[1]: plug_type
+        cmd.push_back(plugType);                                          // operand[2]: plug_type (repeated)
+        cmd.push_back(plugNum);                                           // operand[3]: plug_ID
+        cmd.push_back(0xFF);                                              // operand[4]: format_info_label
+    } else { // Subunit plugs (Music/Audio)
+        cmd.push_back((direction == PlugDirection::Input) ? 0x00 : 0x01); // operand[0]: plug_direction
+        cmd.push_back(0x01);                                              // operand[1]: plug_type (1 = Subunit plug)
+        cmd.push_back(plugNum);                                           // operand[2]: subunit_plug_ID
+        cmd.push_back(0xFF);                                              // operand[3]: format_info_label
+        cmd.push_back(0xFF);                                              // operand[4]: reserved
     }
-    if (subfunction == kAVCStreamFormatSupportedQuerySubfunction) {
-        cmd.push_back(listIndex);
+
+    if (subfunction == FWA::kAVCStreamFormatSupportedQuerySubfunction) {
+        if (listIndex == 0xFF) {
+            spdlog::warn("buildStreamFormatCommandBase: listIndex needed for subfunction 0xC1 but not provided (using FF).");
+            listIndex = 0xFF;
+        }
+        if (subunitAddr == kUnitAddress) {
+            cmd.push_back(0xFF);      // operand[5]: reserved
+            cmd.push_back(listIndex); // operand[6]: list_index
+        } else {
+            cmd.push_back(listIndex); // operand[5]: list_index
+        }
     }
-    // Pad to at least 11 bytes for current, 12 for supported
-    if (cmd.size() < 11) cmd.resize(11, 0xFF);
-    if (subfunction == kAVCStreamFormatSupportedQuerySubfunction && cmd.size() < 12) cmd.resize(12, 0xFF);
+
+    size_t minLength = (subfunction == FWA::kAVCStreamFormatSupportedQuerySubfunction) ? 12 : 11;
+    if (cmd.size() < minLength) {
+        cmd.resize(minLength, 0xFF);
+    }
+
+    spdlog::trace("  -> buildStreamFormatCommandBase constructed ({} bytes): {}", cmd.size(), Helpers::formatHexBytes(cmd));
+}
+
+std::expected<AudioPlug::DestPlugConnectionInfo, IOKitError> PlugDetailParser::queryMusicInputPlugConnection_TA(
+    uint8_t musicSubunitAddr,
+    uint8_t musicPlugType,
+    uint16_t musicPlugID)
+{
+    spdlog::debug("PlugDetailParser: Querying Music plug connection (0x40 status) for plug type=0x{:02x}, ID={}", musicPlugType, musicPlugID);
+    std::vector<uint8_t> cmd;
+    cmd.push_back(kAVCStatusInquiryCommand);
+    cmd.push_back(musicSubunitAddr);
+    cmd.push_back(kAVCDestinationPlugConfigureOpcode); // 0x40
+    cmd.push_back(1);    // number_of_subcommands = 1
+    cmd.push_back(0xFF); // result_status = FF
+    cmd.push_back(0xFF); // number_of_completed_subcommands = FF
+    // Subcommand[0]
+    cmd.push_back(0xFF); // subcommand[0]: result_status = FF
+    cmd.push_back(musicPlugType);
+    cmd.push_back(static_cast<uint8_t>(musicPlugID >> 8));
+    cmd.push_back(static_cast<uint8_t>(musicPlugID & 0xFF));
+    cmd.push_back(0xFF); // subcommand[4]: subunit_plug_ID = FF
+    cmd.push_back(0xFF); // subcommand[5]: stream_position[0] = FF
+    cmd.push_back(0xFF); // subcommand[6]: stream_position[1] = FF
+    spdlog::trace(" -> Built Dest Plug Configure Status command (0x40): {}", Helpers::formatHexBytes(cmd));
+    auto respResult = commandInterface_->sendCommand(cmd);
+    if (!respResult) {
+        spdlog::warn("PlugDetailParser: Command error querying music plug connection (0x40) for plug 0x{:04x}: 0x{:x}", musicPlugID, static_cast<int>(respResult.error()));
+        return std::unexpected(respResult.error());
+    }
+    const auto& response = respResult.value();
+    if (response.size() < 13) {
+         spdlog::warn("PlugDetailParser: Invalid Dest Plug Configure Status (0x40) response size: {} (expected >= 13) for plug 0x{:04x}", response.size(), musicPlugID);
+         return std::unexpected(IOKitError::IOError);
+    }
+    uint8_t subcmdResultStatus = response[6];
+    spdlog::debug("  -> Dest Plug Configure Status (0x40) subcmdResultStatus = 0x{:02x}", subcmdResultStatus);
+
+    // --- FIX: Only parse connection details if status is OK (0x00) ---
+    if (subcmdResultStatus == kAVCDestPlugResultStatusOK) { // 0x00
+        AudioPlug::DestPlugConnectionInfo destInfo;
+        destInfo.destSubunitPlugId = response[10];
+        destInfo.streamPosition0 = response[11];
+        destInfo.streamPosition1 = response[12];
+        spdlog::debug("PlugDetailParser: Music plug type=0x{:02x}, ID=0x{:04x} connected to dest_subunit_plug={} (stream_pos=[{}, {}]). Storing Dest Info.",
+                      musicPlugType, musicPlugID, destInfo.destSubunitPlugId, destInfo.streamPosition0, destInfo.streamPosition1);
+        return destInfo;
+    }
+    // --- End Fix ---
+    else if (subcmdResultStatus == kAVCDestPlugResultUnknownSubfunction) { // 0x01 (No Connection)
+        spdlog::debug("PlugDetailParser: Music plug 0x{:04x} has no connection (Status 0x01).", musicPlugID);
+        return std::unexpected(IOKitError::NotFound); // Return NotFound for "No Connection"
+    } else if (subcmdResultStatus == kAVCDestPlugResultMusicPlugNotExist) { // 0x03
+         spdlog::warn("PlugDetailParser: Dest Plug Configure Status (0x40) reports Music Plug 0x{:04x} does not exist (Status 0x03).", musicPlugID);
+         return std::unexpected(IOKitError::NotFound);
+    } else if (subcmdResultStatus == kAVCDestPlugResultSubunitPlugNotExist) { // 0x04
+         spdlog::warn("PlugDetailParser: Dest Plug Configure Status (0x40) reports Subunit Plug does not exist (Status 0x04).", musicPlugID);
+         return std::unexpected(IOKitError::NotFound);
+    } else { // Any other error in subcommand
+         spdlog::warn("PlugDetailParser: Dest Plug Configure Status (0x40) failed for plug 0x{:04x} with subcommand status 0x{:02x}.", musicPlugID, subcmdResultStatus);
+         return std::unexpected(IOKitError::Error);
+    }
 }
 
 } // namespace FWA
