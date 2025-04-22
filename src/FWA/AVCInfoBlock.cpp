@@ -14,27 +14,6 @@ using namespace FWA::JsonHelpers;
 
 namespace FWA {
 
-// Helper to get block type name as string
-static std::string getInfoBlockTypeName(InfoBlockType type) {
-    switch(type) {
-        case InfoBlockType::RawText:             return "Raw Text";
-        case InfoBlockType::Name:                return "Name";
-        case InfoBlockType::GeneralMusicStatus:  return "General Music Status";
-        case InfoBlockType::MusicOutputPlugStatus: return "Music Output Plug Status";
-        case InfoBlockType::SourcePlugStatus:    return "Source Plug Status";
-        case InfoBlockType::AudioInfo:           return "Audio Info";
-        case InfoBlockType::MidiInfo:            return "MIDI Info";
-        case InfoBlockType::SmpteTimeCodeInfo:   return "SMPTE Time Code Info";
-        case InfoBlockType::SampleCountInfo:     return "Sample Count Info";
-        case InfoBlockType::AudioSyncInfo:       return "Audio Sync Info";
-        case InfoBlockType::RoutingStatus:       return "Routing Status";
-        case InfoBlockType::SubunitPlugInfo:     return "Subunit Plug Info";
-        case InfoBlockType::ClusterInfo:         return "Cluster Info";
-        case InfoBlockType::MusicPlugInfo:       return "Music Plug Info";
-        default:                                 return "Unknown/Other";
-    }
-}
-
 //--------------------------------------------------------------------------
 // AVCInfoBlock Constructor (from movable r-value - likely used by make_shared)
 //--------------------------------------------------------------------------
@@ -112,7 +91,7 @@ void AVCInfoBlock::parse() {
     spdlog::debug("  Parse Check: Primary fields data ends at effective offset {}", primaryFieldsEndOffset);
 
     // --- Parse Primary fields ---
-    parsePrimaryFields(); // This should now internally respect boundaries via getPrimaryFieldsDataPtr()
+    parsePrimaryFieldsInternal(); // <<< FIX: Call the internal method
 
     // --- Memory Check Log ---
     spdlog::trace("  Memory Check before nested loop: Size={}, Type=0x{:04X}", rawData_.size(), static_cast<uint16_t>(type_));
@@ -263,7 +242,7 @@ std::string AVCInfoBlock::toString(uint32_t indent) const {
 
     oss << indentStr << "{\n";
     oss << indentStrP1 << "AVCInfoBlock Type: 0x" << std::hex << std::setw(4) << std::setfill('0') << static_cast<uint16_t>(type_)
-        << " (" << getInfoBlockTypeName(type_) << ")\n";
+        << " (" << infoBlockTypeToNameString(type_) << ")\n";
     oss << indentStrP1 << "CompoundLength: " << std::dec << compoundLength_
         << ", PrimaryFieldsLength: " << primaryFieldsLength_ << "\n";
 
@@ -801,17 +780,33 @@ void AVCInfoBlock::parsePrimaryFieldsInternal() {
                     }
                     parsed_nameInfo_ = parsed;
                 } break;
-            case InfoBlockType::RawText:
+            case InfoBlockType::RawText: // 0x000A
                 if (primaryFieldsLength_ > 0) {
-                    const uint8_t* data = pData;
                     RawTextData parsed;
-                    parsed.text.assign(reinterpret_cast<const char*>(data), primaryFieldsLength_);
-                    parsed.text.erase(std::remove_if(parsed.text.begin(), parsed.text.end(),
-                        [](char c){ return !isprint(static_cast<unsigned char>(c)) && !isspace(static_cast<unsigned char>(c)); }),
-                        parsed.text.end());
-                    parsed_rawTextInfo_ = parsed;
-                } break;
+                    parsed.text.assign(reinterpret_cast<const char*>(pData), primaryFieldsLength_);
+                    
+                    
+                        // Remove trailing null bytes
+                    int nulls_removed = 0; // Counter for debugging
+                    while (!parsed.text.empty() && parsed.text.back() == '\0') {
+                        spdlog::trace("  RawText Removing trailing null. Current size: {}", parsed.text.size());
+                        parsed.text.pop_back();
+                        nulls_removed++;
+                    }
+                    spdlog::trace("  RawText After Trim: size={}, text='{}', nulls_removed={}", parsed.text.size(), parsed.text, nulls_removed); // Log trimmed text
+
+                    parsed_rawTextInfo_ = parsed; // Assign struct
+                    
+                    
+                    // --- End Logging ---
+                    spdlog::debug("  Successfully parsed RawTextData (length {})", primaryFieldsLength_);
+                } else {
+                     spdlog::debug("  Zero length RawTextData primary field, skipping storage.");
+                     parsed_rawTextInfo_.reset();
+                }
+                break;
             default:
+                spdlog::debug("  No specific primary field parsing implemented for type 0x{:04X}", static_cast<uint16_t>(type_));
                 break;
         }
     } catch (const std::exception& e) {
@@ -822,6 +817,7 @@ void AVCInfoBlock::parsePrimaryFieldsInternal() {
 json AVCInfoBlock::toJson() const {
     json j;
     j["type"] = infoBlockTypeToString(type_);
+    j["typeName"] = infoBlockTypeToNameString(type_);
     j["compoundLength"] = compoundLength_;
     j["primaryFieldsLength"] = primaryFieldsLength_;
     json parsedPrimary = serializePrimaryFieldsParsed();
@@ -850,16 +846,111 @@ json AVCInfoBlock::toJson() const {
 }
 
 json AVCInfoBlock::serializePrimaryFieldsParsed() const {
-    if (parsed_generalMusicStatus_) {
+    // --- NEW: Handle RawText First ---
+    if (parsed_rawTextInfo_) {
+        spdlog::trace("AVCInfoBlock::serializePrimaryFieldsParsed: Serializing RawText. Text='{}'", parsed_rawTextInfo_->text);
+        json p;
+        p["text"] = parsed_rawTextInfo_->text; // Directly use the parsed string
+        return p;
+    }
+    // ...existing code...
+    else if (parsed_generalMusicStatus_) {
         json p;
         p["currentTransmitCapability"] = parsed_generalMusicStatus_->currentTransmitCapability;
         p["currentReceiveCapability"] = parsed_generalMusicStatus_->currentReceiveCapability;
         p["currentLatencyCapability"] = parsed_generalMusicStatus_->currentLatencyCapability;
         return p;
-    }
-    if (parsed_rawTextInfo_) {
+    } else if (parsed_musicOutputPlugStatus_) {
         json p;
-        p["text"] = parsed_rawTextInfo_.value().text;
+        p["numberOfSourcePlugs"] = parsed_musicOutputPlugStatus_->numberOfSourcePlugs;
+        return p;
+    } else if (parsed_sourcePlugStatus_) {
+        json p;
+        p["sourcePlugNumber"] = parsed_sourcePlugStatus_->sourcePlugNumber;
+        return p;
+    } else if (parsed_audioInfo_) {
+        json p;
+        p["numberOfAudioStreams"] = parsed_audioInfo_->numberOfAudioStreams;
+        return p;
+    } else if (parsed_midiInfo_) {
+        json p;
+        p["numberOfMIDIStreams"] = parsed_midiInfo_->numberOfMIDIStreams;
+        return p;
+    } else if (parsed_smpteTimeCodeInfo_) {
+        json p;
+        p["activity"] = parsed_smpteTimeCodeInfo_->activity;
+        return p;
+    } else if (parsed_sampleCountInfo_) {
+        json p;
+        p["activity"] = parsed_sampleCountInfo_->activity;
+        return p;
+    } else if (parsed_audioSyncInfo_) {
+        json p;
+        p["activity"] = parsed_audioSyncInfo_->activity;
+        return p;
+    } else if (parsed_routingStatus_) {
+        json p;
+        p["numberOfSubunitDestPlugs"] = parsed_routingStatus_->numberOfSubunitDestPlugs;
+        p["numberOfSubunitSourcePlugs"] = parsed_routingStatus_->numberOfSubunitSourcePlugs;
+        p["numberOfMusicPlugs"] = parsed_routingStatus_->numberOfMusicPlugs;
+        return p;
+    } else if (parsed_subunitPlugInfo_) {
+        json p;
+        p["subunitPlugId"] = parsed_subunitPlugInfo_->subunitPlugId;
+        p["signalFormat"] = parsed_subunitPlugInfo_->signalFormat;
+        p["plugType"] = parsed_subunitPlugInfo_->plugType;
+        p["numberOfClusters"] = parsed_subunitPlugInfo_->numberOfClusters;
+        p["numberOfChannels"] = parsed_subunitPlugInfo_->numberOfChannels;
+        return p;
+    } else if (parsed_clusterInfo_) {
+        json p;
+        p["streamFormat"] = parsed_clusterInfo_->streamFormat;
+        p["portType"] = parsed_clusterInfo_->portType;
+        p["numberOfSignals"] = parsed_clusterInfo_->numberOfSignals;
+        json signals = json::array();
+        for (const auto& sig : parsed_clusterInfo_->signals) {
+            json s;
+            s["musicPlugId"] = sig.musicPlugId;
+            s["streamPosition"] = sig.streamPosition;
+            s["streamLocation"] = sig.streamLocation;
+            signals.push_back(s);
+        }
+        p["signals"] = signals;
+        return p;
+    } else if (parsed_musicPlugInfo_) {
+        json p;
+        p["musicPlugType"] = parsed_musicPlugInfo_->musicPlugType;
+        p["musicPlugId"] = parsed_musicPlugInfo_->musicPlugId;
+        p["routingSupport"] = parsed_musicPlugInfo_->routingSupport;
+        p["source"] = {
+            {"plugFunctionType", parsed_musicPlugInfo_->source.plugFunctionType},
+            {"plugId", parsed_musicPlugInfo_->source.plugId},
+            {"plugFunctionBlockId", parsed_musicPlugInfo_->source.plugFunctionBlockId},
+            {"streamPosition", parsed_musicPlugInfo_->source.streamPosition},
+            {"streamLocation", parsed_musicPlugInfo_->source.streamLocation}
+        };
+        p["destination"] = {
+            {"plugFunctionType", parsed_musicPlugInfo_->destination.plugFunctionType},
+            {"plugId", parsed_musicPlugInfo_->destination.plugId},
+            {"plugFunctionBlockId", parsed_musicPlugInfo_->destination.plugFunctionBlockId},
+            {"streamPosition", parsed_musicPlugInfo_->destination.streamPosition},
+            {"streamLocation", parsed_musicPlugInfo_->destination.streamLocation}
+        };
+        return p;
+    } else if (parsed_nameInfo_) {
+        json p;
+        p["nameDataReferenceType"] = parsed_nameInfo_->nameDataReferenceType;
+        if (parsed_nameInfo_->nameDataReferenceType == 0x00) {
+            p["nameDataAttributes"] = parsed_nameInfo_->nameDataAttributes;
+            p["maximumNumberOfCharacters"] = parsed_nameInfo_->maximumNumberOfCharacters;
+        }
+        return p;
+    } else if (parsed_rawTextInfo_) {
+        // --- Logging before creating JSON ---
+        spdlog::trace("AVCInfoBlock::serializePrimaryFieldsParsed: Found RawText. Text='{}'", parsed_rawTextInfo_->text);
+        // --- End Logging ---
+        json p;
+        p["text"] = parsed_rawTextInfo_->text;
         return p;
     }
     return nullptr;

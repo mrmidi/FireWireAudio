@@ -14,5 +14,6 @@ namespace FWA::JsonHelpers {
     std::string sampleRateToString(SampleRate sr);
     std::string streamFormatCodeToString(StreamFormatCode code);
     std::string infoBlockTypeToString(InfoBlockType type);
+    std::string infoBlockTypeToNameString(InfoBlockType type);
     json serializeHexBytes(const std::vector<uint8_t>& bytes);
 }

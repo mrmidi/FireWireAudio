@@ -57,6 +57,25 @@ namespace FWA::JsonHelpers {
         oss << "0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(type);
         return oss.str();
     }
+    std::string infoBlockTypeToNameString(InfoBlockType type) {
+        switch(type) {
+            case InfoBlockType::RawText:             return "Raw Text";
+            case InfoBlockType::Name:                return "Name";
+            case InfoBlockType::GeneralMusicStatus:  return "General Music Status";
+            case InfoBlockType::MusicOutputPlugStatus: return "Music Output Plug Status";
+            case InfoBlockType::SourcePlugStatus:    return "Source Plug Status";
+            case InfoBlockType::AudioInfo:           return "Audio Info";
+            case InfoBlockType::MidiInfo:            return "MIDI Info";
+            case InfoBlockType::SmpteTimeCodeInfo:   return "SMPTE Time Code Info";
+            case InfoBlockType::SampleCountInfo:     return "Sample Count Info";
+            case InfoBlockType::AudioSyncInfo:       return "Audio Sync Info";
+            case InfoBlockType::RoutingStatus:       return "Routing Status";
+            case InfoBlockType::SubunitPlugInfo:     return "Subunit Plug Info";
+            case InfoBlockType::ClusterInfo:         return "Cluster Info";
+            case InfoBlockType::MusicPlugInfo:       return "Music Plug Info";
+            default:                                 return "Unknown/Other";
+        }
+    }
     json serializeHexBytes(const std::vector<uint8_t>& bytes) {
         if (bytes.empty()) return nullptr;
         std::ostringstream oss;

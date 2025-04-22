@@ -78,7 +78,12 @@ std::expected<std::shared_ptr<AudioPlug>, IOKitError> PlugDetailParser::parsePlu
                 }
                 auto destConnResult = queryMusicInputPlugConnection_TA(subunitAddr, musicPlugType, musicPlugID);
                 if (destConnResult) {
-                    plug->setDestConnectionInfo(destConnResult.value());
+                    // --- Logging before setting ---
+                    const auto& destInfo = destConnResult.value();
+                    spdlog::debug("PlugDetailParser: Fallback 0x40 successful for Music Plug 0x{:02x}/{}. Got DestPlugID={}, StreamPos0={}, StreamPos1={}. Calling setDestConnectionInfo...",
+                                 subunitAddr, plugNum, destInfo.destSubunitPlugId, destInfo.streamPosition0, destInfo.streamPosition1);
+                    // --- End Logging ---
+                    plug->setDestConnectionInfo(destInfo); // Use the correct setter
                     if (destConnResult.value().destSubunitPlugId != 0xFF) {
                         spdlog::info("PlugDetailParser: Plug 0x{:02x}/{} Connection (via 0x40 fallback): Dest SU Plug={}",
                             subunitAddr, plugNum, destConnResult.value().destSubunitPlugId);

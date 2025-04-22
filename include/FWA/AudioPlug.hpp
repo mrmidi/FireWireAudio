@@ -103,7 +103,7 @@ public:
      * @brief Set the connection information
      * @param info Connection information to set
      */
-    void setConnectionInfo(ConnectionInfo info) { connectionInfo_ = info; }
+    void setConnectionInfo(ConnectionInfo info);
     
     /**
      * @brief Get the current stream format
@@ -151,8 +151,8 @@ public:
      * @brief Set the destination connection information
      * @param info Destination connection information to set
      */
-    void setDestConnectionInfo(const DestPlugConnectionInfo& info) { destConnectionInfo_ = info; }
-    
+    void setDestConnectionInfo(const DestPlugConnectionInfo& info);
+
     nlohmann::json toJson() const;
 
 private:
