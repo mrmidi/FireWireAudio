@@ -7,6 +7,7 @@
 #include <vector>
 #include <memory>
 #include <optional>
+#include <nlohmann/json_fwd.hpp>
 
 namespace FWA {
 
@@ -152,7 +153,12 @@ public:
      */
     void setDestConnectionInfo(const DestPlugConnectionInfo& info) { destConnectionInfo_ = info; }
     
+    nlohmann::json toJson() const;
+
 private:
+    nlohmann::json serializeConnectionInfo() const;
+    nlohmann::json serializeDestConnectionInfo() const;
+
     uint8_t subUnit_;               ///< Subunit ID
     uint8_t plugNum_;              ///< Plug number
     PlugDirection direction_;       ///< Direction of the plug

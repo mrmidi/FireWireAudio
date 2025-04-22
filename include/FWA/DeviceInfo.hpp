@@ -11,6 +11,10 @@
 #include "FWA/MusicSubunit.hpp"   // Include derived MusicSubunit
 #include "FWA/AudioSubunit.hpp"   // Include derived AudioSubunit (assuming it exists)
 #include "FWA/AVCInfoBlock.hpp"
+#include <nlohmann/json_fwd.hpp>
+
+// Forward declaration to avoid include cycles
+namespace FWA { class AudioDevice; }
 
 namespace FWA {
 
@@ -61,6 +65,8 @@ public:
     // Removing this as it seems unused in the context of the parser logic shown
     // const std::vector<std::shared_ptr<AVCInfoBlock>>& getParsedInfoBlocks() const { return parsedInfoBlocks_; }
 
+    nlohmann::json toJson(const FWA::AudioDevice& device) const;
+
 private:
     // --- Data members managed by friend classes ---
 
@@ -85,6 +91,10 @@ private:
     // This member seems unused by the current parsing logic, consider removing if confirmed obsolete.
     // std::vector<std::shared_ptr<AVCInfoBlock>> parsedInfoBlocks_;
 
+    nlohmann::json serializePlugList(const std::vector<std::shared_ptr<AudioPlug>>& plugs) const;
+    nlohmann::json serializeMusicSubunit(const FWA::AudioDevice& device) const;
+    nlohmann::json serializeAudioSubunit(const FWA::AudioDevice& device) const;
+    nlohmann::json serializeInfoBlockList(const std::vector<std::shared_ptr<AVCInfoBlock>>& blocks) const;
 
     // --- Note on Subunit Modification ---
     // While SubunitDiscoverer is a friend, it should primarily modify

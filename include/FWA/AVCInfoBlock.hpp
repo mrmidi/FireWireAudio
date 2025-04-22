@@ -6,6 +6,7 @@
 #include <optional>
 #include <sstream>  // for std::ostringstream
 #include "FWA/Enums.hpp"  // for InfoBlockType
+#include <nlohmann/json_fwd.hpp>
 
 namespace FWA {
 
@@ -25,6 +26,27 @@ struct GeneralMusicStatusData {
     uint8_t currentTransmitCapability = 0;
     uint8_t currentReceiveCapability = 0;
     uint32_t currentLatencyCapability = 0;
+};
+struct MusicOutputPlugStatusData {
+    uint8_t numberOfSourcePlugs = 0;
+};
+struct SourcePlugStatusData {
+    uint8_t sourcePlugNumber = 0;
+};
+struct AudioInfoData {
+    uint8_t numberOfAudioStreams = 0;
+};
+struct MidiInfoData {
+    uint8_t numberOfMIDIStreams = 0;
+};
+struct SmpteTimeCodeInfoData {
+    uint8_t activity = 0;
+};
+struct SampleCountInfoData {
+    uint8_t activity = 0;
+};
+struct AudioSyncInfoData {
+    uint8_t activity = 0;
 };
 struct RoutingStatusData {
      uint8_t numberOfSubunitDestPlugs = 0;
@@ -62,6 +84,9 @@ struct MusicPlugInfoData {
     uint8_t routingSupport = 0;
     MusicPlugReference source;
     MusicPlugReference destination;
+};
+struct RawTextData {
+    std::string text;
 };
 
 class AVCInfoBlock {
@@ -130,6 +155,14 @@ public:
     std::optional<SubunitPlugInfoData> getSubunitPlugInfo() const { return parsed_subunitPlugInfo_; }
     std::optional<ClusterInfoData> getClusterInfo() const { return parsed_clusterInfo_; }
     std::optional<MusicPlugInfoData> getMusicPlugInfo() const { return parsed_musicPlugInfo_; }
+    std::optional<MusicOutputPlugStatusData> getMusicOutputPlugStatus() const { return parsed_musicOutputPlugStatus_; }
+    std::optional<SourcePlugStatusData> getSourcePlugStatus() const { return parsed_sourcePlugStatus_; }
+    std::optional<AudioInfoData> getAudioInfo() const { return parsed_audioInfo_; }
+    std::optional<MidiInfoData> getMidiInfo() const { return parsed_midiInfo_; }
+    std::optional<SmpteTimeCodeInfoData> getSmpteTimeCodeInfo() const { return parsed_smpteTimeCodeInfo_; }
+    std::optional<SampleCountInfoData> getSampleCountInfo() const { return parsed_sampleCountInfo_; }
+    std::optional<AudioSyncInfoData> getAudioSyncInfo() const { return parsed_audioSyncInfo_; }
+    std::optional<RawTextData> getRawTextInfo() const { return parsed_rawTextInfo_; }
 
     /**
      * @brief Get a pointer to the primary fields data (or nullptr if not available)
@@ -145,6 +178,8 @@ public:
         if (rawData_.size() < 6 + primaryFieldsLength_) return {};
         return std::vector<uint8_t>(rawData_.begin() + 6, rawData_.begin() + 6 + primaryFieldsLength_);
     }
+
+    nlohmann::json toJson() const;
 
 private:
     InfoBlockType type_{InfoBlockType::Unknown};                 ///< Type identifier of the info block
@@ -168,7 +203,15 @@ private:
     std::optional<SubunitPlugInfoData>        parsed_subunitPlugInfo_;
     std::optional<ClusterInfoData>            parsed_clusterInfo_;
     std::optional<MusicPlugInfoData>          parsed_musicPlugInfo_;
-    
+    std::optional<MusicOutputPlugStatusData>  parsed_musicOutputPlugStatus_;
+    std::optional<SourcePlugStatusData>       parsed_sourcePlugStatus_;
+    std::optional<AudioInfoData>              parsed_audioInfo_;
+    std::optional<MidiInfoData>               parsed_midiInfo_;
+    std::optional<SmpteTimeCodeInfoData>      parsed_smpteTimeCodeInfo_;
+    std::optional<SampleCountInfoData>        parsed_sampleCountInfo_;
+    std::optional<AudioSyncInfoData>          parsed_audioSyncInfo_;
+    std::optional<RawTextData>                parsed_rawTextInfo_;
+
     /**
      * @brief Parse primary fields from raw data
      */
@@ -177,6 +220,8 @@ private:
     void parsePrimaryFields(const uint8_t* primaryData, size_t length, std::ostringstream& oss) const;
     // Add formatHex declaration
     std::string formatHex(const uint8_t* data, size_t length) const;
+    void parsePrimaryFieldsInternal();
+    nlohmann::json serializePrimaryFieldsParsed() const;
 };
 
 } // namespace FWA

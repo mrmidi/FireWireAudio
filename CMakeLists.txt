@@ -90,7 +90,13 @@ FetchContent_Declare(
 set(FETCHCONTENT_FULLY_DISCONNECTED OFF)
 set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/libaspl-override.cmake")
 
-FetchContent_MakeAvailable(spdlog catch2 libASPL)
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.12.0
+)
+
+FetchContent_MakeAvailable(spdlog catch2 libASPL nlohmann_json)
 
 # --- Objective-C/Objective-C++ Files for XPC Bridge ---
 # Define these lists ONCE
@@ -106,10 +112,8 @@ set_source_files_properties(${FWA_XPC_OBJC_FILES} PROPERTIES LANGUAGE OBJC)
 
 # --- Create Isoch Library ---
 add_library(FWAIsoch STATIC
-    # Isoch implementation files
     src/Isoch/AudioDeviceStream.cpp
     src/Isoch/IsoStreamHandler.cpp
-    # src/Isoch/IsochBufferManager.cpp - remove it
     src/Isoch/SharedManagers.cpp
     
     # Isoch core
@@ -134,16 +138,10 @@ add_library(FWAIsoch STATIC
     src/Isoch/utils/CIPHeaderHandler.cpp
     src/Isoch/utils/RunLoopHelper.cpp
     
-    # --- MOVE XPC BRIDGE FILES HERE ---
-    ${FWA_XPC_OBJCXX_FILES}
-    ${FWA_XPC_OBJC_FILES}
-    # --- END MOVE ---
-    
     # Isoch header files (from include/Isoch)
     include/Isoch/AudioDeviceStream.hpp
     include/Isoch/CIPHeaderHandler.hpp
     include/Isoch/IsoStreamHandler.hpp
-    # include/Isoch/IsochBufferManager.hpp - same
     include/Isoch/SharedManagers.hpp
     
     # Isoch core headers
@@ -210,10 +208,13 @@ endif()
 
 # --- Create a Library for the Application Code ---
 add_library(FWA STATIC
-    src/main.cpp
     src/FWA/AVCInfoBlock.cpp  
     src/FWA/AudioDevice.cpp
+    src/FWA/DeviceInfo.cpp
+    src/FWA/AudioPlug.cpp
     src/FWA/AudioStreamFormat.cpp
+    src/FWA/MusicSubunit.cpp
+    src/FWA/AudioSubunit.cpp
     src/FWA/CommandInterface.cpp
     src/FWA/DeviceController.cpp
     src/FWA/DeviceParser.cpp
@@ -226,6 +227,7 @@ add_library(FWA STATIC
     src/FWA/DescriptorUtils.cpp
     src/FWA/Helpers.cpp
     src/FWA/IOKitFireWireDeviceDiscovery.cpp
+    src/FWA/JsonHelpers.cpp
     # Base headers
     include/FWA/AudioDevice.h
     include/FWA/AudioPlug.hpp
@@ -271,6 +273,7 @@ target_link_libraries(FWA
     PUBLIC
         spdlog::spdlog
         FWAIsoch
+        nlohmann_json::nlohmann_json
         "-framework Foundation"  # Required for Objective-C/Cocoa
 )
 
@@ -280,6 +283,15 @@ if(SANITIZER_FLAGS)
     target_compile_options(FWA PRIVATE ${SANITIZER_FLAGS_LIST_FWA})
 endif()
 # --- End Apply Sanitizers to FWA ---
+
+# --- nlohmann_json include directory propagation (for json_fwd.hpp in headers) ---
+if(TARGET nlohmann_json::nlohmann_json)
+    get_target_property(NLOHMANN_JSON_INCLUDE_DIR nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+    if(NLOHMANN_JSON_INCLUDE_DIR)
+        target_include_directories(FWA PUBLIC ${NLOHMANN_JSON_INCLUDE_DIR})
+        target_include_directories(FWAIsoch PUBLIC ${NLOHMANN_JSON_INCLUDE_DIR})
+    endif()
+endif()
 
 # --- XPC Service Target ---
 set(XPC_SERVICE_NAME "FWADaemon")
@@ -412,10 +424,10 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX "Source Files" FILES
     src/FWA/DescriptorUtils.cpp
     src/FWA/Helpers.cpp
     src/FWA/IOKitFireWireDeviceDiscovery.cpp
+    src/FWA/JsonHelpers.cpp
     src/FWA/XPC/XPCBridge.mm
     src/FWA/XPC/XPCReceiverClient.mm
     src/FWA/XPC/MixedAudioBuffer.m
-    src/FWA/main.cpp
 )
 
 # Group header files
@@ -439,7 +451,6 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/include PREFIX "Header Files" FILE
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX "Isoch Source Files" FILES
     src/Isoch/AudioDeviceStream.cpp
     src/Isoch/IsoStreamHandler.cpp
-    # src/Isoch/IsochBufferManager.cpp
     src/Isoch/SharedManagers.cpp
     src/Isoch/core/AmdtpReceiver.cpp
     src/Isoch/core/AmdtpTransmitter.cpp
@@ -464,7 +475,6 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/include PREFIX "Isoch Header Files
     include/Isoch/AudioDeviceStream.hpp
     include/Isoch/CIPHeaderHandler.hpp
     include/Isoch/IsoStreamHandler.hpp
-    # include/Isoch/IsochBufferManager.hpp
     include/Isoch/SharedManagers.hpp
     include/Isoch/core/AmdtpReceiver.hpp
     include/Isoch/core/AmdtpTransmitter.hpp

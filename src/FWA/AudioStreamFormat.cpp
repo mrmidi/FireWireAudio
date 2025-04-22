@@ -7,6 +7,10 @@
 #include <string>
 #include <utility>  // For std::move in constructor
 #include <spdlog/spdlog.h> // For logging
+#include "FWA/JsonHelpers.hpp"
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
+using namespace FWA::JsonHelpers;
 
 namespace FWA {
 
@@ -83,6 +87,24 @@ std::string AudioStreamFormat::toString() const {
         oss << "\n  Channels: None";
     }
     return oss.str();
+}
+
+json AudioStreamFormat::toJson() const {
+    json j;
+    j["formatType"] = formatTypeToString(formatType_);
+    j["sampleRate"] = sampleRateToString(sampleRate_);
+    j["syncSource"] = syncSource_;
+    json channelsArr = json::array();
+    for(const auto& cf : channels_) channelsArr.push_back(cf.toJson());
+    j["channels"] = channelsArr;
+    return j;
+}
+
+json ChannelFormatInfo::toJson() const {
+    json j;
+    j["channelCount"] = channelCount;
+    j["formatCode"] = streamFormatCodeToString(formatCode);
+    return j;
 }
 
 uint8_t AudioStreamFormat::sampleRateToByte(SampleRate sr) {

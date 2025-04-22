@@ -11,6 +11,7 @@
 #include <expected>    // For parse function return type declaration
 #include <utility>     // For std::move in constructor
 #include <optional>    // Useful for potential future extensions
+#include <nlohmann/json_fwd.hpp> // For toJson declarations
 
 // Forward declaration (if needed, though not strictly necessary here as spdlog is only used in .cpp)
 // namespace spdlog { class logger; }
@@ -34,6 +35,12 @@ struct ChannelFormatInfo {
      * @return std::string Human-readable representation.
      */
     std::string toString() const; // Declare here, define in .cpp
+
+    /**
+     * @brief Convert channel format info to JSON.
+     * @return nlohmann::json JSON representation.
+     */
+    nlohmann::json toJson() const;
 };
 
 /**
@@ -105,6 +112,12 @@ public:
      * @return std::vector<uint8_t> The serialized format block, or empty on error/unsupported type.
      */
     std::vector<uint8_t> serializeToBytes() const;
+
+    /**
+     * @brief Convert the stream format to JSON.
+     * @return nlohmann::json JSON representation.
+     */
+    nlohmann::json toJson() const;
 
 private:
     static uint8_t sampleRateToByte(SampleRate sr);

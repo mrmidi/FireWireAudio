@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <nlohmann/json_fwd.hpp>
 
 namespace FWA {
 
@@ -54,6 +55,8 @@ public:
     void clearPlugs() { musicDestPlugs_.clear(); musicSourcePlugs_.clear(); }
     void clearMusicDestPlugs() { musicDestPlugs_.clear(); }
     void clearMusicSourcePlugs() { musicSourcePlugs_.clear(); }
+
+    nlohmann::json toJson() const;
 
 private:
     // --- Data members managed by DeviceParser ---

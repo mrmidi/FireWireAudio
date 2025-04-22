@@ -7,8 +7,33 @@
 #include <iomanip>
 #include <algorithm> // For std::min
 #include <spdlog/spdlog.h>
+#include "FWA/JsonHelpers.hpp"
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
+using namespace FWA::JsonHelpers;
 
 namespace FWA {
+
+// Helper to get block type name as string
+static std::string getInfoBlockTypeName(InfoBlockType type) {
+    switch(type) {
+        case InfoBlockType::RawText:             return "Raw Text";
+        case InfoBlockType::Name:                return "Name";
+        case InfoBlockType::GeneralMusicStatus:  return "General Music Status";
+        case InfoBlockType::MusicOutputPlugStatus: return "Music Output Plug Status";
+        case InfoBlockType::SourcePlugStatus:    return "Source Plug Status";
+        case InfoBlockType::AudioInfo:           return "Audio Info";
+        case InfoBlockType::MidiInfo:            return "MIDI Info";
+        case InfoBlockType::SmpteTimeCodeInfo:   return "SMPTE Time Code Info";
+        case InfoBlockType::SampleCountInfo:     return "Sample Count Info";
+        case InfoBlockType::AudioSyncInfo:       return "Audio Sync Info";
+        case InfoBlockType::RoutingStatus:       return "Routing Status";
+        case InfoBlockType::SubunitPlugInfo:     return "Subunit Plug Info";
+        case InfoBlockType::ClusterInfo:         return "Cluster Info";
+        case InfoBlockType::MusicPlugInfo:       return "Music Plug Info";
+        default:                                 return "Unknown/Other";
+    }
+}
 
 //--------------------------------------------------------------------------
 // AVCInfoBlock Constructor (from movable r-value - likely used by make_shared)
@@ -234,32 +259,124 @@ void AVCInfoBlock::parse() {
 std::string AVCInfoBlock::toString(uint32_t indent) const {
     std::ostringstream oss;
     std::string indentStr(indent * 2, ' ');
+    std::string indentStrP1((indent + 1) * 2, ' ');
 
-    oss << indentStr << "AVCInfoBlock:\n";
-    oss << indentStr << "  Type: 0x" << std::hex << std::setw(4) << std::setfill('0') << static_cast<uint16_t>(type_) << "\n";
-    oss << indentStr << "  Compound Length: " << std::dec << compoundLength_ << " (Total Size: " << compoundLength_ + 2 << ")\n";
-    oss << indentStr << "  Primary Fields Length: " << std::dec << primaryFieldsLength_ << "\n";
+    oss << indentStr << "{\n";
+    oss << indentStrP1 << "AVCInfoBlock Type: 0x" << std::hex << std::setw(4) << std::setfill('0') << static_cast<uint16_t>(type_)
+        << " (" << getInfoBlockTypeName(type_) << ")\n";
+    oss << indentStrP1 << "CompoundLength: " << std::dec << compoundLength_
+        << ", PrimaryFieldsLength: " << primaryFieldsLength_ << "\n";
 
-    // Print Primary Fields
-    if (primaryFieldsLength_ > 0) {
-        const uint8_t* pData = getPrimaryFieldsDataPtr();
-        if (pData) {
-             oss << indentStr << "  Primary Fields: ";
-             parsePrimaryFields(pData, primaryFieldsLength_, oss); // Call specific parser helper
-             oss << "\n";
+    bool primaryParsedAndDisplayed = false;
+    if (parsed_generalMusicStatus_) {
+        primaryParsedAndDisplayed = true;
+        const auto& d = parsed_generalMusicStatus_.value();
+        oss << indentStrP1 << "current_transmit_capability: 0x" << std::hex << static_cast<int>(d.currentTransmitCapability) << "\n";
+        oss << indentStrP1 << "current_receive_capability: 0x" << static_cast<int>(d.currentReceiveCapability) << "\n";
+        oss << indentStrP1 << "current_latency_capability: 0x" << d.currentLatencyCapability << "\n";
+    } else if (parsed_musicOutputPlugStatus_) {
+        primaryParsedAndDisplayed = true;
+        oss << indentStrP1 << "number_of_source_plugs: " << std::dec << static_cast<int>(parsed_musicOutputPlugStatus_.value().numberOfSourcePlugs) << "\n";
+    } else if (parsed_sourcePlugStatus_) {
+        primaryParsedAndDisplayed = true;
+        oss << indentStrP1 << "source_plug_number: " << std::dec << static_cast<int>(parsed_sourcePlugStatus_.value().sourcePlugNumber) << "\n";
+    } else if (parsed_audioInfo_) {
+         primaryParsedAndDisplayed = true;
+         oss << indentStrP1 << "number_of_audio_streams: " << std::dec << static_cast<int>(parsed_audioInfo_.value().numberOfAudioStreams) << "\n";
+    } else if (parsed_midiInfo_) {
+         primaryParsedAndDisplayed = true;
+         oss << indentStrP1 << "number_of_MIDI_streams: " << std::dec << static_cast<int>(parsed_midiInfo_.value().numberOfMIDIStreams) << "\n";
+    } else if (parsed_smpteTimeCodeInfo_) {
+         primaryParsedAndDisplayed = true;
+         const auto& d = parsed_smpteTimeCodeInfo_.value();
+         oss << indentStrP1 << "SMPTE_time_code_activity: 0x" << std::hex << static_cast<int>(d.activity) << "\n";
+    } else if (parsed_sampleCountInfo_) {
+          primaryParsedAndDisplayed = true;
+          const auto& d = parsed_sampleCountInfo_.value();
+          oss << indentStrP1 << "sample_count_activity: 0x" << std::hex << static_cast<int>(d.activity) << "\n";
+    } else if (parsed_audioSyncInfo_) {
+          primaryParsedAndDisplayed = true;
+          const auto& d = parsed_audioSyncInfo_.value();
+          oss << indentStrP1 << "audio_sync_activity: 0x" << std::hex << static_cast<int>(d.activity) << "\n";
+    } else if (parsed_routingStatus_) {
+        primaryParsedAndDisplayed = true;
+        const auto& d = parsed_routingStatus_.value();
+        oss << indentStrP1 << "number_of_subunit_dest_plugs: " << std::dec << static_cast<int>(d.numberOfSubunitDestPlugs) << "\n";
+        oss << indentStrP1 << "number_of_subunit_source_plugs: " << static_cast<int>(d.numberOfSubunitSourcePlugs) << "\n";
+        oss << indentStrP1 << "number_of_music_plugs: " << d.numberOfMusicPlugs << "\n";
+    } else if (parsed_subunitPlugInfo_) {
+        primaryParsedAndDisplayed = true;
+        const auto& d = parsed_subunitPlugInfo_.value();
+        oss << indentStrP1 << "subunit_plug_id: " << std::dec << static_cast<int>(d.subunitPlugId) << "\n";
+        oss << indentStrP1 << "signal_format: 0x" << std::hex << d.signalFormat << "\n";
+        oss << indentStrP1 << "plug_type: 0x" << static_cast<int>(d.plugType) << "\n";
+        oss << indentStrP1 << "number_of_clusters: " << std::dec << d.numberOfClusters << "\n";
+        oss << indentStrP1 << "number_of_channels: " << d.numberOfChannels << "\n";
+    } else if (parsed_clusterInfo_) {
+        primaryParsedAndDisplayed = true;
+        const auto& d = parsed_clusterInfo_.value();
+        oss << indentStrP1 << "stream_format: 0x" << std::hex << static_cast<int>(d.streamFormat) << "\n";
+        oss << indentStrP1 << "port_type: 0x" << static_cast<int>(d.portType) << "\n";
+        oss << indentStrP1 << "number_of_signals: " << std::dec << static_cast<int>(d.numberOfSignals) << "\n";
+        for (size_t i = 0; i < d.signals.size(); ++i) {
+             const auto& sig = d.signals[i];
+             oss << indentStrP1 << "  signal " << i << ":\n";
+             oss << indentStrP1 << "   music_plug_id: 0x" << std::hex << sig.musicPlugId << "\n";
+             oss << indentStrP1 << "   stream_position: " << std::dec << static_cast<int>(sig.streamPosition) << "\n";
+             oss << indentStrP1 << "   stream_location: " << static_cast<int>(sig.streamLocation) << "\n";
+        }
+    } else if (parsed_musicPlugInfo_) {
+         primaryParsedAndDisplayed = true;
+         const auto& d = parsed_musicPlugInfo_.value();
+         oss << indentStrP1 << "music_plug_type: 0x" << std::hex << static_cast<int>(d.musicPlugType) << "\n";
+         oss << indentStrP1 << "music_plug_id: 0x" << d.musicPlugId << "\n";
+         oss << indentStrP1 << "routing_support: 0x" << static_cast<int>(d.routingSupport) << "\n";
+         oss << indentStrP1 << "source:\n";
+         oss << indentStrP1 << "  plug_function_type: 0x" << std::hex << static_cast<int>(d.source.plugFunctionType) << "\n";
+         oss << indentStrP1 << "  plug_id: 0x" << static_cast<int>(d.source.plugId) << "\n";
+         oss << indentStrP1 << "  plug_function_block_id: 0x" << static_cast<int>(d.source.plugFunctionBlockId) << "\n";
+         oss << indentStrP1 << "  stream_position: " << std::dec << static_cast<int>(d.source.streamPosition) << "\n";
+         oss << indentStrP1 << "  stream_location: " << static_cast<int>(d.source.streamLocation) << "\n";
+         oss << indentStrP1 << "dest:\n";
+         oss << indentStrP1 << "  plug_function_type: 0x" << std::hex << static_cast<int>(d.destination.plugFunctionType) << "\n";
+         oss << indentStrP1 << "  plug_id: 0x" << static_cast<int>(d.destination.plugId) << "\n";
+         oss << indentStrP1 << "  plug_function_block_id: 0x" << static_cast<int>(d.destination.plugFunctionBlockId) << "\n";
+         oss << indentStrP1 << "  stream_position: " << std::dec << static_cast<int>(d.destination.streamPosition) << "\n";
+         oss << indentStrP1 << "  stream_location: " << static_cast<int>(d.destination.streamLocation) << "\n";
+    } else if (parsed_nameInfo_) {
+         primaryParsedAndDisplayed = true;
+         const auto& d = parsed_nameInfo_.value();
+         oss << indentStrP1 << "name_data_reference_type: 0x" << std::hex << static_cast<int>(d.nameDataReferenceType) << "\n";
+         if (d.nameDataReferenceType == 0x00) {
+              oss << indentStrP1 << "name_data_attributes: 0x" << static_cast<int>(d.nameDataAttributes) << "\n";
+              oss << indentStrP1 << "maximum_number_of_characters: " << std::dec << d.maximumNumberOfCharacters << "\n";
+         }
+    } else if (parsed_rawTextInfo_) {
+          primaryParsedAndDisplayed = true;
+          std::string cleaned_text = parsed_rawTextInfo_.value().text;
+          std::replace_if(cleaned_text.begin(), cleaned_text.end(),
+                          [](unsigned char c){ return !std::isprint(c); }, '.');
+          oss << indentStrP1 << "raw_text: \"" << cleaned_text << "\"\n";
+    }
+    // ...existing code...
+    if (!primaryParsedAndDisplayed && primaryFieldsLength_ > 0) {
+        if (const uint8_t* pData = getPrimaryFieldsDataPtr()) {
+             oss << indentStrP1 << "Primary Fields (Hex): " << formatHex(pData, primaryFieldsLength_) << "\n";
         } else {
-            oss << indentStr << "  Primary Fields: (Error: Invalid length or data size)\n";
+             oss << indentStrP1 << "Primary Fields: (Error reading data)\n";
         }
     }
-
-    // Print Nested Blocks
     if (!nestedBlocks_.empty()) {
-        oss << indentStr << "  Nested Blocks (" << nestedBlocks_.size() << "):\n";
+        oss << indentStrP1 << "Nested Blocks (" << nestedBlocks_.size() << "):\n";
         for (const auto& nested : nestedBlocks_) {
-            oss << nested->toString(indent + 1);
+            if (nested) {
+                 oss << nested->toString(indent + 1);
+            } else {
+                 oss << indentStrP1 << "  (Null nested block pointer)\n";
+            }
         }
     }
-
+    oss << indentStr << "}\n";
     return oss.str();
 }
 
@@ -524,5 +641,228 @@ std::string AVCInfoBlock::formatHex(const uint8_t* data, size_t length) const {
      return oss.str();
  }
 
+// --- NEW: Internal Primary Field Parsing Logic ---
+void AVCInfoBlock::parsePrimaryFieldsInternal() {
+    // Reset all optional members first
+    parsed_generalMusicStatus_.reset();
+    parsed_musicOutputPlugStatus_.reset();
+    parsed_sourcePlugStatus_.reset();
+    parsed_audioInfo_.reset();
+    parsed_midiInfo_.reset();
+    parsed_smpteTimeCodeInfo_.reset();
+    parsed_sampleCountInfo_.reset();
+    parsed_audioSyncInfo_.reset();
+    parsed_routingStatus_.reset();
+    parsed_subunitPlugInfo_.reset();
+    parsed_clusterInfo_.reset();
+    parsed_musicPlugInfo_.reset();
+    parsed_nameInfo_.reset();
+    parsed_rawTextInfo_.reset();
+
+    if (primaryFieldsLength_ == 0) {
+        return; // Nothing to parse
+    }
+    const uint8_t* pData = getPrimaryFieldsDataPtr();
+    if (!pData) {
+        return;
+    }
+    try {
+        switch(type_) {
+            case InfoBlockType::GeneralMusicStatus:
+                if (primaryFieldsLength_ >= 6) {
+                    const uint8_t* data = pData;
+                    GeneralMusicStatusData parsed;
+                    parsed.currentTransmitCapability = data[0];
+                    parsed.currentReceiveCapability = data[1];
+                    parsed.currentLatencyCapability = (static_cast<uint32_t>(data[2]) << 24) |
+                                                      (static_cast<uint32_t>(data[3]) << 16) |
+                                                      (static_cast<uint32_t>(data[4]) << 8)  |
+                                                      data[5];
+                    parsed_generalMusicStatus_ = parsed;
+                } break;
+            case InfoBlockType::MusicOutputPlugStatus:
+                if (primaryFieldsLength_ >= 1) {
+                    const uint8_t* data = pData;
+                    MusicOutputPlugStatusData parsed;
+                    parsed.numberOfSourcePlugs = data[0];
+                    parsed_musicOutputPlugStatus_ = parsed;
+                } break;
+            case InfoBlockType::SourcePlugStatus:
+                if (primaryFieldsLength_ >= 1) {
+                    const uint8_t* data = pData;
+                    SourcePlugStatusData parsed;
+                    parsed.sourcePlugNumber = data[0];
+                    parsed_sourcePlugStatus_ = parsed;
+                } break;
+            case InfoBlockType::AudioInfo:
+                if (primaryFieldsLength_ >= 1) {
+                    const uint8_t* data = pData;
+                    AudioInfoData parsed;
+                    parsed.numberOfAudioStreams = data[0];
+                    parsed_audioInfo_ = parsed;
+                } break;
+            case InfoBlockType::MidiInfo:
+                if (primaryFieldsLength_ >= 1) {
+                    const uint8_t* data = pData;
+                    MidiInfoData parsed;
+                    parsed.numberOfMIDIStreams = data[0];
+                    parsed_midiInfo_ = parsed;
+                } break;
+            case InfoBlockType::SmpteTimeCodeInfo:
+                if (primaryFieldsLength_ >= 1) {
+                    const uint8_t* data = pData;
+                    SmpteTimeCodeInfoData parsed;
+                    parsed.activity = data[0];
+                    parsed_smpteTimeCodeInfo_ = parsed;
+                } break;
+            case InfoBlockType::SampleCountInfo:
+                if (primaryFieldsLength_ >= 1) {
+                    const uint8_t* data = pData;
+                    SampleCountInfoData parsed;
+                    parsed.activity = data[0];
+                    parsed_sampleCountInfo_ = parsed;
+                } break;
+            case InfoBlockType::AudioSyncInfo:
+                if (primaryFieldsLength_ >= 1) {
+                    const uint8_t* data = pData;
+                    AudioSyncInfoData parsed;
+                    parsed.activity = data[0];
+                    parsed_audioSyncInfo_ = parsed;
+                } break;
+            case InfoBlockType::RoutingStatus:
+                if (primaryFieldsLength_ >= 4) {
+                    const uint8_t* data = pData;
+                    RoutingStatusData parsed;
+                    parsed.numberOfSubunitDestPlugs = data[0];
+                    parsed.numberOfSubunitSourcePlugs = data[1];
+                    parsed.numberOfMusicPlugs = (static_cast<uint16_t>(data[2]) << 8) | data[3];
+                    parsed_routingStatus_ = parsed;
+                } break;
+            case InfoBlockType::SubunitPlugInfo:
+                if (primaryFieldsLength_ >= 8) {
+                    const uint8_t* data = pData;
+                    SubunitPlugInfoData parsed;
+                    parsed.subunitPlugId = data[0];
+                    parsed.signalFormat = (static_cast<uint16_t>(data[1]) << 8) | data[2];
+                    parsed.plugType = data[3];
+                    parsed.numberOfClusters = (static_cast<uint16_t>(data[4]) << 8) | data[5];
+                    parsed.numberOfChannels = (static_cast<uint16_t>(data[6]) << 8) | data[7];
+                    parsed_subunitPlugInfo_ = parsed;
+                } break;
+            case InfoBlockType::ClusterInfo:
+                if (primaryFieldsLength_ >= 3) {
+                    const uint8_t* data = pData;
+                    ClusterInfoData parsed;
+                    parsed.streamFormat = data[0];
+                    parsed.portType = data[1];
+                    parsed.numberOfSignals = data[2];
+                    size_t requiredSignalBytes = static_cast<size_t>(parsed.numberOfSignals) * 4;
+                    if (primaryFieldsLength_ >= 3 + requiredSignalBytes) {
+                        const uint8_t* signalData = pData;
+                        parsed.signals.reserve(parsed.numberOfSignals);
+                        for (uint8_t i = 0; i < parsed.numberOfSignals; ++i) {
+                            size_t offset = 3 + (i * 4);
+                            ClusterSignalInfo sig;
+                            sig.musicPlugId = (static_cast<uint16_t>(signalData[offset]) << 8) | signalData[offset + 1];
+                            sig.streamPosition = signalData[offset + 2];
+                            sig.streamLocation = signalData[offset + 3];
+                            parsed.signals.push_back(sig);
+                        }
+                        parsed_clusterInfo_ = parsed;
+                    }
+                } break;
+            case InfoBlockType::MusicPlugInfo:
+                if (primaryFieldsLength_ >= 14) {
+                    const uint8_t* data = pData;
+                    MusicPlugInfoData parsed;
+                    parsed.musicPlugType = data[0];
+                    parsed.musicPlugId = (static_cast<uint16_t>(data[1]) << 8) | data[2];
+                    parsed.routingSupport = data[3];
+                    parsed.source.plugFunctionType = data[4];
+                    parsed.source.plugId = data[5];
+                    parsed.source.plugFunctionBlockId = data[6];
+                    parsed.source.streamPosition = data[7];
+                    parsed.source.streamLocation = data[8];
+                    parsed.destination.plugFunctionType = data[9];
+                    parsed.destination.plugId = data[10];
+                    parsed.destination.plugFunctionBlockId = data[11];
+                    parsed.destination.streamPosition = data[12];
+                    parsed.destination.streamLocation = data[13];
+                    parsed_musicPlugInfo_ = parsed;
+                } break;
+            case InfoBlockType::Name:
+                if (primaryFieldsLength_ >= 1) {
+                    const uint8_t* data = pData;
+                    NameInfoData parsed;
+                    parsed.nameDataReferenceType = data[0];
+                    if (parsed.nameDataReferenceType == 0x00 && primaryFieldsLength_ >= 4) {
+                        parsed.nameDataAttributes = data[1];
+                        parsed.maximumNumberOfCharacters = (static_cast<uint16_t>(data[2]) << 8) | data[3];
+                    }
+                    parsed_nameInfo_ = parsed;
+                } break;
+            case InfoBlockType::RawText:
+                if (primaryFieldsLength_ > 0) {
+                    const uint8_t* data = pData;
+                    RawTextData parsed;
+                    parsed.text.assign(reinterpret_cast<const char*>(data), primaryFieldsLength_);
+                    parsed.text.erase(std::remove_if(parsed.text.begin(), parsed.text.end(),
+                        [](char c){ return !isprint(static_cast<unsigned char>(c)) && !isspace(static_cast<unsigned char>(c)); }),
+                        parsed.text.end());
+                    parsed_rawTextInfo_ = parsed;
+                } break;
+            default:
+                break;
+        }
+    } catch (const std::exception& e) {
+        spdlog::error("Exception during primary field parsing for type 0x{:04X}: {}", static_cast<uint16_t>(type_), e.what());
+    }
+}
+
+json AVCInfoBlock::toJson() const {
+    json j;
+    j["type"] = infoBlockTypeToString(type_);
+    j["compoundLength"] = compoundLength_;
+    j["primaryFieldsLength"] = primaryFieldsLength_;
+    json parsedPrimary = serializePrimaryFieldsParsed();
+    if (!parsedPrimary.is_null()) {
+        j["primaryFieldsParsed"] = parsedPrimary;
+        j["primaryFieldsRaw"] = nullptr;
+    } else if (primaryFieldsLength_ > 0) {
+        const uint8_t* pData = getPrimaryFieldsDataPtr();
+        if (pData) {
+            std::vector<uint8_t> primaryBytes(pData, pData + primaryFieldsLength_);
+            j["primaryFieldsRaw"] = serializeHexBytes(primaryBytes);
+        } else {
+            j["primaryFieldsRaw"] = "(Error reading)";
+        }
+        j["primaryFieldsParsed"] = nullptr;
+    } else {
+        j["primaryFieldsRaw"] = nullptr;
+        j["primaryFieldsParsed"] = nullptr;
+    }
+    json nestedArr = json::array();
+    for (const auto& nestedPtr : nestedBlocks_) {
+        if (nestedPtr) nestedArr.push_back(nestedPtr->toJson());
+    }
+    j["nestedBlocks"] = nestedArr;
+    return j;
+}
+
+json AVCInfoBlock::serializePrimaryFieldsParsed() const {
+    if (parsed_generalMusicStatus_) {
+        json p;
+        p["currentTransmitCapability"] = parsed_generalMusicStatus_->currentTransmitCapability;
+        p["currentReceiveCapability"] = parsed_generalMusicStatus_->currentReceiveCapability;
+        p["currentLatencyCapability"] = parsed_generalMusicStatus_->currentLatencyCapability;
+        return p;
+    }
+    if (parsed_rawTextInfo_) {
+        json p;
+        p["text"] = parsed_rawTextInfo_.value().text;
+        return p;
+    }
+    return nullptr;
+}
 
 } // namespace FWA

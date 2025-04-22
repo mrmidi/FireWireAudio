@@ -23,6 +23,10 @@
 #include "FWA/AVCInfoBlock.hpp"
 #include <iomanip>
 #include <string>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+#include <nlohmann/json.hpp>
 
 // Helper function to recursively print the info block tree
 void printInfoBlockTree(const FWA::AVCInfoBlock& block, int indentLevel);
@@ -210,6 +214,28 @@ int main() {
                     }
                     // --- End NEW ---
 
+                    // ***** START JSON EXPORT *****
+                    try {
+                        nlohmann::json deviceInfoJson = info.toJson(*device); // Pass device reference
+                        std::stringstream ssFilename;
+                        ssFilename << device->getDeviceName() << "_"
+                                   << "0x" << std::hex << std::setw(16) << std::setfill('0') << device->getGuid()
+                                   << ".json";
+                        std::string filename = ssFilename.str();
+                        std::replace(filename.begin(), filename.end(), ' ', '_');
+                        spdlog::info("Exporting device info to: {}", filename);
+                        std::ofstream outFile(filename);
+                        if (outFile.is_open()) {
+                            outFile << deviceInfoJson.dump(4);
+                            outFile.close();
+                            spdlog::info("Successfully wrote JSON to {}", filename);
+                        } else {
+                            spdlog::error("Failed to open file {} for writing JSON.", filename);
+                        }
+                    } catch (const std::exception& e) {
+                        spdlog::error("Error during JSON serialization or file writing: {}", e.what());
+                    }
+                    // ***** END JSON EXPORT *****
                 }
 
                 // --- Streaming temporarily disabled ---

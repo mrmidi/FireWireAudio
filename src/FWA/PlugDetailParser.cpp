@@ -49,43 +49,49 @@ std::expected<std::shared_ptr<AudioPlug>, IOKitError> PlugDetailParser::parsePlu
         spdlog::warn("PlugDetailParser: Failed to retrieve supported stream formats for plug: 0x{:x}", static_cast<int>(supportedFormatsResult.error()));
     }
     if (direction == PlugDirection::Input) {
-        if (usage == PlugUsage::MusicSubunit) {
-            uint16_t musicPlugID = plugNum;
-            uint8_t musicPlugType = 0x00;
-            if (plug->getCurrentStreamFormat() && !plug->getCurrentStreamFormat()->getChannelFormats().empty()) {
-                 switch(plug->getCurrentStreamFormat()->getChannelFormats()[0].formatCode) {
-                    case StreamFormatCode::MidiConf:      musicPlugType = 0x01; break;
-                    case StreamFormatCode::SMPTETimeCode: musicPlugType = 0x02; break;
-                    case StreamFormatCode::SampleCount:   musicPlugType = 0x03; break;
-                    case StreamFormatCode::SyncStream:    musicPlugType = 0x80; break;
-                    default: /* all others */ break;
-                 }
-            }
-            spdlog::debug("PlugDetailParser: Trying TA connection query (0x40) for Music plug 0x{:02x}/{} type=0x{:02x}", subunitAddr, plugNum, musicPlugType);
-            auto destConnResult = queryMusicInputPlugConnection_TA(subunitAddr, musicPlugType, musicPlugID);
-            if (destConnResult) {
-                plug->setDestConnectionInfo(destConnResult.value());
-            } else if (destConnResult.error() == IOKitError::NotFound) {
-                 spdlog::debug("PlugDetailParser: No connection found via 0x40 query for Music plug 0x{:02x}/{}.", subunitAddr, plugNum);
-            } else if (destConnResult.error() == IOKitError::Unsupported) {
-                 spdlog::warn("PlugDetailParser: 0x40 status query unsupported, falling back to 0x1A for Music plug 0x{:02x}/{}", subunitAddr, plugNum);
-                 auto signalSourceResult = querySignalSource(subunitAddr, plugNum, direction, usage);
-                 if (signalSourceResult) {
-                      plug->setConnectionInfo(signalSourceResult.value());
-                 } else {
-                      spdlog::warn("PlugDetailParser: Fallback connection query (0x1A) also failed for plug 0x{:02x}/{}: 0x{:x}", subunitAddr, plugNum, static_cast<int>(signalSourceResult.error()));
-                 }
+        spdlog::debug("PlugDetailParser: Trying standard connection query (0x1A) for plug 0x{:02x}/{}", subunitAddr, plugNum);
+        auto signalSourceResult = querySignalSource(subunitAddr, plugNum, direction, usage);
+        if (signalSourceResult) {
+            plug->setConnectionInfo(signalSourceResult.value());
+            if (signalSourceResult.value().sourcePlugNum != 0xFE) {
+                spdlog::info("PlugDetailParser: Plug 0x{:02x}/{} Connection (via 0x1A): Source SU=0x{:02x}, Plug={}",
+                    subunitAddr, plugNum, signalSourceResult.value().sourceSubUnit, signalSourceResult.value().sourcePlugNum);
             } else {
-                 spdlog::warn("PlugDetailParser: Failed to retrieve TA connection info (0x40) for plug 0x{:02x}/{}: 0x{:x}", subunitAddr, plugNum, static_cast<int>(destConnResult.error()));
+                spdlog::info("PlugDetailParser: Plug 0x{:02x}/{} Connection (via 0x1A): Not Connected (Source=0xFE)", subunitAddr, plugNum);
             }
         } else {
-             spdlog::debug("PlugDetailParser: Trying standard connection query (0x1A) for plug 0x{:02x}/{}", subunitAddr, plugNum);
-             auto signalSourceResult = querySignalSource(subunitAddr, plugNum, direction, usage);
-             if (signalSourceResult) {
-                  plug->setConnectionInfo(signalSourceResult.value());
-             } else {
-                  spdlog::warn("PlugDetailParser: Failed to retrieve standard connection info (0x1A) for plug 0x{:02x}/{}: 0x{:x}", subunitAddr, plugNum, static_cast<int>(signalSourceResult.error()));
-             }
+            spdlog::warn("PlugDetailParser: Standard connection query (0x1A) failed for plug 0x{:02x}/{}: 0x{:x}",
+                subunitAddr, plugNum, static_cast<int>(signalSourceResult.error()));
+            // Fallback: Only for MusicSubunit and if 0x1A is unsupported
+            if (signalSourceResult.error() == IOKitError::Unsupported && usage == PlugUsage::MusicSubunit) {
+                spdlog::warn("PlugDetailParser: Standard query (0x1A) unsupported for Music plug, trying TA query (0x40 status)...");
+                uint16_t musicPlugID = plugNum;
+                uint8_t musicPlugType = 0x00;
+                if (plug->getCurrentStreamFormat() && !plug->getCurrentStreamFormat()->getChannelFormats().empty()) {
+                    switch(plug->getCurrentStreamFormat()->getChannelFormats()[0].formatCode) {
+                        case StreamFormatCode::MidiConf:      musicPlugType = 0x01; break;
+                        case StreamFormatCode::SMPTETimeCode: musicPlugType = 0x02; break;
+                        case StreamFormatCode::SampleCount:   musicPlugType = 0x03; break;
+                        case StreamFormatCode::SyncStream:    musicPlugType = 0x80; break;
+                        default:                              musicPlugType = 0x00; break;
+                    }
+                }
+                auto destConnResult = queryMusicInputPlugConnection_TA(subunitAddr, musicPlugType, musicPlugID);
+                if (destConnResult) {
+                    plug->setDestConnectionInfo(destConnResult.value());
+                    if (destConnResult.value().destSubunitPlugId != 0xFF) {
+                        spdlog::info("PlugDetailParser: Plug 0x{:02x}/{} Connection (via 0x40 fallback): Dest SU Plug={}",
+                            subunitAddr, plugNum, destConnResult.value().destSubunitPlugId);
+                    } else {
+                        spdlog::info("PlugDetailParser: Plug 0x{:02x}/{} Connection (via 0x40 fallback): Not Connected (Dest=0xFF)", subunitAddr, plugNum);
+                    }
+                } else if (destConnResult.error() == IOKitError::NotFound) {
+                    spdlog::info("PlugDetailParser: Fallback query (0x40) confirmed no connection for Music plug 0x{:02x}/{}.", subunitAddr, plugNum);
+                } else {
+                    spdlog::warn("PlugDetailParser: Fallback connection query (0x40) also failed for Music plug 0x{:02x}/{}: 0x{:x}",
+                        subunitAddr, plugNum, static_cast<int>(destConnResult.error()));
+                }
+            }
         }
     }
     return plug;
