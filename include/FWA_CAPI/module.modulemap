@@ -1,0 +1,4 @@
+module FWA_CAPI [system] {
+    header "../fwa_capi.h"
+    export *
+}

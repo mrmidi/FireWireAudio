@@ -7,6 +7,7 @@
 #include <spdlog/spdlog.h>
 #include <IOKit/IOMessage.h>
 #include <CoreFoundation/CFNumber.h> // For CFNumber*
+#include <memory> // Required for std::make_shared
 
 namespace FWA {
 
@@ -19,7 +20,14 @@ AudioDevice::AudioDevice(std::uint64_t guid,
       deviceName_(deviceName),
       vendorName_(vendorName),
       avcUnit_(avcUnit),
-      deviceController_(deviceController)
+      deviceController_(deviceController),
+      fwUnit_(0),
+      fwDevice_(0),
+      busController_(0),
+      notificationPort_(nullptr),
+      interestNotification_(0),
+      deviceInterface(nullptr),
+      avcInterface_(nullptr)
 {
     spdlog::info("AudioDevice::AudioDevice - Creating device with GUID: 0x{:x}", guid);
 
@@ -31,22 +39,6 @@ AudioDevice::AudioDevice(std::uint64_t guid,
 
 AudioDevice::~AudioDevice()
 {
-    if (avcUnit_) {
-        IOObjectRelease(avcUnit_);
-        avcUnit_ = 0;
-    }
-    if (fwUnit_) {
-        IOObjectRelease(fwUnit_);
-        fwUnit_ = 0;
-    }
-    if (fwDevice_) {
-        IOObjectRelease(fwDevice_);
-        fwDevice_ = 0;
-    }
-    if (busController_) {
-        IOObjectRelease(busController_);
-        busController_ = 0;
-    }
     if (interestNotification_) {
         IOObjectRelease(interestNotification_);
         interestNotification_ = 0;
@@ -55,12 +47,40 @@ AudioDevice::~AudioDevice()
         IONotificationPortDestroy(notificationPort_);
         notificationPort_ = nullptr;
     }
+    if (deviceInterface) {
+        (*deviceInterface)->Close(deviceInterface);
+        (*deviceInterface)->Release(deviceInterface);
+        deviceInterface = nullptr;
+    }
+    if (avcInterface_) {
+        avcInterface_ = nullptr;
+    }
+    if (busController_) {
+        IOObjectRelease(busController_);
+        busController_ = 0;
+    }
+    if (fwDevice_) {
+        IOObjectRelease(fwDevice_);
+        fwDevice_ = 0;
+    }
+    if (fwUnit_) {
+        IOObjectRelease(fwUnit_);
+        fwUnit_ = 0;
+    }
+    if (avcUnit_) {
+        IOObjectRelease(avcUnit_);
+        avcUnit_ = 0;
+    }
+    spdlog::debug("AudioDevice::~AudioDevice - Destroyed device GUID: 0x{:x}", guid_);
 }
 
 std::expected<void, IOKitError> AudioDevice::init()
 {
     spdlog::debug("AudioDevice::init - Initializing device GUID: 0x{:x}", guid_);
-    // 1. Retrieve the FireWire objects.
+    if (!avcUnit_) {
+        spdlog::error("AudioDevice::init: Cannot initialize without a valid avcUnit service.");
+        return std::unexpected(IOKitError(kIOReturnNotAttached));
+    }
     IOReturn result = IORegistryEntryGetParentEntry(avcUnit_, kIOServicePlane, &fwUnit_);
     if (result != kIOReturnSuccess || !fwUnit_) {
         spdlog::error("AudioDevice::init: Failed to get fwUnit: 0x{:x}", result);
@@ -71,6 +91,7 @@ std::expected<void, IOKitError> AudioDevice::init()
     result = IORegistryEntryGetParentEntry(fwUnit_, kIOServicePlane, &fwDevice_);
     if (result != kIOReturnSuccess || !fwDevice_) {
         spdlog::error("AudioDevice::init: Failed to get fwDevice: 0x{:x}", result);
+        IOObjectRelease(fwUnit_); fwUnit_ = 0;
         return std::unexpected(static_cast<IOKitError>(result != kIOReturnSuccess ? result : kIOReturnNotFound));
     }
     spdlog::debug("AudioDevice::init: Got fwDevice_ service: {}", (void*)fwDevice_);
@@ -78,6 +99,8 @@ std::expected<void, IOKitError> AudioDevice::init()
     result = IORegistryEntryGetParentEntry(fwDevice_, kIOServicePlane, &busController_);
     if (result != kIOReturnSuccess || !busController_) {
         spdlog::error("AudioDevice::init: Failed to get busController: 0x{:x}", result);
+        IOObjectRelease(fwDevice_); fwDevice_ = 0;
+        IOObjectRelease(fwUnit_); fwUnit_ = 0;
         return std::unexpected(static_cast<IOKitError>(result != kIOReturnSuccess ? result : kIOReturnNotFound));
     }
     spdlog::debug("AudioDevice::init: Got busController_ service: {}", (void*)busController_);
@@ -113,23 +136,33 @@ std::expected<void, IOKitError> AudioDevice::init()
     // Do not discover capabilities for now
     
     // 3. Now safely create the CommandInterface using shared_from_this().
-    
-    commandInterface_ = std::make_shared<CommandInterface>(shared_from_this());
-//    
-//    commandInterface_->activate();
+    try {
+        commandInterface_ = std::make_shared<CommandInterface>(shared_from_this());
+        spdlog::debug("AudioDevice::init: CommandInterface created.");
+        auto activationResult = commandInterface_->activate();
+        if (!activationResult && activationResult.error() != IOKitError::StillOpen) {
+            spdlog::error("AudioDevice::init: Failed to activate CommandInterface before parsing: 0x{:x}", static_cast<int>(activationResult.error()));
+            commandInterface_.reset();
+            return std::unexpected(activationResult.error());
+        }
+        spdlog::debug("AudioDevice::init: CommandInterface activated (or was already active).");
+    } catch (const std::bad_weak_ptr& e) {
+        spdlog::critical("AudioDevice::init: Failed to create CommandInterface. Was AudioDevice created using std::make_shared? Exception: {}", e.what());
+        if (deviceInterface) { (*deviceInterface)->Release(deviceInterface); deviceInterface = nullptr; }
+        return std::unexpected(IOKitError(kIOReturnInternalError));
+    }
 
     // 4. Discover device capabilities using DeviceParser.
-//    spdlog::info("Starting device capability discovery...");
-//    auto parser = std::make_shared<DeviceParser>(shared_from_this());
-//    auto parseResult = parser->parse();
-//    if (!parseResult) {
-//        spdlog::error("Device capability parsing failed.");
-//        return std::unexpected(parseResult.error());
-//    }
-//    spdlog::info("Device capability parsing completed successfully.");
+    spdlog::info("AudioDevice::init: Starting device capability discovery...");
+    auto parser = std::make_shared<DeviceParser>(this);
+    auto parseResult = parser->parse();
+    if (!parseResult) {
+        spdlog::error("AudioDevice::init: Device capability parsing failed: 0x{:x}", static_cast<int>(parseResult.error()));
+    } else {
+        spdlog::info("AudioDevice::init: Device capability parsing completed successfully.");
+    }
 
-    // readVendorAndModelInfo();
-
+    spdlog::info("AudioDevice::init completed successfully for GUID: 0x{:x}", guid_);
     return {};
 }
 

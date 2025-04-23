@@ -26,8 +26,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         -m|--mode)
             MODE="$2"
-            if [[ "$MODE" != "isoch" && "$MODE" != "fwa" && "$MODE" != "modified" ]]; then
-                echo "Error: Mode must be either 'isoch', 'fwa', or 'modified'"
+            if [[ "$MODE" != "isoch" && "$MODE" != "fwa" && "$MODE" != "modified" && "$MODE" != "swift" ]]; then
+                echo "Error: Mode must be either 'isoch', 'fwa', 'modified', or 'swift'"
                 exit 1
             fi
             # Set default output file based on mode if not explicitly specified
@@ -35,6 +35,8 @@ while [[ $# -gt 0 ]]; do
                 OUTPUT_FILE="fwa.txt"
             elif [[ "$OUTPUT_FILE" == "isoch.txt" && "$MODE" == "modified" ]]; then
                 OUTPUT_FILE="modified.txt"
+            elif [[ "$OUTPUT_FILE" == "isoch.txt" && "$MODE" == "swift" ]]; then
+                OUTPUT_FILE="swift.txt"
             fi
             shift 2
             ;;
@@ -106,6 +108,20 @@ if [[ "$MODE" == "modified" ]]; then
             cat "$file" >> "$OUTPUT_FILE"
             echo -e "\n\n" >> "$OUTPUT_FILE"
         fi
+    done
+    chmod +x "$0"
+    echo "Done! Created $OUTPUT_FILE"
+    exit 0
+fi
+
+# Swift mode: gather all .swift files from FWA-Control
+if [[ "$MODE" == "swift" ]]; then
+    rm -f "$OUTPUT_FILE"
+    echo "Creating $OUTPUT_FILE with all Swift source files from FWA-Control..."
+    find "FWA-Control" -type f -name "*.swift" | while read -r file; do
+        echo "=== $file ===" >> "$OUTPUT_FILE"
+        cat "$file" >> "$OUTPUT_FILE"
+        echo -e "\n\n" >> "$OUTPUT_FILE"
     done
     chmod +x "$0"
     echo "Done! Created $OUTPUT_FILE"

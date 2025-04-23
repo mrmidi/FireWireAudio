@@ -11,6 +11,8 @@
 #include <mach/mach.h>
 #include <algorithm>
 #include "FWA/Helpers.h"
+#include "FWA/DeviceController.h" // Include full definition
+#include <spdlog/fmt/fmt.h> // For fmt::ptr
 
 
 namespace FWA {
@@ -155,59 +157,67 @@ std::expected<std::shared_ptr<AudioDevice>, IOKitError> IOKitFireWireDeviceDisco
 void IOKitFireWireDeviceDiscovery::deviceAdded(void* refCon, io_iterator_t iterator)
 {
     IOKitFireWireDeviceDiscovery* self = static_cast<IOKitFireWireDeviceDiscovery*>(refCon);
-    if (!self) {
-        spdlog::error("deviceAdded: refCon is null!"); // Should never happen, but check anyway.
+    if (!self || !self->deviceController_) { // Check controller validity early
+        spdlog::error("deviceAdded: refCon or deviceController_ is null!");
+        // Potentially release iterator resources if needed before returning
+        io_object_t temp_dev;
+        while ((temp_dev = IOIteratorNext(iterator)) != 0) { IOObjectRelease(temp_dev); }
         return;
     }
-    
+
     spdlog::info("deviceAdded called");
-    
-    io_object_t device;
-    while ((device = IOIteratorNext(iterator)) != 0) {
-        spdlog::info("deviceAdded: Iterating device");
-        
-        // Try to get the GUID *before* creating the AudioDevice.
-        auto guidResult = self->getDeviceGuid(device);
+
+    io_object_t device_service; // Use a different name to avoid confusion with AudioDevice object
+    while ((device_service = IOIteratorNext(iterator)) != 0) {
+        spdlog::info("deviceAdded: Iterating IOKit service");
+
+        auto guidResult = self->getDeviceGuid(device_service);
         if (!guidResult) {
             spdlog::error("deviceAdded: Failed to get GUID: 0x{:x}", static_cast<int>(guidResult.error()));
-            IOObjectRelease(device);
-            continue; // Go to the next device
+            IOObjectRelease(device_service);
+            continue;
         }
-        
         UInt64 guid = guidResult.value();
-        spdlog::info("deviceAdded: Got GUID: 0x{:x}", guid);
-        
-        // Check if device with that GUID already added
-        {   // Scope for the lock_guard
-            std::lock_guard<std::mutex> lock(self->devicesMutex_);
-            if (self->findDeviceByGuid(guid) != nullptr) {
-                spdlog::warn("deviceAdded: Device with GUID 0x{:x} already exists. Skipping.", guid);
-                IOObjectRelease(device);
-                continue; // Go to the next device
-            }
+        spdlog::info("deviceAdded: Found service with GUID: 0x{:x}", guid);
+
+        // Check if device already exists IN THE CONTROLLER
+        if (self->deviceController_->getDeviceByGuid(guid)) {
+            spdlog::warn("deviceAdded: Device with GUID 0x{:x} already managed by controller. Skipping.", guid);
+            IOObjectRelease(device_service);
+            continue;
         }
-        
-        spdlog::info("deviceAdded: Creating AudioDevice");
-        
-        // Now, and *only* now, create the AudioDevice.
-        auto audioDeviceResult = self->createAudioDevice(device);
+
+        spdlog::info("deviceAdded: Creating AudioDevice for service...");
+
+        // Create and Initialize the AudioDevice
+        // createAudioDevice does NOT add to controller anymore
+        auto audioDeviceResult = self->createAudioDevice(device_service);
+
         if (audioDeviceResult) {
-            spdlog::info("deviceAdded: AudioDevice created successfully");
-            {
-                std::lock_guard<std::mutex> lock(self->devicesMutex_);
-                self->devices_.push_back(audioDeviceResult.value());
-            }
+            std::shared_ptr<AudioDevice> newAudioDevice = audioDeviceResult.value();
+            spdlog::info("deviceAdded: AudioDevice created and initialized successfully for GUID 0x{:x}", guid);
+
+            // --->>> ADD DEVICE TO CONTROLLER <<<---
+            spdlog::info("Adding device 0x{:x} to controller.", guid);
+            self->deviceController_->addDevice(newAudioDevice);
+            // TODO: Check return/status of addDevice if it provides one
+
+            // --->>> CALL SWIFT CALLBACK (AFTER ADDING) <<<---
             if (self->callback_) {
-                spdlog::info("deviceAdded: Calling callback");
-                self->callback_(audioDeviceResult.value(), true); // connected = true
+                spdlog::info("deviceAdded: Calling notification callback for GUID 0x{:x}", guid);
+                self->callback_(newAudioDevice, true); // Pass shared_ptr
             }
+
         } else {
-            spdlog::error("deviceAdded: Failed to create AudioDevice: 0x{:x}", static_cast<int>(audioDeviceResult.error()));
+            spdlog::error("deviceAdded: Failed to create/initialize AudioDevice for service: 0x{:x}", static_cast<int>(audioDeviceResult.error()));
+            // Don't add or call callback if creation/init failed
         }
-        
-        IOObjectRelease(device);
+
+        // Release the io_service_t reference obtained from the iterator
+        // createAudioDevice should have managed the reference it uses internally
+        IOObjectRelease(device_service); // Release the iterator's reference
     }
-    spdlog::info("deviceAdded: Finished iterating devices"); 
+    spdlog::info("deviceAdded: Finished iterating devices");
 }
 
 std::expected<std::shared_ptr<AudioDevice>, IOKitError>
@@ -437,4 +447,15 @@ void IOKitFireWireDeviceDiscovery::deviceInterestCallback(void* refCon, io_servi
         spdlog::info("deviceInterestCallback: Device 0x{:x} removed.", guid);
     }
 }
+
+void IOKitFireWireDeviceDiscovery::setDeviceController(std::shared_ptr<DeviceController> controller) {
+    if (deviceController_ == controller) {
+        spdlog::trace("IOKitFireWireDeviceDiscovery::setDeviceController - Controller already set to {}", fmt::ptr(controller.get()));
+        return;
+    }
+    deviceController_ = controller;
+    spdlog::info("IOKitFireWireDeviceDiscovery::setDeviceController - Controller set: {}", fmt::ptr(controller.get()));
+    // Potentially update other internal state if needed when controller is set/changed
+}
+
 } // namespace FWA

@@ -1,9 +1,6 @@
 /**
  * @file main.cpp
- * @brief Entry point for the FireWire Audio Daemon
- *
- * This daemon monitors FireWire devices, detects audio interfaces,
- * and manages their connection and configuration in the system.
+ * @brief Entry point for testing the FireWire Audio C++ Library directly.
  */
 
 #include <iostream>
@@ -12,13 +9,13 @@
 #include "FWA/IOKitFireWireDeviceDiscovery.h"
 #include "FWA/DeviceController.h"
 #include "FWA/CommandInterface.h"
-#include "FWA/DeviceParser.hpp"
-#include <CoreFoundation/CoreFoundation.h> 
+// #include "FWA/DeviceParser.hpp" // No longer need to explicitly create parser here
+#include <CoreFoundation/CoreFoundation.h>
 #include <thread>
 #include <chrono>
-#include <signal.h>
+#include <csignal> // Use csignal for C++ style
 #include "FWA/Helpers.h"
-#include "Isoch/IsoStreamHandler.hpp"
+// #include "Isoch/IsoStreamHandler.hpp" // Keep if testing streaming
 #include "FWA/Error.h"
 #include "FWA/AVCInfoBlock.hpp"
 #include <iomanip>
@@ -27,264 +24,116 @@
 #include <sstream>
 #include <algorithm>
 #include <nlohmann/json.hpp>
+#include <atomic>
 
-// Helper function to recursively print the info block tree
+// Forward declaration for helper
 void printInfoBlockTree(const FWA::AVCInfoBlock& block, int indentLevel);
 static const char* MusicSubunitInfoBlockTypeDescriptions(uint16_t infoBlockType);
 
-// Global objects to gracefully handle termination signals
-std::shared_ptr<FWA::IsoStreamHandler> g_streamHandler;
-bool g_shuttingDown = false;
+// Global flag for shutdown
+std::atomic<bool> g_shuttingDown = false;
+// Global pointer to controller to stop run loop
+std::weak_ptr<FWA::DeviceController> g_controller_wp;
 
-/**
- * @brief Signal handler for graceful shutdown
- * @param signal The signal caught
- */
 void signalHandler(int signal) {
-    if (g_shuttingDown) {
-        // Force exit if already shutting down and another signal arrives
+    if (g_shuttingDown.exchange(true)) {
         std::exit(1);
     }
-    
-    g_shuttingDown = true;
     spdlog::info("Caught signal {} - shutting down...", signal);
-    
-    // Clean up resources in the correct order
-    if (g_streamHandler) {
-        g_streamHandler->stop();
-        g_streamHandler.reset();
+    if (auto controller_sp = g_controller_wp.lock()) {
+        CFRunLoopStop(CFRunLoopGetCurrent());
+    } else {
+        spdlog::warn("Controller already destroyed during shutdown.");
     }
-    
-    // Stop the runloop
-    CFRunLoopStop(CFRunLoopGetCurrent());
 }
 
-/**
- * @brief Main program entry point
- * @return int Exit status
- */
 int main() {
+    std::shared_ptr<spdlog::logger> logger;
+    std::shared_ptr<FWA::DeviceController> controller_sp;
     try {
-        // Set up spdlog
         auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-        auto logger = std::make_shared<spdlog::logger>("daemon_logger", console_sink);
+        logger = std::make_shared<spdlog::logger>("daemon_logger", console_sink);
         spdlog::set_default_logger(logger);
-        spdlog::set_level(spdlog::level::debug); // Set log level to DEBUG!
+        spdlog::set_level(spdlog::level::trace);
+        logger->flush_on(spdlog::level::trace);
+        spdlog::info("main.cpp starting...");
 
-        spdlog::info("Daemon starting...");
-        
-        // Set up signal handling for graceful shutdown
-        signal(SIGINT, signalHandler);  // Ctrl+C
-        signal(SIGTERM, signalHandler); // killall
-        
-        // Create a shared pointer to DeviceController first
-        auto controller = std::make_shared<FWA::DeviceController>(nullptr);
-        
-        // Now create the discovery with the controller
-        auto discovery = std::make_unique<FWA::IOKitFireWireDeviceDiscovery>(controller);
-        
-        // Set the discovery in the controller
-        controller->setDiscovery(std::move(discovery));
+        signal(SIGINT, signalHandler);
+        signal(SIGTERM, signalHandler);
 
-        FWA::DeviceNotificationCallback callback = [&controller, &logger](std::shared_ptr<FWA::AudioDevice> device, bool connected) {
+        controller_sp = std::make_shared<FWA::DeviceController>(nullptr);
+        g_controller_wp = controller_sp;
+        auto discovery = std::make_unique<FWA::IOKitFireWireDeviceDiscovery>(controller_sp);
+        controller_sp->setDiscovery(std::move(discovery));
+
+        FWA::DeviceNotificationCallback cpp_callback =
+            [&logger](std::shared_ptr<FWA::AudioDevice> device, bool connected) {
             if (connected) {
-                spdlog::info("Device connected: {}, Vendor: {}", device->getDeviceName(), device->getVendorName());
-
-                // Get the CommandInterface from the AudioDevice.
-                auto commandInterface = device->getCommandInterface();
-
-                if (!commandInterface) {
-                    spdlog::error("Command interface is NULL");
-                    return;
+                spdlog::info("Device connected: '{}' (Vendor: '{}', GUID: 0x{:x})",
+                             device->getDeviceName(), device->getVendorName(), device->getGuid());
+                // PARSING IS NOW DONE INTERNALLY DURING device->init() triggered by Discovery
+                // We just need to access the results stored in device->getDeviceInfo()
+                const auto& info = device->getDeviceInfo();
+                spdlog::info("--- Parsed Device Capabilities (from main.cpp callback) ---");
+                spdlog::info("  Iso In Plugs:  {}", info.getNumIsoInputPlugs());
+                spdlog::info("  Iso Out Plugs: {}", info.getNumIsoOutputPlugs());
+                spdlog::info("  Ext In Plugs:  {}", info.getNumExternalInputPlugs());
+                spdlog::info("  Ext Out Plugs: {}", info.getNumExternalOutputPlugs());
+                spdlog::info("  Has Music SU:  {}", info.hasMusicSubunit());
+                spdlog::info("  Has Audio SU:  {}", info.hasAudioSubunit());
+                try {
+                    nlohmann::json deviceInfoJson = info.toJson(*device);
+                    spdlog::debug("Device JSON:\n{}", deviceInfoJson.dump(2));
+                } catch (const std::exception& e) {
+                    spdlog::error("Error generating JSON in main.cpp callback: {}", e.what());
                 }
-
-                // Activate the command interface if needed
-                if (commandInterface->isActive()) {
-                    spdlog::info("CommandInterface already activated");
-                } else {
-                    auto activationResult = commandInterface->activate();
-                    if (!activationResult) {
-                        spdlog::error("Failed to activate CommandInterface");
-                        return;
-                    }
-                }
-
-                // --- Device Capabilities Discovery ---
-                spdlog::info("Starting device capability discovery...");
-                FWA::DeviceParser parser(device.get());
-                auto parseResult = parser.parse();
-                if (!parseResult) {
-                    spdlog::error("Device capability discovery failed: 0x{:x}", static_cast<int>(parseResult.error()));
-                } else {
-                    // Print discovered capabilities
-                    const auto& info = device->getDeviceInfo();
-                    std::cout << "\n==== Device Capabilities for: " << device->getDeviceName() << " ====" << std::endl;
-                    std::cout << "Isochronous Input Plugs:  " << info.getNumIsoInputPlugs() << std::endl;
-                    std::cout << "Isochronous Output Plugs: " << info.getNumIsoOutputPlugs() << std::endl;
-                    std::cout << "External Input Plugs:     " << info.getNumExternalInputPlugs() << std::endl;
-                    std::cout << "External Output Plugs:    " << info.getNumExternalOutputPlugs() << std::endl;
-                    std::cout << "Has Music Subunit:        " << (info.hasMusicSubunit() ? "Yes" : "No") << std::endl;
-                    std::cout << "Has Audio Subunit:        " << (info.hasAudioSubunit() ? "Yes" : "No") << std::endl;
-
-                    // List Iso Input Plugs
-                    for (const auto& plug : info.getIsoInputPlugs()) {
-                        std::cout << "  [Iso In Plug " << (int)plug->getPlugNum() << "] Usage: " << plug->getPlugUsageString();
-                        if (plug->getCurrentStreamFormat())
-                            std::cout << ", Format: " << plug->getCurrentStreamFormat()->toString();
-                        std::cout << std::endl;
-                    }
-                    // List Iso Output Plugs
-                    for (const auto& plug : info.getIsoOutputPlugs()) {
-                        std::cout << "  [Iso Out Plug " << (int)plug->getPlugNum() << "] Usage: " << plug->getPlugUsageString();
-                        if (plug->getCurrentStreamFormat())
-                            std::cout << ", Format: " << plug->getCurrentStreamFormat()->toString();
-                        std::cout << std::endl;
-                    }
-                    // List External Input Plugs
-                    for (const auto& plug : info.getExternalInputPlugs()) {
-                        std::cout << "  [Ext In Plug " << (int)plug->getPlugNum() << "] Usage: " << plug->getPlugUsageString();
-                        if (plug->getCurrentStreamFormat())
-                            std::cout << ", Format: " << plug->getCurrentStreamFormat()->toString();
-                        std::cout << std::endl;
-                    }
-                    // List External Output Plugs
-                    for (const auto& plug : info.getExternalOutputPlugs()) {
-                        std::cout << "  [Ext Out Plug " << (int)plug->getPlugNum() << "] Usage: " << plug->getPlugUsageString();
-                        if (plug->getCurrentStreamFormat())
-                            std::cout << ", Format: " << plug->getCurrentStreamFormat()->toString();
-                        std::cout << std::endl;
-                    }
-                    // Music Subunit Plugs
-                    if (info.hasMusicSubunit()) {
-                        const auto& music = info.getMusicSubunit();
-                        std::cout << "Music Subunit Dest Plugs:  " << music.getMusicDestPlugCount() << std::endl;
-                        for (const auto& plug : music.getMusicDestPlugs()) {
-                            std::cout << "  [Music Dest Plug " << (int)plug->getPlugNum() << "] Usage: " << plug->getPlugUsageString();
-                            if (plug->getCurrentStreamFormat())
-                                std::cout << ", Format: " << plug->getCurrentStreamFormat()->toString();
-                            std::cout << std::endl;
-                        }
-                        std::cout << "Music Subunit Source Plugs: " << music.getMusicSourcePlugCount() << std::endl;
-                        for (const auto& plug : music.getMusicSourcePlugs()) {
-                            std::cout << "  [Music Source Plug " << (int)plug->getPlugNum() << "] Usage: " << plug->getPlugUsageString();
-                            if (plug->getCurrentStreamFormat())
-                                std::cout << ", Format: " << plug->getCurrentStreamFormat()->toString();
-                            std::cout << std::endl;
-                        }
-                    }
-                    // Audio Subunit Plugs
-                    if (info.hasAudioSubunit()) {
-                        const auto& audio = info.getAudioSubunit();
-                        std::cout << "Audio Subunit Dest Plugs:  " << audio.getAudioDestPlugCount() << std::endl;
-                        for (const auto& plug : audio.getAudioDestPlugs()) {
-                            std::cout << "  [Audio Dest Plug " << (int)plug->getPlugNum() << "] Usage: " << plug->getPlugUsageString();
-                            if (plug->getCurrentStreamFormat())
-                                std::cout << ", Format: " << plug->getCurrentStreamFormat()->toString();
-                            std::cout << std::endl;
-                        }
-                        std::cout << "Audio Subunit Source Plugs: " << audio.getAudioSourcePlugCount() << std::endl;
-                        for (const auto& plug : audio.getAudioSourcePlugs()) {
-                            std::cout << "  [Audio Source Plug " << (int)plug->getPlugNum() << "] Usage: " << plug->getPlugUsageString();
-                            if (plug->getCurrentStreamFormat())
-                                std::cout << ", Format: " << plug->getCurrentStreamFormat()->toString();
-                            std::cout << std::endl;
-                        }
-                    }
-                    std::cout << "==== End Device Capabilities ====" << std::endl;
-
-                    // --- NEW: Print Music Subunit Status Descriptor Info Block Tree ---
-                    if (info.hasMusicSubunit()) {
-                        const auto& musicSubunit = info.getMusicSubunit();
-                        const auto& topLevelBlocks = musicSubunit.getParsedStatusInfoBlocks();
-                        if (!topLevelBlocks.empty()) {
-                            std::cout << "\n---- Music Subunit Status Descriptor Info Blocks Tree ----" << std::endl;
-                            for (const auto& blockPtr : topLevelBlocks) {
-                                if (blockPtr) {
-                                    printInfoBlockTree(*blockPtr, 1);
-                                }
-                            }
-                            std::cout << "---- End Info Blocks Tree ----" << std::endl;
-                        } else {
-                            if (musicSubunit.getStatusDescriptorData() && !musicSubunit.getStatusDescriptorData()->empty()) {
-                                spdlog::warn("Music Subunit Status Descriptor data was fetched but no top-level info blocks were parsed.");
-                            } else {
-                                spdlog::info("No Music Subunit Status Descriptor info blocks found or parsed.");
+                if (info.hasMusicSubunit()) {
+                    const auto& musicSubunit = info.getMusicSubunit();
+                    const auto& topLevelBlocks = musicSubunit.getParsedStatusInfoBlocks();
+                    if (!topLevelBlocks.empty()) {
+                        spdlog::info("--- Music Subunit Status Descriptor Info Blocks Tree (from main.cpp callback) ---");
+                        for (const auto& blockPtr : topLevelBlocks) {
+                            if (blockPtr) {
+                                std::cout << "--- Block Tree Start ---" << std::endl;
+                                printInfoBlockTree(*blockPtr, 1);
+                                std::cout << "--- Block Tree End ---" << std::endl;
                             }
                         }
                     }
-                    // --- End NEW ---
-
-                    // ***** START JSON EXPORT *****
-                    try {
-                        nlohmann::json deviceInfoJson = info.toJson(*device); // Pass device reference
-                        std::stringstream ssFilename;
-                        ssFilename << device->getDeviceName() << "_"
-                                   << "0x" << std::hex << std::setw(16) << std::setfill('0') << device->getGuid()
-                                   << ".json";
-                        std::string filename = ssFilename.str();
-                        std::replace(filename.begin(), filename.end(), ' ', '_');
-                        spdlog::info("Exporting device info to: {}", filename);
-                        std::ofstream outFile(filename);
-                        if (outFile.is_open()) {
-                            outFile << deviceInfoJson.dump(4);
-                            outFile.close();
-                            spdlog::info("Successfully wrote JSON to {}", filename);
-                        } else {
-                            spdlog::error("Failed to open file {} for writing JSON.", filename);
-                        }
-                    } catch (const std::exception& e) {
-                        spdlog::error("Error during JSON serialization or file writing: {}", e.what());
-                    }
-                    // ***** END JSON EXPORT *****
                 }
-
-                // --- Streaming temporarily disabled ---
-                // g_streamHandler = std::make_shared<FWA::IsoStreamHandler>(device, logger, commandInterface, device->getDeviceInterface());
-                // auto streamResult = g_streamHandler->start();
-                // if (!streamResult) {
-                //     spdlog::error("Failed to start IsoStreamHandler");
-                //     g_streamHandler.reset();
-                //     return;
-                // }
-                // spdlog::info("IsoStreamHandler started successfully");
-                // Stay in the run loop to keep processing device events
-                // Only stop when explicitly requested (via signal handler)
-
             } else {
-                spdlog::info("Device disconnected: {}", device->getGuid());
-                
-                // Clean up the stream handler if the device was disconnected
-                if (g_streamHandler) {
-                    g_streamHandler->stop();
-                    g_streamHandler.reset();
-                }
-                
-                // Don't exit the run loop - wait for another device
+                spdlog::info("Device disconnected: GUID 0x{:x}", device ? device->getGuid() : 0);
             }
         };
 
-        // Start the DeviceController
-        auto result = controller->start(callback);
-        if (!result) {
-            spdlog::error("Failed to start DeviceController: 0x{:x}", static_cast<int>(result.error()));
-            exit(1);
+        auto startResult = controller_sp->start(cpp_callback);
+        if (!startResult) {
+            spdlog::critical("Failed to start DeviceController: 0x{:x}", static_cast<int>(startResult.error()));
+            return 1;
         }
-        spdlog::info("Entering main run loop...");
-        CFRunLoopRun(); // This blocks until CFRunLoopStop is called.
 
-        // Stop the device discovery process
+        spdlog::info("Entering main run loop... Press Ctrl+C to exit.");
+        CFRunLoopRun();
         spdlog::info("Exiting main run loop...");
-        controller->stop();
-
+        if(controller_sp) {
+            spdlog::info("Explicitly stopping controller...");
+            controller_sp->stop();
+        }
     } catch (const spdlog::spdlog_ex& ex) {
         std::cerr << "Log initialization failed: " << ex.what() << std::endl;
         return 1;
     } catch (const std::exception& ex) {
         std::cerr << "An error occurred: " << ex.what() << std::endl;
+        if(controller_sp) { controller_sp->stop(); }
+        return 1;
+    } catch (...) {
+        std::cerr << "An unknown error occurred." << std::endl;
+        if(controller_sp) { controller_sp->stop(); }
         return 1;
     }
 
-    spdlog::info("Daemon shutting down...");
+    spdlog::info("main.cpp finished cleanly.");
+    spdlog::default_logger()->flush();
     return 0;
 }
 

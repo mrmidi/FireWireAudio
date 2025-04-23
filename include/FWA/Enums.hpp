@@ -6,9 +6,14 @@ namespace FWA {
 
 constexpr uint8_t kAVCOpenDescriptorOpcode = 0x08;
 constexpr uint8_t kAVCReadDescriptorOpcode = 0x09;
+constexpr uint8_t kAVCWriteDescriptorOpcode = 0x0A;
+constexpr uint8_t kAVCCreateDescriptorOpcode = 0x0C;
+constexpr uint8_t kAVCReadInfoBlockOpcode = 0x06;
+constexpr uint8_t kAVCWriteInfoBlockOpcode = 0x07;
 constexpr uint8_t kMusicSubunitIdentifierSpecifier = 0x80; // For Music/Audio subunit status descriptor
 constexpr uint8_t kReadResultComplete = 0x10;
 constexpr uint8_t kReadResultMoreData = 0x11;
+constexpr uint8_t kReadResultDataLengthTooLarge = 0x12;
 
 #ifndef kIOReturnBadResponse
 #define kIOReturnBadResponse kIOReturnError
@@ -41,6 +46,25 @@ constexpr uint8_t kAVCDestPlugResultMusicPlugNotExist     = 0x03;
 constexpr uint8_t kAVCDestPlugResultSubunitPlugNotExist   = 0x04;
 constexpr uint8_t kAVCDestPlugResultMusicPlugConnected    = 0x05;
 
+// OPEN DESCRIPTOR Subfunctions (Table 29, TA 2002013)
+constexpr uint8_t kAVCOpenDescSubfuncClose     = 0x00;
+constexpr uint8_t kAVCOpenDescSubfuncReadOpen  = 0x01;
+constexpr uint8_t kAVCOpenDescSubfuncWriteOpen = 0x03;
+
+// WRITE DESCRIPTOR Subfunctions (Table 37, TA 2002013)
+constexpr uint8_t kAVCWriteDescSubfuncChange         = 0x10; // (Not recommended)
+constexpr uint8_t kAVCWriteDescSubfuncReplace        = 0x20;
+constexpr uint8_t kAVCWriteDescSubfuncInsert         = 0x30;
+constexpr uint8_t kAVCWriteDescSubfuncDelete         = 0x40;
+constexpr uint8_t kAVCWriteDescSubfuncPartialReplace = 0x50;
+
+// WRITE INFO BLOCK Subfunctions (Section 7.9.1, TA 2002013)
+constexpr uint8_t kAVCWriteInfoBlockSubfuncPartialReplace = 0x50;
+
+// CREATE DESCRIPTOR Subfunctions (Table 22, TA 2002013)
+constexpr uint8_t kAVCCreateDescSubfuncListOrEntry = 0x00;
+constexpr uint8_t kAVCCreateDescSubfuncEntryAndChild = 0x01;
+
 /**
  * @brief Descriptor specifier type (matches AV/C specification)
  */
@@ -54,12 +78,13 @@ enum class DescriptorSpecifierType : uint8_t {
     EntryByObjectIdGeneral             = 0x23,
     EntryByObjectIdInSubunitListTypeRoot = 0x24, // Not fully implemented
     EntryByObjectIdInSubunit           = 0x25,   // Not fully implemented
-    // Subunit-dependent types (0x80-0xFF) are not fully implemented
+    InfoByTypeAndInstance              = 0x30, // Added for info block specifier
+    InfoByPosition                     = 0x31, // Added for info block specifier
+    // Subunit-dependent types (0x80-0xBF) are not fully implemented
     SubunitDependentStart              = 0x80,
-    SubunitDependentEnd                = 0xFF,
+    SubunitDependentEnd                = 0xBF,
     Unknown                            = 0xFF
 };
-
 
 /**
  * @brief Direction of audio plug (input or output)

@@ -11,8 +11,11 @@
 #include "AudioDevice.h"
 #include <thread>
 #include <mutex>
+#include <memory>
 
 namespace FWA {
+
+class DeviceController; // Forward declaration
 
 /**
  * @brief IOKit implementation of FireWire device discovery
@@ -75,6 +78,12 @@ public:
      * @param callback Test callback function
      */
     void setTestCallback(DeviceNotificationCallback callback);
+
+    /**
+     * @brief Set the device controller
+     * @param controller Shared pointer to the device controller
+     */
+    void setDeviceController(std::shared_ptr<DeviceController> controller);
     
 private:
     mach_port_t                 masterPort_;          ///< IOKit master port
@@ -134,6 +143,7 @@ private:
     static void deviceInterestCallback(void* refCon, io_service_t service, natural_t messageType, void* messageArgument);
     
     std::shared_ptr<DeviceController> deviceController_;  ///< Device controller for device operations
+    std::weak_ptr<DeviceController> deviceControllerWk_; ///< Use weak_ptr if passing shared_ptr? Review this later.
     
     friend class IOKitFireWireDeviceDiscoveryTests;
 };

@@ -1,14 +1,26 @@
-cmake_minimum_required(VERSION 3.26..4.0.0) # better SWIFT support requires 3.26 or later
+cmake_minimum_required(VERSION 3.26..4.0.0)
 
 # Set policies before project() command
-cmake_policy(SET CMP0114 NEW) # For Xcode new build system
-cmake_policy(SET CMP0175 NEW) # For add_custom_command() validation
+cmake_policy(SET CMP0114 NEW)
+cmake_policy(SET CMP0175 NEW)
 
-# Set macOS deployment target to 15
 set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment version")
 
-# Include Objective-C++ language support
-project(FireWireAudioDaemon LANGUAGES CXX OBJC OBJCXX)
+# Define project languages - Include Swift *only* for Xcode generator
+if(CMAKE_GENERATOR MATCHES "Xcode")
+  set(_PROJECT_LANGS CXX OBJC OBJCXX Swift)
+else()
+  set(_PROJECT_LANGS CXX OBJC OBJCXX)
+endif()
+
+project(FireWireAudioDaemon LANGUAGES ${_PROJECT_LANGS})
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_FLAGS   "${CMAKE_CXX_FLAGS}   -stdlib=libc++")
+set(CMAKE_OBJCXX_FLAGS "${CMAKE_OBJCXX_FLAGS} -stdlib=libc++")
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # --- Sanitizer Setup ---
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
@@ -54,69 +66,39 @@ if(ENABLE_TSAN)
 endif()
 # --- End Sanitizer Variable Setup ---
 
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-# Export compile commands (for sonarlint)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
 # --- Dependencies using FetchContent ---
 include(FetchContent)
-
-# spdlog
-FetchContent_Declare(
-    spdlog
-    GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG        v1.15.2
-)
-
-# Catch2
-FetchContent_Declare(
-    catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG        v3.8.0 
-)
-
-# libASPL
-FetchContent_Declare(
-    libASPL
-    GIT_REPOSITORY https://github.com/mrmidi/libASPL.git
-    GIT_TAG main
-    OVERRIDE_FIND_PACKAGE
-)
-
-# Set up override for libaspl
+FetchContent_Declare(spdlog GIT_REPOSITORY https://github.com/gabime/spdlog.git GIT_TAG v1.15.2)
+FetchContent_Declare(nlohmann_json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG v3.12.0)
+set(JSON_BuildTests OFF CACHE BOOL "Disable nlohmann_json tests")
+FetchContent_Declare(catch2 GIT_REPOSITORY https://github.com/catchorg/Catch2.git GIT_TAG v3.8.0)
+set(CATCH2_BUILD_TESTS OFF CACHE BOOL "Disable Catch2 tests")
+FetchContent_Declare(libASPL GIT_REPOSITORY https://github.com/mrmidi/libASPL.git GIT_TAG main OVERRIDE_FIND_PACKAGE)
 set(FETCHCONTENT_FULLY_DISCONNECTED OFF)
 set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/libaspl-override.cmake")
-
-FetchContent_Declare(
-  nlohmann_json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG        v3.12.0
-)
-
-FetchContent_MakeAvailable(spdlog catch2 libASPL nlohmann_json)
+FetchContent_MakeAvailable(spdlog nlohmann_json catch2 libASPL)
 
 # --- Objective-C/Objective-C++ Files for XPC Bridge ---
-# Define these lists ONCE
-set(FWA_XPC_OBJCXX_FILES
-    src/FWA/XPC/XPCBridge.mm
-    src/FWA/XPC/XPCReceiverClient.mm
+set(FWA_XPC_OBJC_FILES src/FWA/XPC/MixedAudioBuffer.m)
+set(FWA_XPC_OBJCXX_FILES src/FWA/XPC/XPCBridge.mm src/FWA/XPC/XPCReceiverClient.mm)
+add_library(FWA_XPC STATIC
+    ${FWA_XPC_OBJC_FILES}
+    ${FWA_XPC_OBJCXX_FILES}
+    include/FWA/XPC/XPCBridge.h include/FWA/XPC/MixedAudioBuffer.h
+    include/FWA/XPC/DuetXPCProtocol.h include/FWA/XPC/DuetXPCClientProtocol.h
+    include/FWA/XPC/XPCReceiverClient.hpp
 )
-set(FWA_XPC_OBJC_FILES
-    src/FWA/XPC/MixedAudioBuffer.m
-)
-set_source_files_properties(${FWA_XPC_OBJCXX_FILES} PROPERTIES LANGUAGE OBJCXX)
 set_source_files_properties(${FWA_XPC_OBJC_FILES} PROPERTIES LANGUAGE OBJC)
+set_source_files_properties(${FWA_XPC_OBJCXX_FILES} PROPERTIES LANGUAGE OBJCXX)
+target_compile_options(FWA_XPC PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-std=c++23 -stdlib=libc++>)
+target_include_directories(FWA_XPC PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_link_libraries(FWA_XPC PUBLIC spdlog::spdlog "-framework Foundation")
 
 # --- Create Isoch Library ---
 add_library(FWAIsoch STATIC
     src/Isoch/AudioDeviceStream.cpp
     src/Isoch/IsoStreamHandler.cpp
     src/Isoch/SharedManagers.cpp
-    
-    # Isoch core
     src/Isoch/core/AmdtpReceiver.cpp
     src/Isoch/core/AmdtpTransmitter.cpp
     src/Isoch/core/IsochBufferManager.cpp
@@ -125,26 +107,18 @@ add_library(FWAIsoch STATIC
     src/Isoch/core/IsochMonitoringManager.cpp
     src/Isoch/core/ReceiverFactory.cpp
     src/Isoch/core/AudioClockPLL.cpp
-    # New refactored components
     src/Isoch/core/IsochDCLManager.cpp
     src/Isoch/core/IsochPortChannelManager.cpp
-    # New transmitter components
     src/Isoch/core/IsochTransmitBufferManager.cpp
     src/Isoch/core/IsochTransmitDCLManager.cpp
     src/Isoch/core/IsochPacketProvider.cpp
-    
-    # Isoch utils
     src/Isoch/utils/AmdtpHelpers.cpp
     src/Isoch/utils/CIPHeaderHandler.cpp
     src/Isoch/utils/RunLoopHelper.cpp
-    
-    # Isoch header files (from include/Isoch)
     include/Isoch/AudioDeviceStream.hpp
     include/Isoch/CIPHeaderHandler.hpp
     include/Isoch/IsoStreamHandler.hpp
     include/Isoch/SharedManagers.hpp
-    
-    # Isoch core headers
     include/Isoch/core/AmdtpReceiver.hpp
     include/Isoch/core/AmdtpTransmitter.hpp
     include/Isoch/core/AmdtpTypes.hpp
@@ -158,140 +132,68 @@ add_library(FWAIsoch STATIC
     include/Isoch/core/IsochPacketProcessor.hpp
     include/Isoch/core/IsochMonitoringManager.hpp
     include/Isoch/core/ReceiverFactory.hpp
+    include/Isoch/core/IsochDCLManager.hpp
+    include/Isoch/core/IsochPortChannelManager.hpp
     include/Isoch/core/AudioClockPLL.hpp
-    # New transmitter component headers
     include/Isoch/core/IsochTransmitBufferManager.hpp
-    
-    # Isoch interfaces
     include/Isoch/interfaces/TransmitterInterfaces.hpp
-    # New interface headers
     include/Isoch/interfaces/ITransmitBufferManager.hpp
     include/Isoch/interfaces/ITransmitDCLManager.hpp
     include/Isoch/interfaces/ITransmitPacketProvider.hpp
-    
-    # Isoch utils headers
     include/Isoch/utils/AmdtpHelpers.hpp
     include/Isoch/utils/CIPHeaderHandler.hpp
     include/Isoch/utils/RingBuffer.hpp
     include/Isoch/utils/RunLoopHelper.hpp
-    
-    # --- Also list XPC Bridge HEADERS needed by Isoch ---
-    include/FWA/XPC/XPCBridge.h
-    include/FWA/XPC/MixedAudioBuffer.h
-    include/FWA/XPC/DuetXPCProtocol.h
-    include/FWA/XPC/DuetXPCClientProtocol.h
+    include/FWA/XPC/XPCBridge.h include/FWA/XPC/MixedAudioBuffer.h
+    include/FWA/XPC/DuetXPCProtocol.h include/FWA/XPC/DuetXPCClientProtocol.h
     include/FWA/XPC/XPCReceiverClient.hpp
 )
+target_include_directories(FWAIsoch PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_link_libraries(FWAIsoch PUBLIC spdlog::spdlog FWA_XPC nlohmann_json::nlohmann_json "-framework IOKit" "-framework CoreFoundation" "-framework Foundation")
 
-# Set include directories for FWAIsoch
-target_include_directories(FWAIsoch
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-)
-
-# Link dependencies for FWAIsoch
-target_link_libraries(FWAIsoch
-    PUBLIC
-        spdlog::spdlog
-        "-framework IOKit"
-        "-framework CoreFoundation"
-        "-framework Foundation"  # Required for Objective-C/Cocoa
-)
-
-# --- Apply Sanitizers to FWAIsoch ---
-if(SANITIZER_FLAGS)
-    string(REPLACE " " ";" SANITIZER_FLAGS_LIST ${SANITIZER_FLAGS})
-    target_compile_options(FWAIsoch PRIVATE ${SANITIZER_FLAGS_LIST})
-endif()
-# --- End Apply Sanitizers to FWAIsoch ---
-
-# --- Create a Library for the Application Code ---
+# --- Create FWA Library (Core C++ Logic + C API) ---
 add_library(FWA STATIC
-    src/FWA/AVCInfoBlock.cpp  
     src/FWA/AudioDevice.cpp
-    src/FWA/DeviceInfo.cpp
-    src/FWA/AudioPlug.cpp
     src/FWA/AudioStreamFormat.cpp
-    src/FWA/MusicSubunit.cpp
-    src/FWA/AudioSubunit.cpp
     src/FWA/CommandInterface.cpp
     src/FWA/DeviceController.cpp
     src/FWA/DeviceParser.cpp
-    src/FWA/UnitPlugDiscoverer.cpp
-    src/FWA/SubunitDiscoverer.cpp
-    src/FWA/PlugDetailParser.cpp
-    src/FWA/DescriptorReader.cpp
-    src/FWA/MusicSubunitDescriptorParser.cpp  # add parser implementation
     src/FWA/DescriptorSpecifier.cpp
     src/FWA/DescriptorUtils.cpp
     src/FWA/Helpers.cpp
     src/FWA/IOKitFireWireDeviceDiscovery.cpp
+    src/FWA/AVCInfoBlock.cpp
+    src/FWA/DeviceInfo.cpp
+    src/FWA/AudioPlug.cpp
+    src/FWA/MusicSubunit.cpp
+    src/FWA/AudioSubunit.cpp
+    src/FWA/UnitPlugDiscoverer.cpp
+    src/FWA/SubunitDiscoverer.cpp
+    src/FWA/PlugDetailParser.cpp
+    src/FWA/DescriptorReader.cpp
+    src/FWA/MusicSubunitDescriptorParser.cpp
     src/FWA/JsonHelpers.cpp
-    # Base headers
+    src/fwa_capi.cpp
     include/FWA/AudioDevice.h
     include/FWA/AudioPlug.hpp
-    include/FWA/AudioStreamFormat.hpp
-    include/FWA/AVCInfoBlock.hpp
-    include/FWA/CommandInterface.h
-    include/FWA/DeviceController.h
-    include/FWA/DeviceInfo.hpp
-    include/FWA/DeviceParser.hpp
-    include/FWA/UnitPlugDiscoverer.hpp
-    include/FWA/SubunitDiscoverer.hpp
-    include/FWA/PlugDetailParser.hpp
-    include/FWA/DescriptorReader.hpp
-    include/FWA/MusicSubunitDescriptorParser.hpp
-    include/FWA/DescriptorSpecifier.hpp
-    include/FWA/DescriptorUtils.hpp
-    include/FWA/Enums.hpp
-    include/FWA/Error.h
-    include/FWA/Helpers.h
-    include/FWA/IFireWireDeviceDiscovery.h
     include/FWA/IOKitFireWireDeviceDiscovery.h
-    include/FWA/Subunit.hpp
-    # XPC Related headers
-    include/FWA/XPC/XPCBridge.h
-    include/FWA/XPC/MixedAudioBuffer.h
-    include/FWA/XPC/DuetXPCProtocol.h
-    include/FWA/XPC/DuetXPCClientProtocol.h
-    include/FWA/XPC/XPCReceiverClient.hpp
-    # Include the Objective-C++ and Objective-C files
-    ${FWA_XPC_OBJCXX_FILES}
-    ${FWA_XPC_OBJC_FILES}
+    include/fwa_capi.h
+    include/FWA/JsonHelpers.hpp
 )
-
-# Set include directories for the FWA library (PUBLIC)
-target_include_directories(FWA
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
+set_target_properties(FWA PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_include_directories(FWA PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>
 )
-
-# Link spdlog, FWAIsoch and needed frameworks to the FWA library
-target_link_libraries(FWA
-    PUBLIC
-        spdlog::spdlog
-        FWAIsoch
-        nlohmann_json::nlohmann_json
-        "-framework Foundation"  # Required for Objective-C/Cocoa
+target_link_libraries(FWA PUBLIC
+    spdlog::spdlog
+    FWAIsoch
+    FWA_XPC
+    nlohmann_json::nlohmann_json
+    "-framework Foundation"
+    "-framework IOKit"
+    "-framework CoreFoundation"
 )
-
-# --- Apply Sanitizers to FWA ---
-if(SANITIZER_FLAGS)
-    string(REPLACE " " ";" SANITIZER_FLAGS_LIST_FWA ${SANITIZER_FLAGS})
-    target_compile_options(FWA PRIVATE ${SANITIZER_FLAGS_LIST_FWA})
-endif()
-# --- End Apply Sanitizers to FWA ---
-
-# --- nlohmann_json include directory propagation (for json_fwd.hpp in headers) ---
-if(TARGET nlohmann_json::nlohmann_json)
-    get_target_property(NLOHMANN_JSON_INCLUDE_DIR nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
-    if(NLOHMANN_JSON_INCLUDE_DIR)
-        target_include_directories(FWA PUBLIC ${NLOHMANN_JSON_INCLUDE_DIR})
-        target_include_directories(FWAIsoch PUBLIC ${NLOHMANN_JSON_INCLUDE_DIR})
-    endif()
-endif()
 
 # --- XPC Service Target ---
 set(XPC_SERVICE_NAME "FWADaemon")
@@ -338,28 +240,6 @@ add_custom_command(TARGET ${XPC_SERVICE_NAME} POST_BUILD
     $<TARGET_BUNDLE_CONTENT_DIR:${XPC_SERVICE_NAME}>/Resources/Assets.xcassets
 )
 
-# --- Main Executable ---
-# Renamed to avoid case conflict with FWADaemon
-add_executable(FireWireAudioDaemon src/main.cpp)
-# --- Apply Sanitizer Linker Flags to Main Executable ---
-if(SANITIZER_LINK_FLAGS)
-    string(REPLACE " " ";" SANITIZER_LINK_FLAGS_LIST ${SANITIZER_LINK_FLAGS})
-    target_link_options(FireWireAudioDaemon PRIVATE ${SANITIZER_LINK_FLAGS_LIST})
-endif()
-# --- End Apply Sanitizer Linker Flags ---
-
-# Link macOS frameworks and the FWA library
-target_link_libraries(FireWireAudioDaemon
-    PRIVATE
-        FWA
-        "-framework IOKit"
-        "-framework Foundation"
-        "-framework CoreFoundation"
-)
-
-# Make the XPC service a dependency of the main daemon
-add_dependencies(FireWireAudioDaemon ${XPC_SERVICE_NAME})
-
 # --- Audio Driver Target ---
 add_library(FWADriver MODULE src/driver/FWADriver.cpp)
 set_target_properties(FWADriver PROPERTIES
@@ -384,6 +264,55 @@ target_link_libraries(FWADriver
         "-framework CoreFoundation"
         "-framework CoreAudio"
 )
+
+# --- Swift Application Target ---
+if(CMAKE_GENERATOR MATCHES "Xcode")
+    set(SWIFT_APP_SOURCES
+        FWA-Control/DeviceManager.swift
+        FWA-Control/FWControlApp.swift
+        FWA-Control/ContentView.swift
+        FWA-Control/AudioSubunitDetailsView.swift
+        FWA-Control/DeviceBasicInfoView.swift
+        FWA-Control/DeviceRefreshButton.swift
+        FWA-Control/DeviceStatusIndicatorView.swift
+        # FWA-Control/dummy.swift
+        FWA-Control/ExpandableSectionView.swift
+        FWA-Control/FWAManagerBridge.swift
+        FWA-Control/HexDumpView.swift
+        FWA-Control/InfoBlockDetailView.swift
+        FWA-Control/MusicSubunitDetailsView.swift
+        FWA-Control/PlugDetailView.swift
+        FWA-Control/PlugListView.swift
+        FWA-Control/SubunitInfoSectionView.swift
+        FWA-Control/Test.swift
+        FWA-Control/UnitInfoSectionView.swift
+        # Models subdirectory
+        FWA-Control/Models/DomainModels.swift
+        FWA-Control/Models/Enums.swift
+        FWA-Control/Models/JsonDecodables.swift
+    )
+    add_executable(FWA-Control MACOSX_BUNDLE ${SWIFT_APP_SOURCES})
+    set_target_properties(FWA-Control PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/FWA-Control/Info.plist"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "net.mrmidi.fwa-control"
+        MACOSX_BUNDLE_BUNDLE_NAME "FWA Control"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "net.mrmidi.fwa-control"
+        XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_SOURCE_DIR}/FWA-Control/FWA_Control.entitlements"
+        XCODE_ATTRIBUTE_SWIFT_OBJC_INTEROP_MODE "objc"
+        XCODE_ATTRIBUTE_SWIFT_INCLUDE_PATHS "${CMAKE_SOURCE_DIR}/include;${FWA_CAPI_MODULEMAP_PATH}"
+    )
+    target_link_libraries(FWA-Control PRIVATE
+        FWA
+        "-framework SwiftUI"
+        "-framework Cocoa"
+        "-framework Foundation"
+        "-framework IOKit"
+        "-framework CoreFoundation"
+        "-framework CoreAudio"
+    )
+    add_dependencies(FWA-Control FWA)
+endif()
 
 # --- Documentation ---
 find_package(Doxygen)
@@ -527,4 +456,15 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/include/xpc PREFIX "XPC Header Fil
     include/xpc/DuetXPC/XPCReceiverClientProtocol.h
     include/xpc/DuetXPC/MixedAudioBuffer.h
 
+)
+
+# --- Source Groups for Swift Application ---
+source_group("Source Files\\C_API" FILES src/fwa_capi.cpp)
+source_group("Header Files\\C_API" FILES include/fwa_capi.h)
+source_group("Swift Application" FILES ${SWIFT_APP_SOURCES})
+# Group Swift Application Models files explicitly
+source_group("Swift Application\\Models" FILES
+    FWA-Control/Models/DomainModels.swift
+    FWA-Control/Models/Enums.swift
+    FWA-Control/Models/JsonDecodables.swift
 )

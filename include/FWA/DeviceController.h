@@ -59,6 +59,18 @@ public:
         discovery_ = std::move(discovery);
     }
 
+    /**
+     * @brief Get a raw pointer to the discovery implementation (for C API interop)
+     */
+    IFireWireDeviceDiscovery* getDiscoveryRaw() const { return discovery_.get(); }
+
+    /**
+     * @brief Add a new device to the managed list
+     * @param device Device to add
+     */
+    void addDevice(std::shared_ptr<AudioDevice> device);
+
+
 private:
     std::unique_ptr<IFireWireDeviceDiscovery> discovery_;      ///< Device discovery implementation
     std::vector<std::shared_ptr<AudioDevice>> devices_;        ///< List of active devices
@@ -69,11 +81,6 @@ private:
     // runloop ref
     CFRunLoopRef runLoopRef_;
 
-    /**
-     * @brief Add a new device to the managed list
-     * @param device Device to add
-     */
-    void addDevice(std::shared_ptr<AudioDevice> device);
 
     /**
      * @brief Remove a device from the managed list
