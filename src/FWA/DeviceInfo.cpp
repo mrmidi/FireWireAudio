@@ -4,11 +4,13 @@
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <iomanip>
+#include <spdlog/spdlog.h>
 using json = nlohmann::json;
 using namespace FWA::JsonHelpers;
 
 namespace FWA {
 json DeviceInfo::toJson(const AudioDevice& device) const {
+    spdlog::debug("DeviceInfo::toJson: Entering for GUID 0x{:x}", device.getGuid());
     json j;
     // Basic Info - Get from the passed device object
     std::stringstream ssGuid;
@@ -36,14 +38,22 @@ json DeviceInfo::toJson(const AudioDevice& device) const {
 
     // Subunits (Access members of 'this' DeviceInfo object)
     json subunitsJson = json::object();
+    spdlog::debug("DeviceInfo::toJson: Checking subunits. hasMusicSubunit_ = {}, hasAudioSubunit_ = {}", hasMusicSubunit_, hasAudioSubunit_);
     if (hasMusicSubunit_) {
+        spdlog::debug("DeviceInfo::toJson: Calling serializeMusicSubunit...");
         subunitsJson["music"] = serializeMusicSubunit(device);
+    } else {
+        spdlog::debug("DeviceInfo::toJson: Skipping music subunit serialization (flag is false).");
     }
     if (hasAudioSubunit_) {
-         subunitsJson["audio"] = serializeAudioSubunit(device);
+        spdlog::debug("DeviceInfo::toJson: Calling serializeAudioSubunit...");
+        subunitsJson["audio"] = serializeAudioSubunit(device);
+    } else {
+        spdlog::debug("DeviceInfo::toJson: Skipping audio subunit serialization (flag is false).");
     }
     j["subunits"] = subunitsJson;
 
+    spdlog::debug("DeviceInfo::toJson: Exiting for GUID 0x{:x}", device.getGuid());
     return j;
 }
 
@@ -56,27 +66,13 @@ json DeviceInfo::serializePlugList(const std::vector<std::shared_ptr<AudioPlug>>
 }
 
 json DeviceInfo::serializeMusicSubunit(const AudioDevice& device) const {
-    json j = json::object();
-    j["id"] = musicSubunit_.getId();
-    j["numDestPlugs"] = musicSubunit_.getMusicDestPlugCount();
-    j["numSourcePlugs"] = musicSubunit_.getMusicSourcePlugCount();
-    j["destPlugs"] = serializePlugList(musicSubunit_.getMusicDestPlugs());
-    j["sourcePlugs"] = serializePlugList(musicSubunit_.getMusicSourcePlugs());
-    if (musicSubunit_.getStatusDescriptorData()) {
-        j["statusDescriptorRaw"] = serializeHexBytes(musicSubunit_.getStatusDescriptorData().value());
-        j["statusDescriptorParsed"] = serializeInfoBlockList(musicSubunit_.getParsedStatusInfoBlocks());
-    }
-    return j;
+    spdlog::debug("DeviceInfo::serializeMusicSubunit: Entering. Calling musicSubunit_.toJson().");
+    return musicSubunit_.toJson();
 }
 
 json DeviceInfo::serializeAudioSubunit(const AudioDevice& device) const {
-    json j = json::object();
-    j["id"] = audioSubunit_.getId();
-    j["numDestPlugs"] = audioSubunit_.getAudioDestPlugCount();
-    j["numSourcePlugs"] = audioSubunit_.getAudioSourcePlugCount();
-    j["destPlugs"] = serializePlugList(audioSubunit_.getAudioDestPlugs());
-    j["sourcePlugs"] = serializePlugList(audioSubunit_.getAudioSourcePlugs());
-    return j;
+    spdlog::debug("DeviceInfo::serializeAudioSubunit: Entering. Calling audioSubunit_.toJson().");
+    return audioSubunit_.toJson();
 }
 
 json DeviceInfo::serializeInfoBlockList(const std::vector<std::shared_ptr<AVCInfoBlock>>& blocks) const {

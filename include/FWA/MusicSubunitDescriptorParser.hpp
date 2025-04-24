@@ -1,3 +1,4 @@
+// MusicSubunitDescriptorParser.hpp
 #pragma once
 
 #include "FWA/Error.h"
@@ -8,24 +9,35 @@
 
 namespace FWA {
 
-class DescriptorReader;
+class DescriptorAccessor;
 class MusicSubunit;
 class AVCInfoBlock;
 
 class MusicSubunitDescriptorParser {
 public:
-    explicit MusicSubunitDescriptorParser(DescriptorReader& descriptorReader);
+    explicit MusicSubunitDescriptorParser(DescriptorAccessor& descriptorAccessor);
     ~MusicSubunitDescriptorParser() = default;
     std::expected<void, IOKitError> fetchAndParse(MusicSubunit& musicSubunit);
+
+    // Parse the Music Subunit Status Descriptor (info blocks)
+    std::expected<void, IOKitError> parseMusicSubunitStatusDescriptor(
+        const std::vector<uint8_t>& descriptorData,
+        MusicSubunit& musicSubunit);
+
+    // Parse the Music Subunit Identifier Descriptor (capabilities)
+    std::expected<void, IOKitError> parseMusicSubunitIdentifierDescriptor(
+        const std::vector<uint8_t>& descriptorData,
+        MusicSubunit& musicSubunit);
+
+    // std::expected<void,IOKitError> fetchAndParse(MusicSubunit& musicSubunit);
+
     MusicSubunitDescriptorParser(const MusicSubunitDescriptorParser&) = delete;
     MusicSubunitDescriptorParser& operator=(const MusicSubunitDescriptorParser&) = delete;
     MusicSubunitDescriptorParser(MusicSubunitDescriptorParser&&) = delete;
     MusicSubunitDescriptorParser& operator=(MusicSubunitDescriptorParser&&) = delete;
+
 private:
-    DescriptorReader& descriptorReader_;
-    std::expected<void, IOKitError> parseMusicSubunitStatusDescriptor(
-        const std::vector<uint8_t>& descriptorData,
-        MusicSubunit& musicSubunit);
+    DescriptorAccessor& descriptorAccessor_;
 };
 
 } // namespace FWA

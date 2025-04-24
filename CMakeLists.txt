@@ -156,6 +156,7 @@ add_library(FWA STATIC
     src/FWA/AudioDevice.cpp
     src/FWA/AudioStreamFormat.cpp
     src/FWA/CommandInterface.cpp
+    src/FWA/DescriptorAccessor.cpp
     src/FWA/DeviceController.cpp
     src/FWA/DeviceParser.cpp
     src/FWA/DescriptorSpecifier.cpp
@@ -166,6 +167,7 @@ add_library(FWA STATIC
     src/FWA/DeviceInfo.cpp
     src/FWA/AudioPlug.cpp
     src/FWA/MusicSubunit.cpp
+    src/FWA/MusicSubunitCapabilities.cpp
     src/FWA/AudioSubunit.cpp
     src/FWA/UnitPlugDiscoverer.cpp
     src/FWA/SubunitDiscoverer.cpp
@@ -232,6 +234,27 @@ target_include_directories(${XPC_SERVICE_NAME} PRIVATE
 target_link_libraries(${XPC_SERVICE_NAME} PRIVATE
     "-framework Foundation"
 )
+
+# --- Standalone Test Daemon (if not using Xcode) ---
+if(NOT CMAKE_GENERATOR MATCHES "Xcode")
+    message(STATUS "Xcode generator not detected, building FirewireAudioDaemon from main.cpp")
+    add_executable(FirewireAudioDaemon src/main.cpp)
+    target_link_libraries(FirewireAudioDaemon PRIVATE FWA) # Link against the core FWA library
+
+    # Apply sanitizer flags if enabled
+    if(SANITIZER_FLAGS)
+        target_compile_options(FirewireAudioDaemon PRIVATE ${SANITIZER_FLAGS})
+    endif()
+    if(SANITIZER_LINK_FLAGS)
+        target_link_options(FirewireAudioDaemon PRIVATE ${SANITIZER_LINK_FLAGS})
+    endif()
+
+    # Add install rule if desired
+    # install(TARGETS FirewireAudioDaemon DESTINATION bin)
+
+else()
+     message(STATUS "Xcode generator detected, skipping standalone FirewireAudioDaemon target.")
+endif()
 
 # Copy XPC Service assets with explicit POST_BUILD
 add_custom_command(TARGET ${XPC_SERVICE_NAME} POST_BUILD

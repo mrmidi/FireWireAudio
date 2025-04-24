@@ -47,12 +47,25 @@ public:
     std::expected<void, IOKitError> writeInfoBlock(uint8_t targetAddr, const std::vector<uint8_t>& path, uint16_t offset, uint16_t originalLength, const std::vector<uint8_t>& replacementData, uint8_t groupTag = 0x00);
     void updateDescriptorSizes(size_t sizeOfListId, size_t sizeOfObjectId, size_t sizeOfEntryPos);
 
+    // Getters for descriptor ID sizes
+    size_t getSizeOfListID() const {
+        return sizeOfListId_;
+    }
+
+    size_t getSizeOfObjectID() const {
+        return sizeOfObjectId_;
+    }
+
+    size_t getSizeOfObjectPosition() const {
+        return sizeOfEntryPos_;
+    }
+
 private:
     CommandInterface* commandInterface_;
     size_t sizeOfListId_;
     size_t sizeOfObjectId_;
     size_t sizeOfEntryPos_;
-    static constexpr uint16_t MAX_READ_CHUNK_SIZE = 256;
+    static constexpr uint16_t MAX_READ_CHUNK_SIZE = 128;
     static constexpr int MAX_READ_ATTEMPTS = 1024;
     std::expected<void, IOKitError> checkStandardResponse(
         const std::expected<std::vector<uint8_t>, IOKitError>& result,

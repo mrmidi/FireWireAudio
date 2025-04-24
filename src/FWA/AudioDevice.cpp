@@ -8,6 +8,7 @@
 #include <IOKit/IOMessage.h>
 #include <CoreFoundation/CFNumber.h> // For CFNumber*
 #include <memory> // Required for std::make_shared
+#include <format>
 
 namespace FWA {
 
@@ -86,7 +87,7 @@ std::expected<void, IOKitError> AudioDevice::init()
         spdlog::error("AudioDevice::init: Failed to get fwUnit: 0x{:x}", result);
         return std::unexpected(static_cast<IOKitError>(result != kIOReturnSuccess ? result : kIOReturnNotFound));
     }
-    spdlog::debug("AudioDevice::init: Got fwUnit_ service: {}", (void*)fwUnit_);
+    spdlog::debug("AudioDevice::init: Got fwUnit_ service: {:#x}", fwUnit_);
 
     result = IORegistryEntryGetParentEntry(fwUnit_, kIOServicePlane, &fwDevice_);
     if (result != kIOReturnSuccess || !fwDevice_) {
@@ -94,7 +95,7 @@ std::expected<void, IOKitError> AudioDevice::init()
         IOObjectRelease(fwUnit_); fwUnit_ = 0;
         return std::unexpected(static_cast<IOKitError>(result != kIOReturnSuccess ? result : kIOReturnNotFound));
     }
-    spdlog::debug("AudioDevice::init: Got fwDevice_ service: {}", (void*)fwDevice_);
+    spdlog::debug("AudioDevice::init: Got fwDevice_ service: {:#x}", fwDevice_);
 
     result = IORegistryEntryGetParentEntry(fwDevice_, kIOServicePlane, &busController_);
     if (result != kIOReturnSuccess || !busController_) {
@@ -103,7 +104,7 @@ std::expected<void, IOKitError> AudioDevice::init()
         IOObjectRelease(fwUnit_); fwUnit_ = 0;
         return std::unexpected(static_cast<IOKitError>(result != kIOReturnSuccess ? result : kIOReturnNotFound));
     }
-    spdlog::debug("AudioDevice::init: Got busController_ service: {}", (void*)busController_);
+    spdlog::debug("AudioDevice::init: Got busController_ service: {:#x}", busController_);
 
     // ---- Call the new method to read Vendor/Model Info ----
     IOReturn infoResult = readVendorAndModelInfo();
@@ -469,6 +470,82 @@ std::expected<void, IOKitError> AudioDevice::setUnitIsochPlugStreamFormat(
     spdlog::trace(" -> Sending Set Stream Format command (0xBF/C2): {}", Helpers::formatHexBytes(cmd));
     auto result = commandInterface_->sendCommand(cmd);
     return checkControlResponse(result, "SetUnitIsochPlugStreamFormat(0xBF/C2)");
+}
+
+std::expected<void, IOKitError> AudioDevice::changeMusicPlugConnection(
+    uint8_t musicPlugType,
+    uint16_t musicPlugID,
+    uint8_t newDestSubunitPlugID,
+    uint8_t newStreamPosition0,
+    uint8_t newStreamPosition1)
+{
+    if (!commandInterface_) return std::unexpected(IOKitError::NotReady);
+    if (!info_.hasMusicSubunit()) return std::unexpected(IOKitError::NotFound);
+
+    spdlog::info("AudioDevice::changeMusicPlugConnection: Type=0x{:02x}, ID={}, NewDestPlug={}, NewStreamPos=[{}, {}]",
+                 musicPlugType, musicPlugID, newDestSubunitPlugID, newStreamPosition0, newStreamPosition1);
+
+    std::vector<uint8_t> cmd = buildDestPlugConfigureControlCmd(
+        kAVCDestPlugSubfuncChangeConnection, // Subfunction 0x01
+        musicPlugType,
+        musicPlugID,
+        newDestSubunitPlugID,     // New destination
+        newStreamPosition0,    // New stream pos
+        newStreamPosition1);   // New stream pos
+
+    spdlog::trace(" -> Sending Change Music Plug Connection command (0x40/01): {}", Helpers::formatHexBytes(cmd));
+    auto result = commandInterface_->sendCommand(cmd);
+
+    auto check = checkControlResponse(result, "ChangeMusicPlugConnection(0x40/01)");
+    if (!check) return check;
+
+    return checkDestPlugConfigureControlSubcommandResponse(result.value(), "ChangeMusicPlugConnection(0x40/01)");
+}
+
+std::expected<void, IOKitError> AudioDevice::disconnectAllMusicPlugs(uint8_t fromDestSubunitPlugID) {
+    if (!commandInterface_) return std::unexpected(IOKitError::NotReady);
+    if (!info_.hasMusicSubunit()) return std::unexpected(IOKitError::NotFound);
+
+    spdlog::info("AudioDevice::disconnectAllMusicPlugs: FromDestPlugID={}", fromDestSubunitPlugID);
+
+    std::vector<uint8_t> cmd = buildDestPlugConfigureControlCmd(
+        kAVCDestPlugSubfuncDisconnectAll, // Subfunction 0x03
+        0xFF,                             // musicPlugType = FF
+        0xFFFF,                           // musicPlugID = FFFF
+        fromDestSubunitPlugID,            // Specify which destination plug to clear
+        0xFF,                             // streamPosition[0] = FF
+        0xFF);                            // streamPosition[1] = FF
+
+    spdlog::trace(" -> Sending Disconnect All Music Plugs command (0x40/03): {}", Helpers::formatHexBytes(cmd));
+    auto result = commandInterface_->sendCommand(cmd);
+
+    auto check = checkControlResponse(result, "DisconnectAllMusicPlugs(0x40/03)");
+    if (!check) return check;
+
+    return checkDestPlugConfigureControlSubcommandResponse(result.value(), "DisconnectAllMusicPlugs(0x40/03)");
+}
+
+std::expected<void, IOKitError> AudioDevice::defaultConfigureMusicPlugs() {
+     if (!commandInterface_) return std::unexpected(IOKitError::NotReady);
+     if (!info_.hasMusicSubunit()) return std::unexpected(IOKitError::NotFound);
+
+     spdlog::info("AudioDevice::defaultConfigureMusicPlugs: Resetting connections to default.");
+
+     std::vector<uint8_t> cmd = buildDestPlugConfigureControlCmd(
+         kAVCDestPlugSubfuncDefaultConfigure, // Subfunction 0x04
+         0xFF,                                // musicPlugType = FF
+         0xFFFF,                              // musicPlugID = FFFF
+         0xFF,                                // destSubunitPlugID = FF
+         0xFF,                                // streamPosition[0] = FF
+         0xFF);                               // streamPosition[1] = FF
+
+     spdlog::trace(" -> Sending Default Configure Music Plugs command (0x40/04): {}", Helpers::formatHexBytes(cmd));
+     auto result = commandInterface_->sendCommand(cmd);
+
+     auto check = checkControlResponse(result, "DefaultConfigureMusicPlugs(0x40/04)");
+     if (!check) return check;
+
+     return checkDestPlugConfigureControlSubcommandResponse(result.value(), "DefaultConfigureMusicPlugs(0x40/04)");
 }
 
 } // namespace FWA

@@ -1,41 +1,109 @@
+// MusicSubunitDescriptorParser.cpp
 #include "FWA/MusicSubunitDescriptorParser.hpp"
-#include "FWA/DescriptorReader.hpp"
+#include "FWA/DescriptorAccessor.hpp"
+#include "FWA/DescriptorUtils.hpp"
 #include "FWA/MusicSubunit.hpp"
-#include "FWA/Enums.hpp"
-#include "FWA/Subunit.hpp"
-#include "FWA/AVCInfoBlock.hpp"
-#include "FWA/Error.h" // For IOKitError with std::expected
 #include "FWA/Helpers.h"
-#include <stdexcept> // For std::exception
 #include <spdlog/spdlog.h>
-#include <vector>
-#include <memory>
-#include <algorithm> // for std::min
-
 
 namespace FWA {
 
-MusicSubunitDescriptorParser::MusicSubunitDescriptorParser(DescriptorReader& descriptorReader)
-    : descriptorReader_(descriptorReader)
+MusicSubunitDescriptorParser::MusicSubunitDescriptorParser(DescriptorAccessor& descriptorAccessor)
+    : descriptorAccessor_(descriptorAccessor)
 {}
 
-
-std::expected<void, IOKitError> MusicSubunitDescriptorParser::fetchAndParse(MusicSubunit& musicSubunit) {
-    spdlog::debug("MusicSubunitDescriptorParser: Fetching Music Subunit Status Descriptor...");
+std::expected<void,IOKitError> MusicSubunitDescriptorParser::fetchAndParse(MusicSubunit& musicSubunit) {
     uint8_t subunitAddr = Helpers::getSubunitAddress(SubunitType::Music, musicSubunit.getId());
-    auto descriptorDataResult = descriptorReader_.readDescriptor(
-        subunitAddr,
-        static_cast<DescriptorSpecifierType>(kMusicSubunitIdentifierSpecifier),
-        {}
+    // log entry
+    spdlog::debug("MusicSubunitDescriptorParser: Fetching and parsing Music Subunit Descriptor for subunit address 0x{:02x}", subunitAddr);
+    // ---- FIX: pull the real sizes from the accessor ----
+    auto listIdSize     = descriptorAccessor_.getSizeOfListID();
+    auto objectIdSize   = descriptorAccessor_.getSizeOfObjectID();
+    auto positionSize   = descriptorAccessor_.getSizeOfObjectPosition();
+
+    // ---- FIX: use the Identifier descriptor (0x00) specifier ----
+    auto idDescSpecifier = DescriptorUtils::buildDescriptorSpecifier(
+        DescriptorSpecifierType::UnitSubunitIdentifier,  // <–– 0x00
+        listIdSize,
+        objectIdSize,
+        positionSize
     );
-    // BP HERE
-    if (descriptorDataResult) {
-        // Pass the successfully read data to the parser
-        return this->parseMusicSubunitStatusDescriptor(descriptorDataResult.value(), musicSubunit);
-    } else {
-        spdlog::warn("MusicSubunitDescriptorParser: Failed to read Music Subunit Status Descriptor: 0x{:x}", static_cast<int>(descriptorDataResult.error()));
+
+    if (idDescSpecifier.empty()) {
+        spdlog::error("MusicSubunitDescriptorParser: failed to build IDENTIFIER specifier");
+        return std::unexpected(IOKitError::InternalError);
+    }
+
+    auto descriptorDataResult = descriptorAccessor_.read(
+        subunitAddr,
+        idDescSpecifier,
+        0,  // offset 0
+        0   // length 0 = read the whole descriptor
+    );
+
+    if (!descriptorDataResult) {
+        spdlog::warn("…GET_DESCRIPTOR failed: 0x{:02x}", int(descriptorDataResult.error()));
+        if (descriptorDataResult.error() == IOKitError::Unsupported) {
+            // it just doesn’t know how to talk our AV/C; not fatal
+            return {};
+        }
         return std::unexpected(descriptorDataResult.error());
     }
+
+    // Now parse the *Identifier* descriptor, which contains 
+    // music_subunit_dependent_information → general_capability.
+    return this->parseMusicSubunitIdentifierDescriptor(
+        descriptorDataResult.value(), 
+        musicSubunit
+    );
+}
+
+std::expected<void,IOKitError> MusicSubunitDescriptorParser::parseMusicSubunitIdentifierDescriptor(
+    const std::vector<uint8_t>& descriptorData,
+    MusicSubunit& musicSubunit)
+{
+    spdlog::debug("MSDP: Parsing Music Subunit Identifier Descriptor, {} bytes", descriptorData.size());
+    if (descriptorData.size() < 8) {
+        spdlog::error("MSDP: Identifier descriptor too short ({} bytes)", descriptorData.size());
+        return std::unexpected(IOKitError::BadArgument);
+    }
+    size_t offset = 0;
+    // Read descriptor_length
+    uint16_t descriptorLength = static_cast<uint16_t>(descriptorData[offset]) << 8 |
+                                descriptorData[offset+1];
+    offset += 2;
+    // Read generation_ID
+    uint8_t genId = descriptorData[offset++];
+    // Sizes
+    uint8_t sizeListId = descriptorData[offset++];
+    uint8_t sizeObjId  = descriptorData[offset++];
+    uint8_t sizePos    = descriptorData[offset++];
+    // Number of root lists
+    uint16_t numRoots = static_cast<uint16_t>(descriptorData[offset]) << 8 |
+                        descriptorData[offset+1];
+    offset += 2;
+    // Skip root_list_IDs
+    offset += static_cast<size_t>(numRoots) * sizeListId;
+    if (offset + 2 > descriptorData.size()) {
+        spdlog::error("MSDP: Identifier descriptor missing dependent info length");
+        return std::unexpected(IOKitError::BadArgument);
+    }
+    // Dependent info length
+    uint16_t depLen = static_cast<uint16_t>(descriptorData[offset]) << 8 |
+                      descriptorData[offset+1];
+    offset += 2;
+    if (offset + depLen > descriptorData.size()) {
+        spdlog::error("MSDP: Dependent info length ({}) exceeds descriptor size ({})", depLen, descriptorData.size());
+        return std::unexpected(IOKitError::BadArgument);
+    }
+    // Slice out the type-dependent info
+    std::vector<uint8_t> depInfo(
+        descriptorData.begin() + offset,
+        descriptorData.begin() + offset + depLen
+    );
+    // TODO: parse depInfo into musicSubunit capabilities
+    spdlog::warn("MSDP: parseMusicSubunitIdentifierDescriptor is not fully implemented");
+    return {};
 }
 
 std::expected<void, IOKitError> MusicSubunitDescriptorParser::parseMusicSubunitStatusDescriptor(
@@ -194,5 +262,6 @@ std::expected<void, IOKitError> MusicSubunitDescriptorParser::parseMusicSubunitS
 
     return {};
 }
+
 
 } // namespace FWA

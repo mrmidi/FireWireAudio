@@ -59,6 +59,8 @@ private:
     CommandInterface* commandInterface_; ///< Non-owning pointer to the communication interface.
     DeviceInfo& info_; ///< Reference to the DeviceInfo object to populate.
 
+    bool descriptorMechanismSupported_{false}; // <-- Track if standard descriptor mechanism is supported
+
     // --- New Helper Methods for Plug Parsing ---
     std::expected<void, IOKitError> parseUnitPlugs(class PlugDetailParser& plugDetailParser, DeviceInfo& info);
     std::expected<void, IOKitError> parseSubunitPlugs(class PlugDetailParser& plugDetailParser, DeviceInfo& info);

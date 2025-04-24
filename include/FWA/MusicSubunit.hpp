@@ -4,6 +4,7 @@
 #include "FWA/Subunit.hpp"      // Inherit from base
 #include "FWA/AudioPlug.hpp"    // Contains AudioPlugs
 #include "FWA/AVCInfoBlock.hpp" // Contains AVCInfoBlocks
+#include "FWA/MusicSubunitCapabilities.hpp" // <-- Include the new header
 #include <vector>
 #include <memory>
 #include <cstdint>
@@ -24,6 +25,7 @@ class DeviceParser;
  */
 class MusicSubunit : public Subunit {
     friend class DeviceParser; // Allow parser to modify internal state
+    friend class MusicSubunitDescriptorParser; // <-- Grant friend access
 
 public:
     /**
@@ -44,6 +46,7 @@ public:
     const std::vector<std::shared_ptr<AudioPlug>>& getMusicSourcePlugs() const { return musicSourcePlugs_; }
     const std::optional<std::vector<uint8_t>>& getStatusDescriptorData() const { return statusDescriptorData_; }
     const std::vector<std::shared_ptr<AVCInfoBlock>>& getParsedStatusInfoBlocks() const { return parsedStatusInfoBlocks_; }
+    const std::optional<MusicSubunitCapabilities>& getCapabilities() const { return capabilities_; }
 
     void setMusicDestPlugCount(uint32_t count) { musicDestPlugCount_ = count; }
     void setMusicSourcePlugCount(uint32_t count) { musicSourcePlugCount_ = count; }
@@ -68,6 +71,9 @@ private:
 
     std::optional<std::vector<uint8_t>> statusDescriptorData_;          ///< Raw status descriptor bytes
     std::vector<std::shared_ptr<AVCInfoBlock>> parsedStatusInfoBlocks_; ///< Parsed info blocks from status descriptor
+
+    // --- NEW: Store for static capabilities ---
+    std::optional<MusicSubunitCapabilities> capabilities_;
 
     // Prevent copying/moving directly if managing resources uniquely
     MusicSubunit(const MusicSubunit&) = delete;

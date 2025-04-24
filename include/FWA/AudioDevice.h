@@ -180,6 +180,39 @@ public:
         PlugDirection direction,
         uint8_t plugNum,
         const AudioStreamFormat& format);
+
+    /**
+     * @brief Changes an existing connection for a music input plug.
+     *        Executes CONNECT then DISCONNECT atomically on the target.
+     *        (Subfunction 0x01 of DESTINATION PLUG CONFIGURE)
+     * @param musicPlugType The type of the music input plug (e.g., 0x00 Audio, 0x01 MIDI).
+     * @param musicPlugID The ID of the music input plug.
+     * @param newDestSubunitPlugID The ID of the *new* destination subunit plug to connect to.
+     * @param newStreamPosition0 Stream position byte 0 for the new connection.
+     * @param newStreamPosition1 Stream position byte 1 for the new connection.
+     * @return Success or IOKitError.
+     */
+    std::expected<void, IOKitError> changeMusicPlugConnection(
+        uint8_t musicPlugType,
+        uint16_t musicPlugID,
+        uint8_t newDestSubunitPlugID,
+        uint8_t newStreamPosition0,
+        uint8_t newStreamPosition1);
+
+    /**
+     * @brief Disconnects all music input plugs from a specific destination subunit plug.
+     *        (Subfunction 0x03 of DESTINATION PLUG CONFIGURE)
+     * @param fromDestSubunitPlugID The ID of the destination subunit plug to disconnect from.
+     * @return Success or IOKitError.
+     */
+    std::expected<void, IOKitError> disconnectAllMusicPlugs(uint8_t fromDestSubunitPlugID);
+
+    /**
+     * @brief Resets all music plug connections to their default configuration.
+     *        (Subfunction 0x04 of DESTINATION PLUG CONFIGURE)
+     * @return Success or IOKitError.
+     */
+    std::expected<void, IOKitError> defaultConfigureMusicPlugs();
     // --- END NEW CONTROL METHODS ---
 
 private:

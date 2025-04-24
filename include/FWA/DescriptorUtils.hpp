@@ -82,13 +82,14 @@ public:
          size_t sizeOfObjectId,
          size_t sizeOfEntryPos);
 
-private:
-     // Helper for writing multi-byte values (MSB first)
-     static bool appendBytes(std::vector<uint8_t>& vec, uint64_t val, size_t numBytes);
-     // Helper for reading multi-byte values (MSB first)
-     static uint64_t readBytes(const uint8_t* buffer, size_t numBytes);
-     // Helper to get effective size using default if needed
-     static size_t getEffectiveSize(size_t dynamicSize, size_t defaultSize);
+         // Helper for writing multi-byte values (MSB first)
+         static bool appendBytes(std::vector<uint8_t>& vec, uint64_t val, size_t numBytes);
+         // Helper for reading multi-byte values (MSB first)
+         static uint64_t readBytes(const uint8_t* buffer, size_t numBytes);
+         // Helper to get effective size using default if needed
+         static size_t getEffectiveSize(size_t dynamicSize, size_t defaultSize);
+
+
 };
 
 } // namespace FWA
