@@ -58,6 +58,7 @@ final class DeviceManager: ObservableObject {
             }
         }
     }
+    @Published var deviceJsons: [UInt64: String] = [:] // Store original JSON per device
     // Configuration
     @Published var logBufferSize: Int = 500 // Make buffer size configurable/published if needed
 
@@ -340,6 +341,7 @@ final class DeviceManager: ObservableObject {
         }
         defer { FWADevice_FreeString(cJsonString) } // Ensure C string is freed
         let jsonString = String(cString: cJsonString)
+        deviceJsons[guid] = jsonString // Store original JSON
 
         // --- Step 2: Decode JSON string into intermediate `JsonDeviceData` ---
         guard !jsonString.isEmpty, let jsonData = jsonString.data(using: .utf8) else {

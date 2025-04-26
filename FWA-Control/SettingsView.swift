@@ -3,55 +3,93 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @EnvironmentObject var manager: DeviceManager // Access manager if needed, e.g., for buffer size
-
-    // MARK: - AppStorage Properties
-    @AppStorage("settings.logBufferSize") private var logBufferSize: Int = 500 // Default value
+    @EnvironmentObject var manager: DeviceManager
+    @AppStorage("settings.logBufferSize") private var logBufferSize: Int = 500
     @AppStorage("settings.autoConnect") private var autoConnect: Bool = false
-    // Add other settings here as needed
-
-    // MARK: - Body
+    @State private var daemonInstalled = false // Placeholder
+    @State private var driverInstalled = false // Placeholder
+    
     var body: some View {
-        Form { // Use Form for standard settings layout
-            // --- Logging Section ---
-            Section("Logging") {
-                // Log Buffer Size
-                Stepper("Log Buffer Size: \(logBufferSize) entries", value: $logBufferSize, in: 100...5000, step: 100)
-                    .onChange(of: logBufferSize) { newValue in
-                        manager.logBufferSize = newValue
-                        print("Log buffer size set to: \(newValue)")
+        TabView {
+            // --- Basic Settings Tab ---
+            Form {
+                Section(header: Label("Logging", systemImage: "doc.plaintext").font(.headline)) {
+                    HStack {
+                        Text("Log Buffer Size")
+                        Spacer()
+                        Stepper(value: $logBufferSize, in: 100...5000, step: 100) {
+                            Text("\(logBufferSize)")
+                                .frame(width: 60, alignment: .trailing)
+                        }
+                        .onChange(of: logBufferSize) { newValue in
+                            manager.logBufferSize = newValue
+                        }
+                        .onAppear {
+                            manager.logBufferSize = logBufferSize
+                        }
                     }
-                    .onAppear {
-                        manager.logBufferSize = logBufferSize
+                    Text("Maximum number of log entries to keep in memory.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.leading, 2)
+                }
+                Section(header: Label("Behavior", systemImage: "gearshape").font(.headline)) {
+                    Toggle(isOn: $autoConnect) {
+                        Text("Auto-connect on startup")
                     }
-                Text("Maximum number of log entries to keep in memory.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    Text("Automatically start the engine when the application launches.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.leading, 2)
+                }
             }
-
-            // --- Behavior Section ---
-            Section("Behavior") {
-                Toggle("Auto-connect on startup", isOn: $autoConnect)
-                    .onChange(of: autoConnect) { newValue in
-                        print("Auto-connect setting changed to: \(newValue)")
-                        // Note: DeviceManager needs logic to check this setting on launch
+            .formStyle(.grouped)
+            .tabItem {
+                Label("Basic", systemImage: "gearshape")
+            }
+            // --- System Tab ---
+            VStack(alignment: .leading, spacing: 24) {
+                GroupBox(label: Label("Daemon", systemImage: "bolt.horizontal.circle").font(.headline)) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "circle.fill")
+                            .foregroundColor(.red)
+                            .imageScale(.large)
+                        Text("Not Installed")
+                            .foregroundColor(.red)
+                        Spacer()
+                        Button(daemonInstalled ? "Reinstall Daemon" : "Install Daemon") {
+                            // Placeholder action
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(true) // Placeholder
                     }
-                Text("Automatically start the engine when the application launches.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .padding(.vertical, 4)
+                }
+                GroupBox(label: Label("Driver", systemImage: "shippingbox").font(.headline)) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "circle.fill")
+                            .foregroundColor(.red)
+                            .imageScale(.large)
+                        Text("Not Installed")
+                            .foregroundColor(.red)
+                        Spacer()
+                        Button(driverInstalled ? "Reinstall Driver" : "Install Driver") {
+                            // Placeholder action
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(true) // Placeholder
+                    }
+                    .padding(.vertical, 4)
+                }
+                Spacer()
             }
-
-            // --- Appearance Section (Optional) ---
-            /*
-            Section("Appearance") {
-                // Theme picker, font size, etc.
+            .padding()
+            .tabItem {
+                Label("System", systemImage: "desktopcomputer")
             }
-            */
-
-            Spacer() // Push sections to top
         }
-        .padding() // Add padding around the Form
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top) // Align form to top
+        .padding()
+        .frame(minWidth: 420, minHeight: 340)
     }
 }
 

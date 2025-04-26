@@ -674,6 +674,12 @@ void AmdtpTransmitter::prepareCIPHeader(CIPHeader* outHeader) {
 }
 
 
+// bool AmdtpTransmitter::pushAudioData(const void* data, size_t size) {
+//     // TODO: Implement actual audio data handling
+//     return true;
+// }
+
+
 
 } // namespace Isoch
 } // namespace FWA

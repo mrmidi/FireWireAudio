@@ -1,6 +1,7 @@
 // RootView.swift
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 
 struct ContentView: View {
@@ -9,6 +10,10 @@ struct ContentView: View {
 
     // State for the selected tab
     @State private var selectedTab: Int = 0 // 0: Overview, 1: Matrix, 2: Logs, 3: AV/C
+
+    // State for file export
+    @State private var showExportJsonSheet = false
+    @State private var exportJsonContent: String = ""
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -39,6 +44,19 @@ struct ContentView: View {
         .environmentObject(manager) // Make manager available to all tabs
         .navigationTitle("FWA Control") // Keep the window title
         .toolbar {
+            // --- Export JSON Button ---
+            ToolbarItemGroup {
+                if let guid = manager.devices.keys.sorted().first, // Use first device for now
+                   let json = manager.deviceJsons[guid], !json.isEmpty {
+                    Button {
+                        exportJsonContent = json
+                        showExportJsonSheet = true
+                    } label: {
+                        Label("Export JSON", systemImage: "square.and.arrow.up")
+                    }
+                    .help("Export original device JSON")
+                }
+            }
             // Always‐visible engine controls (no explicit placement)
             ToolbarItemGroup {
                 Button { manager.start() } label: { Label("Start", systemImage: "play.fill") }
@@ -56,10 +74,34 @@ struct ContentView: View {
                 }
             }
         }
+        .fileExporter(
+            isPresented: $showExportJsonSheet,
+            document: JsonDocument(content: exportJsonContent),
+            contentType: .json,
+            defaultFilename: "fwa-device.json"
+        ) { result in
+            // Optionally handle result
+        }
     }
 
     private func showExportLogs() {
         // This function can be implemented to trigger log export in LogConsoleView
+    }
+}
+
+// Helper for JSON file export
+struct JsonDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    var content: String
+    init(content: String) { self.content = content }
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents,
+              let string = String(data: data, encoding: .utf8)
+        else { throw CocoaError(.fileReadCorruptFile) }
+        content = string
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        return FileWrapper(regularFileWithContents: content.data(using: .utf8)!)
     }
 }
 

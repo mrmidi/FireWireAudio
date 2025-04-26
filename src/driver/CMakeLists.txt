@@ -1,4 +1,8 @@
 # Driver CMakeLists.txt
+# TODO: 
+# Build with -Os -fno-stack-protector -fomit-frame-pointer -ftrivial-auto-var-init=zero only for the RT translation unit
+# NOT NOW, After initial testing
+
 add_library(FWADriver MODULE
     FWADriver.cpp
     FWADriverDevice.cpp

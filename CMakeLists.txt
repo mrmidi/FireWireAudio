@@ -78,6 +78,16 @@ set(FETCHCONTENT_FULLY_DISCONNECTED OFF)
 # set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/libaspl-override.cmake")
 FetchContent_MakeAvailable(spdlog nlohmann_json catch2 libASPL)
 
+# Shared library for common code
+add_library(Shared STATIC
+    src/shared/SharedMemoryStructures.cpp
+)
+target_include_directories(Shared PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/shared
+)
+target_link_libraries(Shared PUBLIC spdlog)
+
 # --- Modularized Subdirectories ---
 add_subdirectory(src/FWA/XPC)
 add_subdirectory(src/Isoch)
@@ -88,8 +98,10 @@ add_subdirectory(src/driver)
 set(XPC_SERVICE_NAME "FWADaemon")
 set(XPC_SERVICE_SOURCES
     src/xpc/FWADaemon/main.m
-    src/xpc/FWADaemon/FWADaemon.m
+    src/xpc/FWADaemon/FWADaemon.mm
     src/xpc/FWADaemon/MixedAudioBuffer.m
+    src/xpc/FWADaemon/RingBufferManager.mm
+    src/xpc/FWADaemon/ShmIsochBridge.mm
 )
 
 # Create XPC Service bundle target as an executable
@@ -115,12 +127,22 @@ set_target_properties(${XPC_SERVICE_NAME} PROPERTIES
 # Set include directories for XPC Service
 target_include_directories(${XPC_SERVICE_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include/xpc/FWADaemon
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon
 )
 
 # Link frameworks for XPC Service
 target_link_libraries(${XPC_SERVICE_NAME} PRIVATE
     "-framework Foundation"
 )
+
+# Ensure FWADaemon can find shared headers and links Shared
+if(TARGET FWADaemon)
+    target_include_directories(FWADaemon PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/shared
+    )
+    target_link_libraries(FWADaemon PRIVATE Shared)
+endif()
 
 # --- Standalone Test Daemon (if not using Xcode) ---
 if(NOT CMAKE_GENERATOR MATCHES "Xcode")
@@ -141,6 +163,16 @@ if(NOT CMAKE_GENERATOR MATCHES "Xcode")
 
 else()
      message(STATUS "Xcode generator detected, skipping standalone FirewireAudioDaemon target.")
+endif()
+
+# Ensure FirewireAudioDaemon can find shared headers and links Shared
+if(TARGET FirewireAudioDaemon)
+    target_link_libraries(FirewireAudioDaemon PRIVATE Shared)
+endif()
+
+# Ensure FWADriver can find shared headers and links Shared
+if(TARGET FWADriver)
+    target_link_libraries(FWADriver PRIVATE Shared)
 endif()
 
 # Copy XPC Service assets with explicit POST_BUILD
@@ -202,6 +234,11 @@ if(CMAKE_GENERATOR MATCHES "Xcode")
         "-framework CoreAudio"
     )
     add_dependencies(FWA-Control FWA)
+endif()
+
+# Ensure FWA-Control can find shared headers and links Shared
+if(TARGET FWA-Control)
+    target_link_libraries(FWA-Control PRIVATE Shared)
 endif()
 
 # --- Documentation ---
@@ -336,7 +373,7 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/include PREFIX "Capabilities" FILE
 # --- Source Groups for XPC Service ---
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src/xpc PREFIX "XPC Source Files" FILES
     src/xpc/FWADaemon/main.m
-    src/xpc/FWADaemon/FWADaemon.m
+    src/xpc/FWADaemon/FWADaemon.mm
     src/xpc/FWADaemon/MixedAudioBuffer.m
 )
 

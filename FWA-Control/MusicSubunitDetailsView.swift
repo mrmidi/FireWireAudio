@@ -44,7 +44,6 @@ struct MusicSubunitDetailsView: View {
                     Divider()
                 }
             }
-             Spacer() // Push content up if possible
         }
         .padding()
     }

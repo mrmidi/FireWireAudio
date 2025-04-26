@@ -1,6 +1,7 @@
 #import "FWADaemon.h"
 #import "FWAClientNotificationProtocol.h"
 #import "FWADaemonControlProtocol.h"
+#import "RingBufferManager.hpp"
 
 // Simple class to hold client info
 @interface ClientInfo : NSObject
@@ -236,6 +237,14 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
              NSLog(@"[FWADaemon] WARNING: unregisterClient called for unknown clientID '%@'.", clientID);
          }
      }];
+}
+
+- (void)setupOutputRingBuffer:(NSFileHandle *)shmFD
+                    withReply:(void (^)(BOOL))reply
+{
+    int fd = shmFD.fileDescriptor;      // duped for us by XPC runtime
+    BOOL ok = RingBufferManager::instance().map(fd);
+    if (reply) reply(ok);
 }
 
 // --- Status & Config ---

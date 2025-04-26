@@ -33,7 +33,7 @@ public:
     explicit RingBuffer(uint32_t size, std::shared_ptr<spdlog::logger> logger = nullptr)
         : _size(next_power_of_two(size))
         , _size_mask(_size - 1)
-        , _buf(new char[_size])
+        , _buf(static_cast<char*>(std::aligned_alloc(64, _size)))
         , _logger(logger)
     {
         if (_logger) {
@@ -64,13 +64,17 @@ public:
     /// Return the number of bytes of space available for reading
     [[nodiscard]] uint32_t read_space() const
     {
-        return read_space_internal(_read_head, _write_head);
+        const uint32_t r = _read_head.load(std::memory_order_relaxed);
+        const uint32_t w = _write_head.load(std::memory_order_acquire);
+        return read_space_internal(r, w);
     }
 
     /// Return the number of bytes of space available for writing
     [[nodiscard]] uint32_t write_space() const
     {
-        return write_space_internal(_read_head, _write_head);
+        const uint32_t r = _read_head.load(std::memory_order_acquire);
+        const uint32_t w = _write_head.load(std::memory_order_relaxed);
+        return write_space_internal(r, w);
     }
 
     /// Return the capacity (i.e. total write space when empty)
@@ -145,17 +149,13 @@ public:
     }
 
 private:
-    static uint32_t next_power_of_two(uint32_t size)
+    static uint32_t next_power_of_two(uint32_t s)
     {
-        // http://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
-        size--;
-        size |= size >> 1U;
-        size |= size >> 2U;
-        size |= size >> 4U;
-        size |= size >> 8U;
-        size |= size >> 16U;
-        size++;
-        return size;
+#if __cplusplus >= 202002L
+        return std::bit_ceil(s);
+#else
+        --s; s |= s >> 1; s |= s >> 2; s |= s >> 4; s |= s >> 8; s |= s >> 16; return ++s;
+#endif
     }
 
     [[nodiscard]] uint32_t write_space_internal(uint32_t r, uint32_t w) const
@@ -221,23 +221,23 @@ private:
 #ifdef __ARM_NEON
         uint8_t* d = static_cast<uint8_t*>(dst);
         const uint8_t* s = static_cast<const uint8_t*>(src);
-        
-        // For small copies, use standard memcpy
-        if (size < 64) {
+        // For small copies (<128 B) use the compiler’s inline memcpy
+        if (size < 128) {
             std::memcpy(d, s, size);
             return;
         }
-        
-        // Process in chunks of 16 bytes (128 bits)
+        // Aligned bulk copy – 64-byte step, unroll ×4
         size_t i = 0;
-        size_t simd_end = size - (size % 16);
-        
-        for (; i < simd_end; i += 16) {
-            uint8x16_t data = vld1q_u8(s + i);
-            vst1q_u8(d + i, data);
+        for (; i + 64 <= size; i += 64) {
+            uint8x16x4_t v = vld1q_u8_x4(s + i);   // four 16-B loads
+            vst1q_u8_x4(d + i, v);                 // four stores
         }
-        
-        // Handle remaining bytes
+        // Remaining multiples of 16 B
+        size_t simd_end = size - ((size - i) % 16);
+        for (; i < simd_end; i += 16) {
+            vst1q_u8(d + i, vld1q_u8(s + i));
+        }
+        // Tail (<16 B)
         for (; i < size; ++i) {
             d[i] = s[i];
         }

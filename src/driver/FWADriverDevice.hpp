@@ -36,6 +36,16 @@ public:
         return kAudioDeviceTransportTypeFireWire;
     }
 
+    // --- IO Operation Override ---
+    OSStatus DoIOOperation(AudioObjectID objectID,
+                           AudioObjectID streamID,
+                           UInt32 clientID,
+                           UInt32 operationID,
+                           UInt32 ioBufferFrameSize,
+                           const AudioServerPlugInIOCycleInfo* ioCycleInfo,
+                           void* ioMainBuffer,
+                           void* ioSecondaryBuffer) override;
+
 private:
     // Helper to get the simulated supported rates
     std::vector<AudioValueRange> GetSimulatedAvailableSampleRates() const;

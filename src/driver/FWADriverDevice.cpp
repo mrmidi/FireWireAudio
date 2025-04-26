@@ -8,6 +8,8 @@
 #include <libkern/OSByteOrder.h>
 #include <limits>
 #include <cassert>
+#include "FWADriverHandler.hpp"
+#include <CoreAudio/AudioServerPlugIn.h>
 constexpr const char* LogPrefix = "FWADriverASPL: ";
 
 // --- Local Helper Function ---
@@ -153,4 +155,52 @@ std::vector<AudioValueRange> FWADriverDevice::GetSimulatedAvailableSampleRates()
         {88200.0, 88200.0},
         {96000.0, 96000.0}
     };
+}
+
+OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
+                                        AudioObjectID streamID,
+                                        UInt32 clientID,
+                                        UInt32 operationID,
+                                        UInt32 ioBufferFrameSize,
+                                        const AudioServerPlugInIOCycleInfo* ioCycleInfo,
+                                        void* ioMainBuffer,
+                                        void* ioSecondaryBuffer)
+{
+    // Only handle WriteMix and ReadInput
+    if (operationID == kAudioServerPlugInIOOperationWriteMix) {
+        auto stream = GetStreamByID(streamID);
+        if (!stream) {
+            GetContext()->Tracer->Message("%sERROR: DoIOOperation: Unknown stream ID %u", LogPrefix, streamID);
+            return kAudioHardwareBadStreamError;
+        }
+        AudioStreamBasicDescription format = stream->GetVirtualFormat();
+        uint32_t bytesPerFrame = format.mBytesPerFrame;
+        if (bytesPerFrame == 0) {
+            GetContext()->Tracer->Message("%sERROR: DoIOOperation: Invalid bytesPerFrame (0) for stream %u", LogPrefix, streamID);
+            return kAudioHardwareUnspecifiedError;
+        }
+        FWADriverHandler* ioHandler = static_cast<FWADriverHandler*>(GetIOHandler());
+        if (!ioHandler || !ioHandler->IsSharedMemoryReady()) {
+            GetContext()->Tracer->Message("%sERROR: DoIOOperation: Shared memory not ready", LogPrefix);
+            return kAudioHardwareUnspecifiedError;
+        }
+        bool success = ioHandler->PushToSharedMemory(static_cast<const AudioBufferList*>(ioMainBuffer),
+                                                     ioCycleInfo->mOutputTime,
+                                                     ioBufferFrameSize,
+                                                     bytesPerFrame);
+        // Optionally log on overrun (already handled in handler)
+        (void)success;
+        return kAudioHardwareNoError;
+    } else if (operationID == kAudioServerPlugInIOOperationReadInput) {
+        // Provide silence for input
+        AudioBufferList* inputBufferList = static_cast<AudioBufferList*>(ioMainBuffer);
+        for (UInt32 i = 0; i < inputBufferList->mNumberBuffers; ++i) {
+            if (inputBufferList->mBuffers[i].mData) {
+                memset(inputBufferList->mBuffers[i].mData, 0, inputBufferList->mBuffers[i].mDataByteSize);
+            }
+        }
+        return kAudioHardwareNoError;
+    }
+    // Ignore other operations
+    return kAudioHardwareNoError;
 }
