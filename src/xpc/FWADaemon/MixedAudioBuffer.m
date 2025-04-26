@@ -1,6 +1,6 @@
 //
 //  MixedAudioBuffer.m
-//  DuetXPC
+//  FWADaemon
 //
 //  Created by Alexander Shabelnikov on 13.02.2025.
 //

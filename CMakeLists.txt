@@ -87,9 +87,9 @@ add_subdirectory(src/driver)
 # --- XPC Service Target ---
 set(XPC_SERVICE_NAME "FWADaemon")
 set(XPC_SERVICE_SOURCES
-    src/xpc/DuetXPC/main.m
-    src/xpc/DuetXPC/DuetXPC.m
-    src/xpc/DuetXPC/MixedAudioBuffer.m
+    src/xpc/FWADaemon/main.m
+    src/xpc/FWADaemon/FWADaemon.m
+    src/xpc/FWADaemon/MixedAudioBuffer.m
 )
 
 # Create XPC Service bundle target as an executable
@@ -100,8 +100,8 @@ set_target_properties(${XPC_SERVICE_NAME} PROPERTIES
     BUNDLE TRUE
     BUNDLE_EXTENSION "xpc"
     MACOSX_BUNDLE TRUE
-    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/DuetXPC/Info.plist"
-    XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/DuetXPC/DuetXPC.entitlements"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon/Info.plist"
+    XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon/FWADaemon.entitlements"
     XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
     PREFIX ""
     SUFFIX ""
@@ -114,7 +114,7 @@ set_target_properties(${XPC_SERVICE_NAME} PROPERTIES
 
 # Set include directories for XPC Service
 target_include_directories(${XPC_SERVICE_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/xpc/DuetXPC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/xpc/FWADaemon
 )
 
 # Link frameworks for XPC Service
@@ -146,7 +146,7 @@ endif()
 # Copy XPC Service assets with explicit POST_BUILD
 add_custom_command(TARGET ${XPC_SERVICE_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/DuetXPC/Assets.xcassets
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon/Assets.xcassets
     $<TARGET_BUNDLE_CONTENT_DIR:${XPC_SERVICE_NAME}>/Resources/Assets.xcassets
 )
 
@@ -335,18 +335,19 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/include PREFIX "Capabilities" FILE
 
 # --- Source Groups for XPC Service ---
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src/xpc PREFIX "XPC Source Files" FILES
-    src/xpc/DuetXPC/main.m
-    src/xpc/DuetXPC/DuetXPC.m
-    src/xpc/DuetXPC/MixedAudioBuffer.m
+    src/xpc/FWADaemon/main.m
+    src/xpc/FWADaemon/FWADaemon.m
+    src/xpc/FWADaemon/MixedAudioBuffer.m
 )
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/include/xpc PREFIX "XPC Header Files" FILES
-    include/xpc/DuetXPC/DuetXPC.h
-    include/xpc/DuetXPC/DuetXPCProtocol.h
-    include/xpc/DuetXPC/DuetXPCClientProtocol.h
-    include/xpc/DuetXPC/XPCReceiverClientProtocol.h
-    include/xpc/DuetXPC/MixedAudioBuffer.h
-
+    include/xpc/FWADaemon/FWADaemon.h
+    include/xpc/FWADaemon/FWADaemonProtocol.h
+    include/xpc/FWADaemon/FWADaemonClientProtocol.h
+    include/xpc/FWADaemon/FWADaemonControlProtocol.h
+    include/xpc/FWADaemon/FWAClientNotificationProtocol.h
+    include/xpc/FWADaemon/XPCReceiverClientProtocol.h
+    include/xpc/FWADaemon/MixedAudioBuffer.h
 )
 
 # --- Source Groups for Swift Application ---

@@ -1,18 +1,18 @@
 //
-//  DuetXPCProtocol.h
-//  DuetXPC
+//  FWADaemonProtocol.h
+//  FWADaemon
 //
 //  Created by Alexander Shabelnikov on 13.02.2025.
 //
 
-#ifndef DuetXPCProtocol_h
-#define DuetXPCProtocol_h
+#ifndef FWADaemonProtocol_h
+#define FWADaemonProtocol_h
 
 #import <Foundation/Foundation.h>
 #import "MixedAudioBuffer.h"
-#import "DuetXPCClientProtocol.h"
+#import "FWADaemonClientProtocol.h"
 
-@protocol DuetXPCProtocol
+@protocol FWADaemonProtocol
 
 // Sends an audio buffer from the driver.
 - (void)sendAudioBuffer:(MixedAudioBuffer *)buffer withReply:(void (^)(BOOL success))reply;
@@ -26,7 +26,6 @@
 // register the client using its listener endpoint.
 - (void)registerClientWithEndpoint:(NSXPCListenerEndpoint *)clientEndpoint;
 
-
 @end
 
-#endif /* DuetXPCProtocol_h */
+#endif /* FWADaemonProtocol_h */

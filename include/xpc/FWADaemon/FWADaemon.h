@@ -1,17 +1,17 @@
 //
-//  DuetXPC.h
-//  DuetXPC
+//  FWADaemon.h
+//  FWADaemon
 //
 //  Created by Alexander Shabelnikov on 13.02.2025.
 //
 
-#ifndef DuetXPC_h
-#define DuetXPC_h
+#ifndef FWADaemon_h
+#define FWADaemon_h
 
 #import <Foundation/Foundation.h>
-#import "DuetXPCProtocol.h"
+#import "FWADaemonProtocol.h"
 
-@interface DuetXPC : NSObject <DuetXPCProtocol>
+@interface FWADaemon : NSObject <FWADaemonProtocol>
 
 @property (nonatomic, strong, readonly) NSArray<NSXPCConnection *> *clients;
 
@@ -19,4 +19,4 @@
 
 @end
 
-#endif /* DuetXPC_h */
+#endif /* FWADaemon_h */
