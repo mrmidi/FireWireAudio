@@ -2,9 +2,7 @@
 #include <os/log.h>
 
 OSStatus FWADriverHandler::OnStartIO() {
-    os_log(OS_LOG_DEFAULT, "FWADriverHandler: OnStartIO called.");
-    // Placeholder: Initialize XPC or IPC resources if needed
-    // (XPC logic not implemented yet)
+    // Real-time path: Avoid logging
     return kAudioHardwareNoError;
 }
 
@@ -13,9 +11,9 @@ void FWADriverHandler::OnWriteMixedOutput(const std::shared_ptr<aspl::Stream>& s
                                           double timestamp,
                                           const void* buffer,
                                           unsigned int bufferByteSize) {
-    os_log(OS_LOG_DEFAULT, "FWADriverHandler: OnWriteMixedOutput called (size: %u bytes)", bufferByteSize);
+    // Real-time path: Avoid logging
     if (!buffer || bufferByteSize == 0) {
-        os_log_error(OS_LOG_DEFAULT, "FWADriverHandler: OnWriteMixedOutput received empty buffer.");
+        // Optionally, log critical errors with os_log or Tracer if needed (not recommended in RT)
         return;
     }
     // Placeholder: Forward buffer to XPC bridge or IPC mechanism
@@ -23,7 +21,7 @@ void FWADriverHandler::OnWriteMixedOutput(const std::shared_ptr<aspl::Stream>& s
 }
 
 void FWADriverHandler::OnStopIO() {
-    os_log(OS_LOG_DEFAULT, "FWADriverHandler: OnStopIO called.");
+    // Real-time path: Avoid logging
     // Placeholder: Clean up XPC or IPC resources if needed
     // (XPC logic not implemented yet)
 }

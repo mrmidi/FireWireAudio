@@ -26,8 +26,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         -m|--mode)
             MODE="$2"
-            if [[ "$MODE" != "isoch" && "$MODE" != "fwa" && "$MODE" != "modified" && "$MODE" != "swift" && "$MODE" != "driver" ]]; then
-                echo "Error: Mode must be either 'isoch', 'fwa', 'modified', 'swift', or 'driver'"
+            if [[ "$MODE" != "isoch" && "$MODE" != "fwa" && "$MODE" != "modified" && "$MODE" != "swift" && "$MODE" != "driver" && "$MODE" != "xpc" ]]; then
+                echo "Error: Mode must be either 'isoch', 'fwa', 'modified', 'swift', 'driver', or 'xpc'"
                 exit 1
             fi
             # Set default output file based on mode if not explicitly specified
@@ -39,12 +39,14 @@ while [[ $# -gt 0 ]]; do
                 OUTPUT_FILE="swift.txt"
             elif [[ "$OUTPUT_FILE" == "isoch.txt" && "$MODE" == "driver" ]]; then
                 OUTPUT_FILE="driver.txt"
+            elif [[ "$OUTPUT_FILE" == "isoch.txt" && "$MODE" == "xpc" ]]; then
+                OUTPUT_FILE="xpc.txt"
             fi
             shift 2
             ;;
         -h|--help)
             echo "Usage: $0 [-m|--mode mode] [-e|--extract file_to_extract] [-i|--input input_file] [-o|--output output_file]"
-            echo "  -m, --mode       Specify the code stack to gather: 'isoch' (default), 'fwa', 'modified', 'swift', or 'driver'"
+            echo "  -m, --mode       Specify the code stack to gather: 'isoch' (default), 'fwa', 'modified', 'swift', 'driver', or 'xpc'"
             echo "  -e, --extract    Specify a file to extract from the input file"
             echo "  -i, --input      Specify the input file (default: isoch.txt, fwa.txt, or modified.txt based on mode)"
             echo "  -o, --output     Specify the output file (default: isoch.txt, fwa.txt, or modified.txt based on mode)"
@@ -124,6 +126,26 @@ if [[ "$MODE" == "swift" ]]; then
         echo "=== $file ===" >> "$OUTPUT_FILE"
         cat "$file" >> "$OUTPUT_FILE"
         echo -e "\n\n" >> "$OUTPUT_FILE"
+    done
+    chmod +x "$0"
+    echo "Done! Created $OUTPUT_FILE"
+    exit 0
+fi
+
+# Add xpc mode: gather all .m, .mm, .h files from src/xpc and include/xpc
+if [[ "$MODE" == "xpc" ]]; then
+    rm -f "$OUTPUT_FILE"
+    echo "Creating $OUTPUT_FILE with all XPC source and header files..."
+    for DIR in "src/xpc" "include/xpc"; do
+        if [ -d "$DIR" ]; then
+            find "$DIR" -type f \( -name "*.m" -o -name "*.mm" -o -name "*.h" \) | while read -r file; do
+                echo "=== $file ===" >> "$OUTPUT_FILE"
+                cat "$file" >> "$OUTPUT_FILE"
+                echo -e "\n\n" >> "$OUTPUT_FILE"
+            done
+        else
+            echo "Warning: $DIR directory not found!"
+        fi
     done
     chmod +x "$0"
     echo "Done! Created $OUTPUT_FILE"
