@@ -26,8 +26,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         -m|--mode)
             MODE="$2"
-            if [[ "$MODE" != "isoch" && "$MODE" != "fwa" && "$MODE" != "modified" && "$MODE" != "swift" ]]; then
-                echo "Error: Mode must be either 'isoch', 'fwa', 'modified', or 'swift'"
+            if [[ "$MODE" != "isoch" && "$MODE" != "fwa" && "$MODE" != "modified" && "$MODE" != "swift" && "$MODE" != "driver" ]]; then
+                echo "Error: Mode must be either 'isoch', 'fwa', 'modified', 'swift', or 'driver'"
                 exit 1
             fi
             # Set default output file based on mode if not explicitly specified
@@ -37,12 +37,14 @@ while [[ $# -gt 0 ]]; do
                 OUTPUT_FILE="modified.txt"
             elif [[ "$OUTPUT_FILE" == "isoch.txt" && "$MODE" == "swift" ]]; then
                 OUTPUT_FILE="swift.txt"
+            elif [[ "$OUTPUT_FILE" == "isoch.txt" && "$MODE" == "driver" ]]; then
+                OUTPUT_FILE="driver.txt"
             fi
             shift 2
             ;;
         -h|--help)
             echo "Usage: $0 [-m|--mode mode] [-e|--extract file_to_extract] [-i|--input input_file] [-o|--output output_file]"
-            echo "  -m, --mode       Specify the code stack to gather: 'isoch' (default), 'fwa', or 'modified'"
+            echo "  -m, --mode       Specify the code stack to gather: 'isoch' (default), 'fwa', 'modified', 'swift', or 'driver'"
             echo "  -e, --extract    Specify a file to extract from the input file"
             echo "  -i, --input      Specify the input file (default: isoch.txt, fwa.txt, or modified.txt based on mode)"
             echo "  -o, --output     Specify the output file (default: isoch.txt, fwa.txt, or modified.txt based on mode)"
@@ -139,6 +141,9 @@ if [[ "$MODE" == "isoch" ]]; then
 elif [[ "$MODE" == "fwa" ]]; then
     SRC_DIR="src/FWA"
     INCLUDE_DIR="include/FWA"
+elif [[ "$MODE" == "driver" ]]; then
+    SRC_DIR="src/driver"
+    INCLUDE_DIR=""
 fi
 
 # Define ignored folders and files
@@ -201,6 +206,8 @@ if [[ "$MODE" == "isoch" ]]; then
   echo "Creating $OUTPUT_FILE with isochronous stack source code..."
 elif [[ "$MODE" == "fwa" ]]; then
   echo "Creating $OUTPUT_FILE with FWA stack source code..."
+elif [[ "$MODE" == "driver" ]]; then
+  echo "Creating $OUTPUT_FILE with driver source code..."
 fi
 
 # Process source directory
@@ -210,11 +217,13 @@ else
   echo "Warning: $SRC_DIR directory not found!"
 fi
 
-# Process include directory
-if [ -d "$INCLUDE_DIR" ]; then
+# Process include directory (skip if empty)
+if [ -n "$INCLUDE_DIR" ] && [ -d "$INCLUDE_DIR" ]; then
   process_directory "$INCLUDE_DIR"
 else
-  echo "Warning: $INCLUDE_DIR directory not found!"
+  if [ -n "$INCLUDE_DIR" ]; then
+    echo "Warning: $INCLUDE_DIR directory not found!"
+  fi
 fi
 
 # Make the script executable

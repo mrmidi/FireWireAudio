@@ -157,8 +157,16 @@ struct AudioPlugInfo: Equatable, Hashable, Identifiable, Encodable {
     var supportedStreamFormats: [AudioStreamFormat] = []
 
     var label: String {
-        if let name = plugName, !name.isEmpty { return name }
-        let prefix = SubunitType(rawValue: subunitAddress)?.description ?? "Unit"
+        if let name = plugName, !name.isEmpty {
+            return name
+        }
+        // Treat 0xFF as top‐level “Unit” plugs
+        let prefix: String
+        if subunitAddress == 0xFF {
+            prefix = "Unit"
+        } else {
+            prefix = SubunitType(rawValue: subunitAddress)?.description ?? "Unknown"
+        }
         return "\(prefix) \(direction.description) \(usage.description) #\(plugNumber)"
     }
 }

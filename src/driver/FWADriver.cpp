@@ -11,6 +11,14 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreAudio/AudioServerPlugIn.h>
 #include <aspl/Driver.hpp>
+#include "FWADriverDevice.hpp"
+#include "FWADriverHandler.hpp"
+#include "FWADriverInit.hpp"
+#include <aspl/Tracer.hpp>
+#include <os/log.h>
+
+constexpr UInt32 SampleRate = 48000;
+constexpr UInt32 ChannelCount = 2;
 
 /**
  * @brief Creates and configures the ASPL driver instance
@@ -23,15 +31,49 @@
  */
 std::shared_ptr<aspl::Driver> CreateDriver()
 {
-    auto context = std::make_shared<aspl::Context>();
+    auto tracer = std::make_shared<aspl::Tracer>(
+        aspl::Tracer::Mode::Syslog,
+        aspl::Tracer::Style::Flat
+    );
+    auto context = std::make_shared<aspl::Context>(tracer);
+    context->Tracer->Message("FWADriver: Creating driver...");
+    os_log(OS_LOG_DEFAULT, "FWADriver: Creating driver...");
 
-    auto device = std::make_shared<aspl::Device>(context);
-    device->AddStreamWithControlsAsync(aspl::Direction::Output);
+    aspl::DeviceParameters deviceParams;
+    deviceParams.Name = "FWA Firewire Audio";
+    deviceParams.CanBeDefault = true;
+    deviceParams.CanBeDefaultForSystemSounds = true;
+    deviceParams.EnableRealtimeTracing = true;
+    deviceParams.SampleRate = SampleRate;
+    deviceParams.ChannelCount = ChannelCount;
+
+    aspl::StreamParameters streamParams;
+    streamParams.Direction = aspl::Direction::Output;
+    streamParams.StartingChannel = 1;
+    streamParams.Format = {
+        .mSampleRate = 48000,
+        .mFormatID = kAudioFormatLinearPCM,
+        .mFormatFlags = kAudioFormatFlagIsSignedInteger,
+        .mBitsPerChannel = 24,
+        .mChannelsPerFrame = 2,
+        .mBytesPerFrame = 8,
+        .mFramesPerPacket = 1,
+        .mBytesPerPacket = 8,
+    };
+
+    auto device = std::make_shared<FWADriverDevice>(context, deviceParams);
+    device->AddStreamWithControlsAsync(streamParams);
+    auto handler = std::make_shared<FWADriverHandler>();
+    device->SetControlHandler(handler);
+    device->SetIOHandler(handler);
 
     auto plugin = std::make_shared<aspl::Plugin>(context);
     plugin->AddDevice(device);
 
-    return std::make_shared<aspl::Driver>(context, plugin);
+    std::shared_ptr<aspl::Driver> driver = std::make_shared<aspl::Driver>(context, plugin);
+    auto initHandler = std::make_shared<FWADriverInit>();
+    driver->SetDriverHandler(initHandler);
+    return driver;
 }
 
 /**
@@ -47,10 +89,10 @@ std::shared_ptr<aspl::Driver> CreateDriver()
 extern "C" void* EntryPoint(CFAllocatorRef allocator, CFUUIDRef typeUUID)
 {
     if (!CFEqual(typeUUID, kAudioServerPlugInTypeUUID)) {
+        os_log(OS_LOG_DEFAULT, "FWADriver: ERROR! CAN'T CREATE DRIVER");
         return nullptr;
     }
-
     static std::shared_ptr<aspl::Driver> driver = CreateDriver();
-
+    os_log(OS_LOG_DEFAULT, "FWADriver: Driver successfully created");
     return driver->GetReference();
 }

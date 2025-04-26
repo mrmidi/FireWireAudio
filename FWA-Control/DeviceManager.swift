@@ -53,11 +53,13 @@ final class DeviceManager: ObservableObject {
     @Published var devices: [UInt64: DeviceInfo] = [:] // Use Domain Model
     @Published var logs: [LogEntry] = [] {
         didSet {
-            if logs.count > 500 { // Limit log buffer size
-                logs.removeFirst(logs.count - 500)
+            if logs.count > logBufferSize { // Use configurable buffer size
+                logs.removeFirst(logs.count - logBufferSize)
             }
         }
     }
+    // Configuration
+    @Published var logBufferSize: Int = 500 // Make buffer size configurable/published if needed
 
     // MARK: - Internal State
     private var fwaEngineRef: FWAEngineRef?
@@ -451,7 +453,7 @@ final class DeviceManager: ObservableObject {
         let currentFormat = mapJsonToDomainStreamFormat(jsonFormat: jsonPlug.currentFormat, guid: guid)
         let supportedFormats = jsonPlug.supportedFormats?.compactMap { mapJsonToDomainStreamFormat(jsonFormat: $0, guid: guid) } ?? []
 
-        return AudioPlugInfo(
+        var info = AudioPlugInfo(
             subunitAddress: defaultSubunitAddress,
             plugNumber: jsonPlug.plugNumber,
             direction: direction,
@@ -461,6 +463,11 @@ final class DeviceManager: ObservableObject {
             currentStreamFormat: currentFormat,
             supportedStreamFormats: supportedFormats
         )
+        // If top‐level (unit) plug has no JSON name, assign “Unit Input #0” etc.
+        if defaultSubunitAddress == 0xFF, info.plugName == nil {
+            info.plugName = "Unit \(direction.description) #\(jsonPlug.plugNumber)"
+        }
+        return info
     }
 
     private func mapJsonToDomainConnection(jsonConnInfo: JsonConnectionInfo?, guid: UInt64) -> PlugConnectionInfo? {
@@ -663,6 +670,33 @@ final class DeviceManager: ObservableObject {
              streamLocation: dict["streamLocation"] as? Int,
              streamPosition: dict["streamPosition"] as? Int
          )
+    }
+
+    // MARK: - Log Management
+    /// Clears the log buffer displayed in the UI.
+    func clearLogs() {
+        self.logs.removeAll()
+        // Add an entry indicating the clear action
+        let clearEntry = LogEntry(level: .info, message: "-- Log buffer cleared by user --")
+        self.logs.append(clearEntry) // Append directly, bypassing size check temporarily if needed
+        logger.info("UI Log buffer cleared by user.")
+    }
+
+    /// Exports the current log buffer content as a formatted string.
+    /// - Returns: A string containing all log entries, formatted with timestamp, level, and message.
+    func exportLogs() -> String {
+        logger.info("Exporting \(self.logs.count) log entries.")
+        // Define a date formatter for consistent timestamp output
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS" // ISO-like format
+
+        let logText = logs.map { entry in
+            let timestampStr = dateFormatter.string(from: entry.timestamp)
+            // Format: "YYYY-MM-DD HH:MM:SS.ms [LEVEL] Message"
+            return "\(timestampStr) [\(entry.level.description)] \(entry.message)"
+        }.joined(separator: "\n")
+
+        return logText
     }
 
 } // End Class DeviceManager
