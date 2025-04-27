@@ -6,19 +6,26 @@
 //
 
 import SwiftUI
-//import FWA
+import Logging // Import Logging module
 
 @main
 struct FWControlApp: App {
-//    var body: some Scene {
-//        WindowGroup {
-//            // Ensure this instantiates RootView
-//            ContentView()
-//        }
-//        .commands(
-//    }
     @StateObject private var manager = DeviceManager()
-    
+
+    // Bootstrap logging system ONCE on app initialization
+    init() {
+        // Simplified bootstrap: only use InMemoryLogHandler
+        LoggingSystem.bootstrap { label in
+            var inMemoryHandler = InMemoryLogHandler(label: label)
+            inMemoryHandler.logLevel = .trace // Log everything to memory initially
+            return inMemoryHandler
+        }
+
+        // Optional: Log that bootstrapping is done
+        let logger = Logger(label: "net.mrmidi.fwa-control.App")
+        logger.info("Logging system bootstrapped (InMemoryLogHandler only).")
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

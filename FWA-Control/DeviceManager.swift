@@ -11,61 +11,45 @@ import SwiftUI
 import Combine // For AnyCancellable
 import os      // For Logger
 import FWA_CAPI // Import the C module (via module map)
+import Logging // Add swift-log
+import FWADaemonXPC
 // Domain models are in DomainModels.swift
 // JSON decodables are in JsonDecodables.swift
 
-// Define Swift-friendly log level enum
-enum SwiftLogLevel: Int32 {
-    case trace    = 0
-    case debug    = 1
-    case info     = 2
-    case warn     = 3
-    case error    = 4
-    case critical = 5
-    case off      = 6
-
-    var description: String {
-        switch self {
-            case .trace: return "TRACE"
-            case .debug: return "DEBUG"
-            case .info:  return "INFO "
-            case .warn:  return "WARN "
-            case .error: return "ERROR"
-            case .critical: return "CRIT "
-            case .off:   return "OFF  "
-        }
-    }
-}
-
-// Log Entry struct
-struct LogEntry: Identifiable, Equatable { // Added Equatable for potential diffing
-    let id = UUID()
-    let level: SwiftLogLevel
-    let message: String
-    let timestamp: Date = Date()
-}
-
-@MainActor // Ensures @Published properties are updated on the main thread
+@MainActor
 final class DeviceManager: ObservableObject {
 
     // MARK: - Published Properties for UI
     @Published var isRunning: Bool = false
     @Published var devices: [UInt64: DeviceInfo] = [:] // Use Domain Model
-    @Published var logs: [LogEntry] = [] {
+    @Published var deviceJsons: [UInt64: String] = [:] // Store original JSON per device
+    // New: Published property for device connection status
+    @Published var isDaemonConnected = false // Connection GUI -> Daemon
+    @Published var isDriverConnected = false // Connection Driver -> Daemon
+
+    // Published property for UI logs, populated by InMemoryLogHandler
+    @Published var uiLogEntries: [UILogEntry] = [] {
         didSet {
-            if logs.count > logBufferSize { // Use configurable buffer size
-                logs.removeFirst(logs.count - logBufferSize)
+            if uiLogEntries.count > logDisplayBufferSize {
+                uiLogEntries.removeFirst(uiLogEntries.count - logDisplayBufferSize)
             }
         }
     }
-    @Published var deviceJsons: [UInt64: String] = [:] // Store original JSON per device
-    // Configuration
-    @Published var logBufferSize: Int = 500 // Make buffer size configurable/published if needed
+    @AppStorage("settings.logDisplayBufferSize") var logDisplayBufferSize: Int = 500
 
     // MARK: - Internal State
     private var fwaEngineRef: FWAEngineRef?
     private var cancellables = Set<AnyCancellable>()
-    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "net.mrmidi.fwa-control", category: "DeviceManager")
+    private let logger = Logging.Logger(label: "net.mrmidi.fwa-control.DeviceManager")
+
+    // MARK: - XPCManager Integration
+    private let xpcManager = XPCManager() // Dedicated XPC manager
+
+    // MARK: - Daemon setup
+
+    // Remove: private var xpcConnection: NSXPCConnection?
+
+    // Remove: startDaemonConnection()
 
     // MARK: - Callback Storage
     private var cLogCallbackClosure: FWALogCallback?
@@ -78,11 +62,13 @@ final class DeviceManager: ObservableObject {
 
         if self.fwaEngineRef == nil {
             logger.critical("Failed to create FWA Engine C API instance!")
-            logs.append(LogEntry(level: .critical, message: "FATAL: Failed to create FWA Engine instance."))
         } else {
             logger.info("FWA C API Engine created successfully.")
-            setupLoggingCallback() // Setup logging immediately
+            setupCAPILoggingCallback()
+            setupLogSubscription()
         }
+        setupXPCBindings()
+        xpcManager.connect() // Initiate XPC connection
     }
 
     deinit {
@@ -97,13 +83,99 @@ final class DeviceManager: ObservableObject {
             fwaEngineRef = nil
             logger.info("FWA C API Engine destroyed.")
         }
+        cancellables.forEach { $0.cancel() }
+    }
+
+    // Subscribe to log entries from the InMemoryLogHandler
+    private func setupLogSubscription() {
+        logEntrySubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] entry in
+                self?.uiLogEntries.append(entry)
+            }
+            .store(in: &cancellables)
+        logger.debug("Subscribed to UI log entries.")
+    }
+
+    // MARK: - XPCManager Bindings
+    private func setupXPCBindings() {
+        // Bind XPCManager's state to DeviceManager's state
+        xpcManager.$isConnected
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$isDaemonConnected)
+        // Subscribe to notifications from XPCManager
+        xpcManager.deviceStatusUpdate
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] update in
+                self?.handleDaemonDeviceStatusUpdate(guid: update.guid,
+                                                     isConnected: update.isConnected,
+                                                     isInitialized: update.isInitialized,
+                                                     name: update.name,
+                                                     vendor: update.vendor)
+            }
+            .store(in: &cancellables)
+        xpcManager.deviceConfigUpdate
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] update in
+                self?.handleDaemonConfigUpdate(guid: update.guid, configInfo: update.configInfo)
+            }
+            .store(in: &cancellables)
+        xpcManager.logMessageReceived
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] logInfo in
+                self?.logger.log(level: logInfo.level, "[\(logInfo.sender)] \(logInfo.message)")
+            }
+            .store(in: &cancellables)
+        // Bind driver connection status
+        xpcManager.driverConnectionStatus
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$isDriverConnected)
+        // Removed .store(in: &cancellables) as assign(to: &$var) manages the subscription automatically
+    }
+
+    // --- Methods to handle XPCManager notifications ---
+    private func handleDaemonDeviceStatusUpdate(guid: UInt64, isConnected: Bool, isInitialized: Bool, name: String?, vendor: String?) {
+        logger.info("Handling Daemon Status Update: GUID 0x\(String(format: "%llX", guid)) Conn:\(isConnected) Init:\(isInitialized)")
+        if !isConnected || !isInitialized {
+            if devices[guid] != nil {
+                devices[guid]?.isConnected = false
+            }
+        } else {
+            if devices[guid] == nil || devices[guid]?.isConnected == false {
+                Task { await fetchAndAddOrUpdateDevice(guid: guid) }
+            }
+        }
+    }
+
+    private func handleDaemonConfigUpdate(guid: UInt64, configInfo: [AnyHashable : Any]) {
+        logger.info("Handling Daemon Config Update: GUID 0x\(String(format: "%llX", guid))")
+        // Optionally refresh device info if needed
+        // Task { await fetchAndAddOrUpdateDevice(guid: guid) }
+    }
+
+    // --- Example user action method using XPCManager ---
+    func userSetSampleRate(guid: UInt64, rate: Double) {
+        guard isDaemonConnected else {
+            logger.error("Cannot set sample rate, daemon not connected.")
+            return
+        }
+        logger.info("User requesting sample rate \(rate) for GUID 0x\(String(format: "%llX", guid)) via XPC...")
+        xpcManager.requestSetSampleRate(guid: guid, rate: rate) { [weak self] success in
+            Task { @MainActor in
+                if success {
+                    self?.logger.info("Daemon confirmed sample rate set for GUID 0x\(String(format: "%llX", guid)). Refreshing info.")
+                    await self?.fetchAndAddOrUpdateDevice(guid: guid)
+                } else {
+                    self?.logger.error("Daemon reported failure setting sample rate for GUID 0x\(String(format: "%llX", guid)).")
+                }
+            }
+        }
     }
 
     // MARK: - Public Control Methods
     func start() {
         guard let engine = fwaEngineRef else {
             logger.error("Cannot start, C API engine pointer is null.")
-            logs.append(LogEntry(level: .error, message: "Start failed: Engine not initialized."))
             return
         }
         guard !isRunning else {
@@ -117,7 +189,7 @@ final class DeviceManager: ObservableObject {
         // --- Define Device Callback ---
         let swiftDeviceCallback: FWADeviceNotificationCallback = { (contextPtr, deviceRef, connected) in
             guard let context = contextPtr else {
-                print("Error: Received device callback with null context.")
+                Logging.Logger(label: "DeviceCallback.Error").error("Received device callback with null context.")
                 return
             }
             let manager = Unmanaged<DeviceManager>.fromOpaque(context).takeUnretainedValue()
@@ -132,9 +204,6 @@ final class DeviceManager: ObservableObject {
                  }
             } else {
                  manager.logger.error("Failed to get GUID from deviceRef in callback. Connected: \(connected), Error: \(guidResult)")
-                 Task { @MainActor in // Ensure UI log update is on main actor
-                     manager.logs.append(LogEntry(level: .error, message: "Device callback failed to get GUID (Error: \(guidResult))"))
-                 }
             }
         }
         self.cDeviceCallbackClosure = swiftDeviceCallback // Store reference
@@ -145,11 +214,9 @@ final class DeviceManager: ObservableObject {
         if result == kIOReturnSuccess {
             self.isRunning = true
             logger.info("FWA Engine started successfully via C API.")
-            logs.append(LogEntry(level: .info, message: "Engine Started."))
         } else {
             self.isRunning = false
             logger.error("Failed to start FWA Engine via C API: IOReturn \(result)")
-            logs.append(LogEntry(level: .error, message: "Engine start failed (Error: \(result))."))
         }
     }
 
@@ -171,10 +238,8 @@ final class DeviceManager: ObservableObject {
 
         if result == kIOReturnSuccess {
             logger.info("FWA Engine stopped successfully via C API.")
-            logs.append(LogEntry(level: .info, message: "Engine Stopped."))
         } else {
             logger.error("Failed to stop FWA Engine via C API: IOReturn \(result)")
-            logs.append(LogEntry(level: .error, message: "Engine stop failed (Error: \(result))."))
         }
     }
 
@@ -223,7 +288,7 @@ final class DeviceManager: ObservableObject {
              return nil
         }
 
-        logger.debug("Sending command to GUID 0x\(String(format: "%llX", guid)): \(command.map { String(format: "%02X", $0) }.joined())")
+        logger.trace("Sending command to GUID 0x\(String(format: "%llX", guid)): \(command.map { String(format: "%02X", $0) }.joined())")
 
         var responseDataPtr: UnsafeMutablePointer<UInt8>? = nil
         var responseLen: Int = 0 // Corresponds to size_t in C
@@ -253,7 +318,7 @@ final class DeviceManager: ObservableObject {
 
         // Check if response buffer is valid and has data
         guard let buffer = responseDataPtr, responseLen > 0 else {
-            logger.debug("Command sent successfully to GUID 0x\(String(format: "%llX", guid)), no response data returned.")
+            logger.trace("Command sent successfully to GUID 0x\(String(format: "%llX", guid)), no response data returned.")
              // CRITICAL: Free buffer if allocated but len is 0 (shouldn't happen with check above, but safety first)
             if let allocatedBufferWithZeroLen = responseDataPtr { FWADevice_FreeResponseBuffer(allocatedBufferWithZeroLen) }
             return Data() // Return empty Data for success with no payload
@@ -261,7 +326,7 @@ final class DeviceManager: ObservableObject {
 
         // Copy data and free C buffer
         let responseData = Data(bytes: buffer, count: Int(responseLen))
-        logger.debug("Received response from GUID 0x\(String(format: "%llX", guid)) (\(responseLen) bytes): \(responseData.map { String(format: "%02X", $0) }.joined())")
+        logger.trace("Received response from GUID 0x\(String(format: "%llX", guid)) (\(responseLen) bytes): \(responseData.map { String(format: "%02X", $0) }.joined())")
         FWADevice_FreeResponseBuffer(buffer) // Free the C-allocated buffer
 
         return responseData
@@ -269,43 +334,39 @@ final class DeviceManager: ObservableObject {
 
     // MARK: - Private Callback Handlers & Helpers
 
-    private func setupLoggingCallback() {
+    private func setupCAPILoggingCallback() {
         guard let engine = fwaEngineRef else { return }
         let context = Unmanaged.passUnretained(self).toOpaque()
+
+
+        func mapCAPILogLevel(_ cLevel: FWALogLevel) -> Logging.Logger.Level {
+            switch cLevel {
+            case FWA_LOG_LEVEL_TRACE:    return .trace
+            case FWA_LOG_LEVEL_DEBUG:    return .debug
+            case FWA_LOG_LEVEL_INFO:     return .info
+            case FWA_LOG_LEVEL_WARN:     return .warning
+            case FWA_LOG_LEVEL_ERROR:    return .error
+            case FWA_LOG_LEVEL_CRITICAL: return .critical
+            default:
+                Logging.Logger(label: "mapCAPILogLevel").warning("Unknown FWALogLevel encountered: \(cLevel)")
+                return .debug
+            }
+        }
 
         let swiftLogCallback: FWALogCallback = { (contextPtr, cLevel, messagePtr) in
             guard let context = contextPtr, let messagePtr = messagePtr else { return }
             let manager = Unmanaged<DeviceManager>.fromOpaque(context).takeUnretainedValue()
             let message = String(cString: messagePtr)
-            let swiftLevel = SwiftLogLevel(rawValue: cLevel.rawValue) ?? .trace
-
-             Task { @MainActor in // Ensure log handling runs on main actor
-                 manager.handleLog(level: swiftLevel, message: message)
-             }
+            let swiftLevel = mapCAPILogLevel(cLevel)
+            manager.logger.log(level: swiftLevel, "\(message)", metadata: ["source": "FWA_CAPI"])
         }
-        self.cLogCallbackClosure = swiftLogCallback // Store reference
+        self.cLogCallbackClosure = swiftLogCallback
 
         let result = FWAEngine_SetLogCallback(engine, swiftLogCallback, context)
         if result != kIOReturnSuccess {
             logger.error("Failed to set C log callback: IOReturn \(result)")
-            // Log to UI logs (already on main actor here in init)
-            logs.append(LogEntry(level: .error, message: "Failed to set log callback (Error: \(result))"))
         } else {
             logger.info("C log callback registered.")
-        }
-    }
-
-    /// Handles log messages received from the C callback (runs on main actor via Task).
-    private func handleLog(level: SwiftLogLevel, message: String) {
-        let entry = LogEntry(level: level, message: message)
-        logs.append(entry)
-        // Log to OSLog as well
-        switch level {
-            case .error, .critical: logger.error("C_API Log [\(level.description)]: \(message)")
-            case .warn:             logger.warning("C_API Log [\(level.description)]: \(message)")
-            case .info:             logger.info("C_API Log [\(level.description)]: \(message)")
-            case .debug, .trace:    logger.debug("C_API Log [\(level.description)]: \(message)")
-            default: break
         }
     }
 
@@ -314,12 +375,11 @@ final class DeviceManager: ObservableObject {
          // This method is now async and called within a Task on the main actor
         if added {
             logger.info("Device added: GUID 0x\(String(format: "%llX", guid)). Fetching details...")
-            logs.append(LogEntry(level: .info, message: "Device Added: 0x\(String(format: "%llX", guid))"))
             await fetchAndAddOrUpdateDevice(guid: guid) // Call the async fetcher
         } else {
             logger.info("Device removed: GUID 0x\(String(format: "%llX", guid)).")
-            logs.append(LogEntry(level: .info, message: "Device Removed: 0x\(String(format: "%llX", guid))"))
-            devices.removeValue(forKey: guid) // Remove from dictionary directly
+            devices.removeValue(forKey: guid)
+            deviceJsons.removeValue(forKey: guid) // Also remove JSON
         }
     }
 
@@ -334,7 +394,6 @@ final class DeviceManager: ObservableObject {
         // --- Step 1: Call C API ---
         guard let cJsonString = FWAEngine_GetInfoJSON(engine, guid) else {
             logger.error("FWAEngine_GetInfoJSON returned NULL for GUID 0x\(String(format: "%llX", guid)).")
-            logs.append(LogEntry(level: .error, message: "Failed to get JSON info for 0x\(String(format: "%llX", guid)). C API returned NULL."))
             // Optionally remove device if info fetch fails critically
             // devices.removeValue(forKey: guid)
             return
@@ -346,7 +405,6 @@ final class DeviceManager: ObservableObject {
         // --- Step 2: Decode JSON string into intermediate `JsonDeviceData` ---
         guard !jsonString.isEmpty, let jsonData = jsonString.data(using: .utf8) else {
             logger.error("Failed to convert C JSON string to Data or string was empty for GUID 0x\(String(format: "%llX", guid)).")
-            logs.append(LogEntry(level: .error, message: "JSON string invalid/empty for 0x\(String(format: "%llX", guid))."))
             devices.removeValue(forKey: guid) // Remove if JSON is fundamentally broken
             return
         }
@@ -377,7 +435,6 @@ final class DeviceManager: ObservableObject {
                 }
             }
             logger.error("Received JSON String that failed decoding:\n---\n\(jsonString)\n---") // Log problematic JSON
-            logs.append(LogEntry(level: .error, message: "JSON decoding failed for 0x\(String(format: "%llX", guid)). See console."))
             devices.removeValue(forKey: guid) // Remove if JSON cannot be decoded
             return
         }
@@ -387,11 +444,9 @@ final class DeviceManager: ObservableObject {
             // --- Step 4: Update Published Property (already on main actor) ---
             self.devices[domainDeviceInfo.guid] = domainDeviceInfo // Update or add
             self.logger.info("Successfully mapped and updated DeviceInfo for GUID 0x\(String(format: "%llX", domainDeviceInfo.guid)) (\(domainDeviceInfo.deviceName))")
-            self.logs.append(LogEntry(level: .debug, message: "Updated info for 0x\(String(format: "%llX", domainDeviceInfo.guid)) (\(domainDeviceInfo.deviceName))."))
         } else {
             // Mapping function indicated a critical failure (e.g., couldn't parse GUID)
             self.logger.error("Failed to map JsonDeviceData to DeviceInfo domain model for GUID 0x\(String(format: "%llX", guid)). Check previous mapping logs.")
-            self.logs.append(LogEntry(level: .error, message: "Data mapping failed critically for 0x\(String(format: "%llX", guid)). Device removed."))
             self.devices.removeValue(forKey: guid) // Remove if mapping fails critically
         }
     }
@@ -677,28 +732,111 @@ final class DeviceManager: ObservableObject {
     // MARK: - Log Management
     /// Clears the log buffer displayed in the UI.
     func clearLogs() {
-        self.logs.removeAll()
-        // Add an entry indicating the clear action
-        let clearEntry = LogEntry(level: .info, message: "-- Log buffer cleared by user --")
-        self.logs.append(clearEntry) // Append directly, bypassing size check temporarily if needed
-        logger.info("UI Log buffer cleared by user.")
+        self.uiLogEntries.removeAll()
+        logger.info("-- Log display cleared by user --")
     }
 
     /// Exports the current log buffer content as a formatted string.
     /// - Returns: A string containing all log entries, formatted with timestamp, level, and message.
     func exportLogs() -> String {
-        logger.info("Exporting \(self.logs.count) log entries.")
+        logger.info("Exporting \(self.uiLogEntries.count) displayed log entries.")
         // Define a date formatter for consistent timestamp output
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS" // ISO-like format
 
-        let logText = logs.map { entry in
+        let logText = uiLogEntries.map { entry in
             let timestampStr = dateFormatter.string(from: entry.timestamp)
             // Format: "YYYY-MM-DD HH:MM:SS.ms [LEVEL] Message"
-            return "\(timestampStr) [\(entry.level.description)] \(entry.message)"
+            return "\(timestampStr) [\(entry.level.rawValue.uppercased())] \(entry.displayMessage)"
         }.joined(separator: "\n")
 
         return logText
+    }
+
+    func updateLogBufferSize(_ newSize: Int) {
+         self.logDisplayBufferSize = newSize
+         if uiLogEntries.count > logDisplayBufferSize {
+             uiLogEntries.removeFirst(uiLogEntries.count - logDisplayBufferSize)
+         }
+         logger.info("UI log buffer size set to \(newSize)")
+    }
+
+    // MARK: - Hardware Interaction Methods (Called by XPC Handler)
+
+    func performHardwareSampleRateSet(guid: UInt64, rate: Double) async -> Bool {
+        logger.info("--> Hardware CMD: Set Sample Rate \(rate) for GUID 0x\(String(format: "%llX", guid))")
+        // TODO: Implement FWAEngine_SendCommand or specific C API call for setting rate
+        do {
+            try await Task.sleep(nanoseconds: 100_000_000) // Simulate delay
+        } catch {
+            logger.error("Task.sleep failed: \(error.localizedDescription)")
+            return false
+        }
+        logger.warning("--> Hardware CMD: Set Sample Rate - STUBBED SUCCESS")
+        return true // Placeholder
+    }
+
+    func performHardwareClockSourceSet(guid: UInt64, sourceID: UInt32) async -> Bool {
+        logger.info("--> Hardware CMD: Set Clock Source \(sourceID) for GUID 0x\(String(format: "%llX", guid))")
+        // TODO: Implement C API call
+        do {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        } catch {
+            logger.error("Task.sleep failed: \(error.localizedDescription)")
+            return false
+        }
+        logger.warning("--> Hardware CMD: Set Clock Source - STUBBED SUCCESS")
+        return true
+    }
+
+    func performHardwareVolumeSet(guid: UInt64, scope: UInt32, element: UInt32, value: Float) async -> Bool {
+         logger.info("--> Hardware CMD: Set Volume \(value) for GUID 0x\(String(format: "%llX", guid)), Scope \(scope), Elem \(element)")
+         // TODO: Implement C API call
+         do {
+             try await Task.sleep(nanoseconds: 30_000_000)
+         } catch {
+             logger.error("Task.sleep failed: \(error.localizedDescription)")
+             return false
+         }
+         logger.warning("--> Hardware CMD: Set Volume - STUBBED SUCCESS")
+         return true
+    }
+
+    func performHardwareMuteSet(guid: UInt64, scope: UInt32, element: UInt32, state: Bool) async -> Bool {
+         logger.info("--> Hardware CMD: Set Mute \(state) for GUID 0x\(String(format: "%llX", guid)), Scope \(scope), Elem \(element)")
+         // TODO: Implement C API call
+         do {
+             try await Task.sleep(nanoseconds: 30_000_000)
+         } catch {
+             logger.error("Task.sleep failed: \(error.localizedDescription)")
+             return false
+         }
+         logger.warning("--> Hardware CMD: Set Mute - STUBBED SUCCESS")
+         return true
+    }
+
+    func performHardwareStartIO(guid: UInt64) async -> Bool {
+        logger.info("--> Hardware CMD: Start IO for GUID 0x\(String(format: "%llX", guid))")
+        // TODO: Implement interaction with FWAIsoch via C API or direct call
+        do {
+            try await Task.sleep(nanoseconds: 150_000_000) // Simulate potentially longer setup
+        } catch {
+            logger.error("Task.sleep failed: \(error.localizedDescription)")
+            return false
+        }
+        logger.warning("--> Hardware CMD: Start IO - STUBBED SUCCESS")
+        return true // Placeholder
+    }
+
+    func performHardwareStopIO(guid: UInt64) async {
+        logger.info("--> Hardware CMD: Stop IO for GUID 0x\(String(format: "%llX", guid))")
+        // TODO: Implement interaction with FWAIsoch via C API or direct call
+        do {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        } catch {
+            logger.error("Task.sleep failed: \(error.localizedDescription)")
+        }
+        logger.warning("--> Hardware CMD: Stop IO - STUBBED")
     }
 
 } // End Class DeviceManager

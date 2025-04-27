@@ -1,0 +1,14 @@
+// include/shared/xpc/module.modulemap
+module FWADaemonXPC {
+    // Export the Objective-C protocol headers needed by Swift
+    header "FWADaemonControlProtocol.h"
+    header "FWAClientNotificationProtocol.h"
+    // Add other ObjC headers Swift might need from this "module"
+    // header "MixedAudioBuffer.h" // If Swift needed to interact with it directly
+
+    // Specify required system frameworks
+    link framework "Foundation"
+
+    // Make symbols available
+    export *
+}

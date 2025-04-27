@@ -9,6 +9,8 @@
 class FWADriverInit : public aspl::DriverRequestHandler {
 public:
     OSStatus OnInitialize() override;
+    // Add finalize hook
+    // void OnFinalize() override;
 private:
     // Placeholder for any handler or state
 };

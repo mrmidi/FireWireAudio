@@ -2,12 +2,14 @@
 
 import SwiftUI
 import ServiceManagement
+import Logging // For Logger.Level
 
 struct SettingsView: View {
     @EnvironmentObject var manager: DeviceManager
 
-    // AppStorage-backed settings
-    @AppStorage("settings.logBufferSize") private var logBufferSize: Int = 500
+    // Use the @AppStorage variable directly from DeviceManager if possible,
+    // or create a local binding that calls manager update method.
+    @State private var localLogBufferSize: Int = 500 // Local state
     @AppStorage("settings.autoConnect")    private var autoConnect: Bool = false
 
     // SMAppService for FWADaemon
@@ -20,20 +22,20 @@ struct SettingsView: View {
             Form {
                 Section(header: Label("Logging", systemImage: "doc.plaintext").font(.headline)) {
                     HStack {
-                        Text("Log Buffer Size")
+                        Text("Log Display Buffer Size")
                         Spacer()
-                        Stepper(value: $logBufferSize, in: 100...5000, step: 100) {
-                            Text("\(logBufferSize)")
+                        Stepper(value: $localLogBufferSize, in: 100...10000, step: 100) {
+                            Text("\(localLogBufferSize)")
                                 .frame(width: 60, alignment: .trailing)
                         }
-                        .onChange(of: logBufferSize) { newValue in
-                            manager.logBufferSize = newValue
+                        .onChange(of: localLogBufferSize) { newValue in
+                            manager.updateLogBufferSize(newValue)
                         }
                         .onAppear {
-                            manager.logBufferSize = logBufferSize
+                            localLogBufferSize = manager.logDisplayBufferSize
                         }
                     }
-                    Text("Maximum number of log entries to keep in memory.")
+                    Text("Maximum number of log entries to keep in the UI Log view.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .padding(.leading, 2)
@@ -81,12 +83,10 @@ struct SettingsView: View {
                     }
                     .padding(.vertical, 4)
                 }
-                // ... Driver GroupBox can remain placeholder or use SMJobBless for kext ...
                 Spacer()
             }
             .padding()
             .onAppear {
-                // Initialize the SMAppService and installed state
                 do {
                     let svc = try SMAppService.loginItem(identifier: "net.mrmidi.FWADaemon")
                     daemonService = svc

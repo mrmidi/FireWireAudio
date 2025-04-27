@@ -60,7 +60,14 @@ struct ContentView: View {
             // Always‐visible engine controls (no explicit placement)
             ToolbarItemGroup {
                 Button { manager.start() } label: { Label("Start", systemImage: "play.fill") }
+                    .help("Start CoreAudio Driver Discovery (requires driver)")
                     .disabled(manager.isRunning)
+                // Optional: Disable start if driver isn't connected?
+                // .disabled(manager.isRunning || !manager.isDriverConnected)
+
+                // Display Driver connection status next to engine controls
+                DeviceStatusIndicatorView(label: "Driver", isConnected: manager.isDriverConnected)
+
                 Button { manager.stop() }  label: { Label("Stop", systemImage: "stop.fill") }
                     .disabled(!manager.isRunning)
             }

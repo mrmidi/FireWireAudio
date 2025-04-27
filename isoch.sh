@@ -118,14 +118,21 @@ if [[ "$MODE" == "modified" ]]; then
     exit 0
 fi
 
-# Swift mode: gather all .swift files from FWA-Control
+# Swift mode: gather all .swift, .cpp, .m, .mm, .hpp, .h files from FWA-Control, src/shared, and include/shared
 if [[ "$MODE" == "swift" ]]; then
     rm -f "$OUTPUT_FILE"
-    echo "Creating $OUTPUT_FILE with all Swift source files from FWA-Control..."
-    find "FWA-Control" -type f -name "*.swift" | while read -r file; do
-        echo "=== $file ===" >> "$OUTPUT_FILE"
-        cat "$file" >> "$OUTPUT_FILE"
-        echo -e "\n\n" >> "$OUTPUT_FILE"
+    echo "Creating $OUTPUT_FILE with all Swift, C++, and ObjC source files from FWA-Control, src/shared, and include/shared..."
+    SWIFT_DIRS=("FWA-Control" "src/shared" "include/shared")
+    for DIR in "${SWIFT_DIRS[@]}"; do
+        if [ -d "$DIR" ]; then
+            find "$DIR" -type f \( -name "*.swift" -o -name "*.cpp" -o -name "*.m" -o -name "*.mm" -o -name "*.hpp" -o -name "*.h" \) | while read -r file; do
+                echo "=== $file ===" >> "$OUTPUT_FILE"
+                cat "$file" >> "$OUTPUT_FILE"
+                echo -e "\n\n" >> "$OUTPUT_FILE"
+            done
+        else
+            echo "Warning: $DIR directory not found!"
+        fi
     done
     chmod +x "$0"
     echo "Done! Created $OUTPUT_FILE"
@@ -232,21 +239,27 @@ elif [[ "$MODE" == "driver" ]]; then
   echo "Creating $OUTPUT_FILE with driver source code..."
 fi
 
-# Process source directory
-if [ -d "$SRC_DIR" ]; then
-  process_directory "$SRC_DIR"
-else
-  echo "Warning: $SRC_DIR directory not found!"
-fi
+# Always include shared directories
+SHARED_SRC_DIR="src/shared"
+SHARED_INCLUDE_DIR="include/shared"
 
-# Process include directory (skip if empty)
-if [ -n "$INCLUDE_DIR" ] && [ -d "$INCLUDE_DIR" ]; then
-  process_directory "$INCLUDE_DIR"
-else
-  if [ -n "$INCLUDE_DIR" ]; then
-    echo "Warning: $INCLUDE_DIR directory not found!"
-  fi
+# List of directories to process
+DIRS_TO_PROCESS=()
+if [ -n "$SRC_DIR" ]; then
+  DIRS_TO_PROCESS+=("$SRC_DIR")
 fi
+if [ -n "$INCLUDE_DIR" ]; then
+  DIRS_TO_PROCESS+=("$INCLUDE_DIR")
+fi
+DIRS_TO_PROCESS+=("$SHARED_SRC_DIR" "$SHARED_INCLUDE_DIR")
+
+for DIR in "${DIRS_TO_PROCESS[@]}"; do
+  if [ -d "$DIR" ]; then
+    process_directory "$DIR"
+  else
+    echo "Warning: $DIR directory not found!"
+  fi
+done
 
 # Make the script executable
 chmod +x "$0"

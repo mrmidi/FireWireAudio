@@ -2,27 +2,29 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import Logging // Add Logging import
 
 struct LogConsoleView: View {
     @EnvironmentObject var manager: DeviceManager // Get the manager from the environment
 
     // State for filtering and UI controls
-    @State private var selectedMinLevel: SwiftLogLevel = .trace // Show all by default
+    @State private var selectedMinLevel: Logger.Level = .trace // Use Logger.Level
     @State private var searchText: String = ""
     @State private var isAutoScrollEnabled: Bool = true
     @State private var showExportSheet = false
     @State private var logExportContent: String = ""
 
     // Computed property to filter logs based on state
-    var filteredLogs: [LogEntry] {
-        manager.logs.filter { entry in
+    var filteredLogs: [UILogEntry] {
+        manager.uiLogEntries.filter { entry in
             // Filter by level (entry level must be >= selectedMinLevel)
-            let levelMatch = entry.level.rawValue >= selectedMinLevel.rawValue
+            let levelMatch = entry.level >= selectedMinLevel
 
             // Filter by search text (if not empty)
             let searchMatch = searchText.isEmpty ||
-                              entry.message.localizedCaseInsensitiveContains(searchText) ||
-                              entry.level.description.localizedCaseInsensitiveContains(searchText)
+                              entry.displayMessage.localizedCaseInsensitiveContains(searchText) ||
+                              entry.level.rawValue.localizedCaseInsensitiveContains(searchText) ||
+                              entry.source.localizedCaseInsensitiveContains(searchText)
 
             return levelMatch && searchMatch
         }
@@ -31,32 +33,22 @@ struct LogConsoleView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                        Section(header: logToolbar) {
-                            ForEach(filteredLogs) { entry in
-                                logEntryRow(entry)
-                                    .id(entry.id)
+                List {
+                    ForEach(filteredLogs) { entry in
+                        logEntryRow(entry)
+                            .id(entry.id)
+                    }
+                    .onChange(of: filteredLogs) { _ in
+                        if isAutoScrollEnabled, let lastID = filteredLogs.last?.id {
+                            DispatchQueue.main.async {
+                                proxy.scrollTo(lastID, anchor: .bottom)
                             }
                         }
                     }
                 }
-                // Jump-to-Latest floating button
-                if isAutoScrollEnabled {
-                    Button(action: {
-                        if let lastID = filteredLogs.last?.id {
-                            proxy.scrollTo(lastID, anchor: .bottom)
-                        }
-                    }) {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.largeTitle)
-                            .opacity(0.6)
-                    }
-                    .padding()
-                    .accessibilityLabel("Jump to latest log")
-                }
+                .listStyle(.plain)
+                .border(Color.gray.opacity(0.3), width: 1)
             }
-            .border(Color.gray.opacity(0.3), width: 1)
         }
         .fileExporter(
              isPresented: $showExportSheet,
@@ -77,12 +69,16 @@ struct LogConsoleView: View {
     private var logToolbar: some View {
         HStack {
             Picker("Level:", selection: $selectedMinLevel) {
-                ForEach(SwiftLogLevel.allCasesSorted, id: \.self) { level in
-                    Text(level.description).tag(level)
+                ForEach(Logger.Level.allCases, id: \.self) { level in
+                    Text(level.rawValue.uppercased()).tag(level)
                 }
             }
             .pickerStyle(.menu)
             .frame(maxWidth: 120)
+
+            TextField("Search Logs", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 200)
 
             Spacer()
 
@@ -95,7 +91,7 @@ struct LogConsoleView: View {
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
             }
-            .help("Export visible logs to a text file")
+            .help("Export displayed logs to a text file")
 
             Button(role: .destructive) {
                 manager.clearLogs()
@@ -109,42 +105,41 @@ struct LogConsoleView: View {
         .background(.thinMaterial)
     }
 
-    // Helper function to format a log entry row
+    // Helper function to format a log entry row using UILogEntry
     @ViewBuilder
-    private func logEntryRow(_ entry: LogEntry) -> some View {
+    private func logEntryRow(_ entry: UILogEntry) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text(entry.timestamp, format: .dateTime.hour().minute().second().secondFraction(.fractional(3)))
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(.secondary)
                 .frame(minWidth: 75, alignment: .leading)
 
-            Text("[\(entry.level.description)]")
-                .font(.system(size: 10, design: .monospaced).weight(.medium))
+            Text("[\(entry.level.rawValue.uppercased())]")
+                .font(.system(size: 10, design: .monospaced).weight(.semibold))
                 .foregroundColor(logColor(entry.level))
-                .frame(minWidth: 50, alignment: .leading)
+                .frame(minWidth: 65, alignment: .leading)
 
-            Text(entry.message)
-                .font(.body.monospaced())
-                .accessibilityLabel("Log message: \(entry.message)")
+            Text(entry.displayMessage)
+                .font(.system(size: 11, design: .monospaced))
                 .textSelection(.enabled)
                 .lineLimit(nil)
                 .layoutPriority(1)
 
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 2)
     }
 
-    // Helper function for log level color
-    private func logColor(_ level: SwiftLogLevel) -> Color {
+    // Helper function for log level color based on Logger.Level
+    private func logColor(_ level: Logger.Level) -> Color {
         switch level {
-            case .trace: return .gray
-            case .debug: return .secondary
-            case .info: return .primary
-            case .warn: return .orange
-            case .error: return .red
+            case .trace:    return .gray
+            case .debug:    return .secondary
+            case .info:     return .blue
+            case .notice:   return .accentColor
+            case .warning:  return .orange
+            case .error:    return .red
             case .critical: return .red.opacity(0.8)
-            case .off: return .clear
+            default:        return .clear
         }
     }
 
@@ -155,45 +150,29 @@ struct LogConsoleView: View {
     }
 }
 
-// Add CaseIterable and Identifiable conformance to SwiftLogLevel for Picker
-extension SwiftLogLevel: CaseIterable, Identifiable {
-    public var id: Int32 { self.rawValue }
-
-    // Manually list all cases so the compiler can synthesize conformance
-    static var allCases: [SwiftLogLevel] = [
+// Add CaseIterable conformance to Logger.Level for Picker
+extension Logger.Level: CaseIterable {
+    public static var allCases: [Logger.Level] = [
         .trace,
         .debug,
         .info,
-        .warn,
+        .notice,
+        .warning,
         .error,
-        .critical,
-        .off
+        .critical
     ]
-
-    static var allCasesSorted: [SwiftLogLevel] {
-        allCases
-            .filter { $0 != .off }
-            .sorted { $0.rawValue < $1.rawValue }
-    }
 }
 
 struct LogDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.plainText] }
     var content: String
-
-    init(content: String) {
-        self.content = content
-    }
-
+    init(content: String) { self.content = content }
     init(configuration: ReadConfiguration) throws {
         guard let data = configuration.file.regularFileContents,
               let string = String(data: data, encoding: .utf8)
-        else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
+        else { throw CocoaError(.fileReadCorruptFile) }
         content = string
     }
-
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         return FileWrapper(regularFileWithContents: content.data(using: .utf8)!)
     }
@@ -202,19 +181,20 @@ struct LogDocument: FileDocument {
 // MARK: - Preview
 struct LogConsoleView_Previews: PreviewProvider {
     static var previews: some View {
+        // Create a preview manager and manually add some UILogEntry items
         let previewManager = DeviceManager()
-        previewManager.logs = [
-            LogEntry(level: .info, message: "Engine Starting..."),
-            LogEntry(level: .debug, message: "Callback registered."),
-            LogEntry(level: .warn, message: "Device X reported low voltage."),
-            LogEntry(level: .trace, message: "Polling device Y status."),
-            LogEntry(level: .error, message: "Failed to decode response from device Z."),
-            LogEntry(level: .critical, message: "C API Engine crashed unexpectedly!"),
+        previewManager.uiLogEntries = [
+            UILogEntry(level: .info, message: "Engine Starting...", metadata: nil, source: "Manager", file: #file, function: #function, line: #line),
+            UILogEntry(level: .debug, message: "Callback registered.", metadata: nil, source: "Manager", file: #file, function: #function, line: #line),
+            UILogEntry(level: .warning, message: "Device X reported low voltage.", metadata: nil, source: "C_API", file: #file, function: #function, line: #line),
+            UILogEntry(level: .trace, message: "Polling device Y status.", metadata: nil, source: "Manager", file: #file, function: #function, line: #line),
+            UILogEntry(level: .error, message: "Failed to decode response from device Z.", metadata: nil, source: "Manager", file: #file, function: #function, line: #line),
+            UILogEntry(level: .critical, message: "C API Engine crashed unexpectedly!", metadata: nil, source: "C_API", file: #file, function: #function, line: #line),
         ]
         for i in 1...20 {
-            previewManager.logs.append(LogEntry(level: .trace, message: "Background task \(i) completed."))
+             previewManager.uiLogEntries.append(UILogEntry(level: .trace, message: "Background task \(i) completed.", metadata: nil, source: "Manager", file: #file, function: #function, line: #line))
         }
-        previewManager.logs.append(LogEntry(level: .info, message: "Initialization complete."))
+         previewManager.uiLogEntries.append(UILogEntry(level: .info, message: "Initialization complete.", metadata: nil, source: "App", file: #file, function: #function, line: #line))
 
         return LogConsoleView()
             .environmentObject(previewManager)

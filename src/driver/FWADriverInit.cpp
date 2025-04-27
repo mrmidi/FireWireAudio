@@ -1,31 +1,43 @@
 #include "FWADriverInit.hpp"
 #include "FWADriverHandler.hpp"
 #include <os/log.h>
+// Include the XPC Manager
+#include "DriverXPCManager.hpp"
 
 constexpr const char* LogPrefix = "FWADriverASPL: ";
 
 OSStatus FWADriverInit::OnInitialize() {
     os_log(OS_LOG_DEFAULT, "%sFWADriverInit: OnInitialize called.", LogPrefix);
-    // --- PLACEHOLDER ---
-    // 1. Establish XPC connection to Daemon (if not already done by Driver object)
-    // 2. Call an XPC method on Daemon like "getOutputSharedMemoryName"
-    // 3. Receive the name (e.g., "/fwa_shm_output_123") in the reply block
-    std::string shmName = "/fwa_output_shm_placeholder"; // Replace with actual name from XPC
 
-    // 4. Find the IO Handler instance and call SetupSharedMemory
-    //    This is tricky. How does FWADriverInit get the FWADriverHandler instance?
-    //    Option A: Pass handler pointer during Driver setup.
-    //    Option B: Have the Driver object manage SHM setup itself in its Initialize.
-    //    Option C: Make SHM setup static or singleton (less clean).
+    // Get the XPC manager singleton
+    auto& xpcManager = DriverXPCManager::instance();
 
-    // Let's assume Option B is better: FWADriver itself should handle SHM setup
-    // after initialization, perhaps triggered by getting the name via XPC.
-    // So, FWADriverInit might just establish the XPC connection.
+    // Attempt to connect to the daemon via XPC
+    bool connected = xpcManager.connect();
 
-    os_log(OS_LOG_DEFAULT, "%sFWADriverInit: STUB - Need to implement XPC connection and SHM setup triggering.", LogPrefix);
-    // Placeholder for XPC Handshake
-    // Placeholder for retrieving SHM name
-    // Placeholder for calling SetupSharedMemory on the correct handler instance
+    if (connected) {
+        os_log(OS_LOG_DEFAULT, "%sFWADriverInit: Successfully connected to daemon via XPC.", LogPrefix);
+        // Notify daemon that the driver is present
+        xpcManager.setPresenceStatus(true);
+        // TODO: Add logic here to get SHM name via XPC and call SetupSharedMemory on handler
+    } else {
+        os_log_error(OS_LOG_DEFAULT, "%sFWADriverInit: FAILED to connect to daemon via XPC. Driver may not function correctly.", LogPrefix);
+        // For now, let it load but log the error.
+    }
 
     return kAudioHardwareNoError;
 }
+
+// void FWADriverInit::OnFinalize() {
+//     os_log(OS_LOG_DEFAULT, "%sFWADriverInit: OnFinalize called.", LogPrefix);
+
+//     // Get the XPC manager singleton
+//     auto& xpcManager = DriverXPCManager::instance();
+
+//     // Notify daemon that the driver is disappearing (best effort)
+//     if (xpcManager.isConnected()) {
+//         xpcManager.setPresenceStatus(false);
+//     }
+//     // Disconnect XPC
+//     xpcManager.disconnect();
+// }

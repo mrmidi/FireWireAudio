@@ -4,6 +4,8 @@
 <dict>
     <key>CFBundleIdentifier</key>
     <string>net.mrmidi.FWADaemon</string>
+    <key>CFBundlePackageType</key>
+    <string>XPC!</string>
     <key>CFBundleName</key>
     <string>FWADaemon</string>
     <key>CFBundleVersion</key>
@@ -15,10 +17,15 @@
     <key>XPCService</key>
     <dict>
         <key>ServiceType</key>
-        <string>Application</string>
+        <string>User</string>
         <key>RunLoopType</key>
         <string>NSRunLoop</string>
         <key>JoinExistingSession</key>
+        <true/>
+    </dict>
+        <key>MachServices</key>
+    <dict>
+        <key>net.mrmidi.FWADaemon</key>
         <true/>
     </dict>
 </dict>

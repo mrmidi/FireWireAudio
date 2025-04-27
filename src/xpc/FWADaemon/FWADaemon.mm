@@ -1,23 +1,28 @@
-#import "FWADaemon.h"
-#import "FWAClientNotificationProtocol.h"
-#import "FWADaemonControlProtocol.h"
-#import "RingBufferManager.hpp"
+#import "FWADaemon.h" // Import the interface declaration
+#import "shared/xpc/FWAClientNotificationProtocol.h" // Correct client protocol
+// #import "shared/xpc/FWADaemonControlProtocol.h" // Protocol imported via FWADaemon.h
+// #import "shared/RingBufferManager.hpp" // If needed directly (unlikely now)
+#import <Foundation/Foundation.h>
+#import <os/log.h> // Use os_log
 
-// Simple class to hold client info
+// Simple class to hold client info (Keep this definition)
 @interface ClientInfo : NSObject
 @property (nonatomic, copy) NSString *clientID;
 @property (nonatomic, strong) NSXPCConnection *connection;
-@property (nonatomic, strong) id<FWAClientNotificationProtocol> remoteProxy;
+@property (nonatomic, strong) id<FWAClientNotificationProtocol> remoteProxy; // Use correct protocol
 @end
 @implementation ClientInfo
 @end
 
-@interface FWADaemon () <FWADaemonControlProtocol>
-// Private mutable array for internal use.
-@property (nonatomic, strong) NSMutableArray<NSXPCConnection *> *mutableClients;
-@property (nonatomic, strong) dispatch_queue_t xpcQueue; // Dedicated high-priority queue
+// Class extension for private properties
+@interface FWADaemon ()
 @property (nonatomic, strong) NSMutableDictionary<NSString *, ClientInfo *> *connectedClients;
+@property (nonatomic, assign) BOOL driverIsConnected; // New state variable
 @property (nonatomic, strong) dispatch_queue_t internalQueue;
+// Note: mutableClients and xpcQueue seem redundant if connectedClients and internalQueue are used properly.
+// Let's remove them for now unless needed for a specific reason.
+// @property (nonatomic, strong) NSMutableArray<NSXPCConnection *> *mutableClients;
+// @property (nonatomic, strong) dispatch_queue_t xpcQueue;
 @end
 
 @implementation FWADaemon
@@ -26,226 +31,157 @@
     static FWADaemon *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sharedInstance = [[FWADaemon alloc] init];
+        sharedInstance = [[FWADaemon alloc] init]; // Use alloc/init
     });
     return sharedInstance;
 }
 
 - (instancetype)init {
-    self = [super init];
+    self = [super init]; // Call super init (now that we inherit from NSObject)
     if (self) {
-        _mutableClients = [NSMutableArray array];
-        // Create a dedicated serial dispatch queue with high priority.
-        _xpcQueue = dispatch_queue_create("net.mrmidi.xpcQueue",
-                                          dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
-        NSLog(@"[FWADaemon] High-priority XPC queue created.");
-        _internalQueue = dispatch_queue_create("net.mrmidi.FWADaemon.internalQueue", DISPATCH_QUEUE_SERIAL);
-        _connectedClients = [NSMutableDictionary dictionary];
-        NSLog(@"[FWADaemon] Initialized FWADaemon singleton and internal queue.");
+        // Use self. notation for properties
+        self.internalQueue = dispatch_queue_create("net.mrmidi.FWADaemon.internalQueue", DISPATCH_QUEUE_SERIAL);
+        self.connectedClients = [NSMutableDictionary dictionary];
+        _driverIsConnected = NO; // Explicitly initialize
+        os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Initialized FWADaemon singleton and internal queue.");
+        // Initialize other properties if needed
     }
     return self;
 }
 
-// Override the getter to expose the mutable array as an immutable NSArray.
-- (NSArray<NSXPCConnection *> *)clients {
-    return [self.mutableClients copy];
-}
+// Remove obsolete clients getter if mutableClients is removed
+// - (NSArray<NSXPCConnection *> *)clients {
+//     return [self.mutableClients copy];
+// }
 
-- (void)sendAudioBuffer:(MixedAudioBuffer *)buffer withReply:(void (^)(BOOL))reply {
-    dispatch_async(self.xpcQueue, ^{
-        NSLog(@"[FWADaemon] Sending audio buffer (size: %lu bytes) on high-priority queue", (unsigned long)buffer.pcmData.length);
-        
-        for (NSXPCConnection *clientConn in self.mutableClients) {
-            id<FWADaemonClientProtocol> client = [clientConn remoteObjectProxy];
-            if ([client respondsToSelector:@selector(didReceiveAudioBuffer:)]) {
-                [client didReceiveAudioBuffer:buffer];
-            }
-        }
-        
-        if (reply) {
-            reply(YES);
-        }
-    });
-}
+// REMOVE OBSOLETE METHODS like sendAudioBuffer, getStreamFormat, handshake, registerClientWithEndpoint
 
-- (void)getStreamFormatWithReply:(void (^)(NSString *))reply {
-    dispatch_async(self.xpcQueue, ^{
-        NSLog(@"[FWADaemon] getStreamFormatWithReply called on high-priority queue.");
-        if (reply) {
-            reply(@"PCM 48kHz, 24-bit, Stereo");
-        }
-    });
-}
-
-- (void)handshakeWithReply:(void (^)(BOOL))reply {
-    dispatch_async(self.xpcQueue, ^{
-        NSLog(@"[FWADaemon] Handshake received on high-priority queue.");
-        if (reply) {
-            reply(YES);
-        }
-    });
-}
-
-- (void)registerClientWithEndpoint:(NSXPCListenerEndpoint *)clientEndpoint {
-    NSLog(@"[FWADaemon] Received client endpoint: %@", clientEndpoint);
-    NSXPCConnection *clientConnection = [[NSXPCConnection alloc] initWithListenerEndpoint:clientEndpoint];
-    clientConnection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(FWADaemonClientProtocol)];
-    [clientConnection resume];
-    
-    // Add client connection on our high-priority queue.
-    dispatch_async(self.xpcQueue, ^{
-        [self.mutableClients addObject:clientConnection];
-        NSLog(@"[FWADaemon] Client connection registered on high-priority queue.");
-    });
-}
-
-- (void)requestSetClockSource:(uint64_t)guid clockSourceID:(uint32_t)clockSourceID withReply:(void (^)(BOOL success))reply {
-    NSLog(@"[FWADaemon] Received requestSetClockSource for GUID 0x%llx to ID %u", guid, clockSourceID);
-    id<FWAClientNotificationProtocol> guiProxy = nil;
-    __block NSArray<ClientInfo *> *allClients = nil;
-    [self performOnInternalQueue:^{
-        allClients = self.connectedClients.allValues;
-    }];
-    for (ClientInfo *info in allClients) {
-        if ([info.clientID hasPrefix:@"GUI"]) {
-            guiProxy = info.remoteProxy;
-            break;
-        }
-    }
-    if (guiProxy) {
-        [guiProxy performSetClockSource:guid clockSourceID:clockSourceID withReply:^(BOOL guiSuccess) {
-            if (reply) reply(guiSuccess);
-        }];
+// Helper for safe queue access
+- (void)performOnInternalQueueSync:(dispatch_block_t)block {
+    // Ensure queue exists before using it
+    if (self.internalQueue) {
+        dispatch_sync(self.internalQueue, block);
     } else {
-        NSLog(@"[FWADaemon] ERROR: No GUI client for requestSetClockSource.");
-        if (reply) reply(NO);
+        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] Internal queue is nil in performOnInternalQueueSync!");
     }
 }
-
-- (void)requestSetMasterVolumeScalar:(uint64_t)guid scope:(uint32_t)scope element:(uint32_t)element scalarValue:(float)scalarValue withReply:(void (^)(BOOL success))reply {
-    NSLog(@"[FWADaemon] Received requestSetMasterVolumeScalar for GUID 0x%llx (Scope %u, Elem %u) to %.3f", guid, scope, element, scalarValue);
-    id<FWAClientNotificationProtocol> guiProxy = nil;
-    __block NSArray<ClientInfo *> *allClients = nil;
-    [self performOnInternalQueue:^{
-        allClients = self.connectedClients.allValues;
-    }];
-    for (ClientInfo *info in allClients) {
-        if ([info.clientID hasPrefix:@"GUI"]) {
-            guiProxy = info.remoteProxy;
-            break;
-        }
-    }
-    if (guiProxy) {
-        [guiProxy performSetMasterVolumeScalar:guid scope:scope element:element scalarValue:scalarValue withReply:^(BOOL guiSuccess) {
-            if (reply) reply(guiSuccess);
-        }];
-    } else {
-        NSLog(@"[FWADaemon] ERROR: No GUI client for requestSetMasterVolumeScalar.");
-        if (reply) reply(NO);
-    }
+- (void)performOnInternalQueueAsync:(dispatch_block_t)block {
+     if (self.internalQueue) {
+        dispatch_async(self.internalQueue, block);
+     } else {
+         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] Internal queue is nil in performOnInternalQueueAsync!");
+     }
 }
 
-- (void)requestSetMasterMute:(uint64_t)guid scope:(uint32_t)scope element:(uint32_t)element muteState:(BOOL)muteState withReply:(void (^)(BOOL success))reply {
-    NSLog(@"[FWADaemon] Received requestSetMasterMute for GUID 0x%llx (Scope %u, Elem %u) to %d", guid, scope, element, muteState);
-    id<FWAClientNotificationProtocol> guiProxy = nil;
-    __block NSArray<ClientInfo *> *allClients = nil;
-    [self performOnInternalQueue:^{
-        allClients = self.connectedClients.allValues;
-    }];
-    for (ClientInfo *info in allClients) {
-        if ([info.clientID hasPrefix:@"GUI"]) {
-            guiProxy = info.remoteProxy;
-            break;
-        }
-    }
-    if (guiProxy) {
-        [guiProxy performSetMasterMute:guid scope:scope element:element muteState:muteState withReply:^(BOOL guiSuccess) {
-            if (reply) reply(guiSuccess);
-        }];
-    } else {
-        NSLog(@"[FWADaemon] ERROR: No GUI client for requestSetMasterMute.");
-        if (reply) reply(NO);
-    }
-}
 
-- (void)performOnInternalQueue:(dispatch_block_t)block {
-    dispatch_sync(self.internalQueue, block);
-}
-
-#pragma mark - FWADaemonControlProtocol Implementation Stubs
+#pragma mark - FWADaemonControlProtocol Implementation
 
 // --- Registration & Lifecycle ---
 - (void)registerClient:(NSString *)clientID
 clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
            withReply:(void (^)(BOOL success, NSDictionary * _Nullable daemonInfo))reply
 {
-    NSLog(@"[FWADaemon] Received registerClient request from '%@'", clientID);
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received registerClient request from '%{public}@'", clientID);
     if (!clientID || [clientID length] == 0 || !clientNotificationEndpoint) {
-        NSLog(@"[FWADaemon] ERROR: Registration failed - invalid clientID or endpoint for '%@'.", clientID ?: @"<nil>");
+        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: Registration failed - invalid clientID or endpoint for '%{public}@'.", clientID ?: @"<nil>");
         if (reply) reply(NO, nil);
         return;
     }
+
+    // Use the endpoint to establish the connection back TO the client
     NSXPCConnection *clientConnection = [[NSXPCConnection alloc] initWithListenerEndpoint:clientNotificationEndpoint];
-    clientConnection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(FWAClientNotificationProtocol)];
+    clientConnection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(FWAClientNotificationProtocol)]; // Use correct protocol
+
     ClientInfo *newClientInfo = [[ClientInfo alloc] init];
     newClientInfo.clientID = clientID;
-    newClientInfo.connection = clientConnection;
+    newClientInfo.connection = clientConnection; // This connection is for calling the CLIENT
+
+    // Error handler for the connection TO the client
     newClientInfo.remoteProxy = [clientConnection remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-        NSLog(@"[FWADaemon] ERROR: XPC error calling remote proxy for client '%@': %@", clientID, error);
-        dispatch_async(self.internalQueue, ^{
+        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: XPC error calling remote proxy for client '%{public}@': %{public}@", clientID, error);
+        // Use async on internal queue for removal
+        [self performOnInternalQueueAsync:^{
              ClientInfo *info = self.connectedClients[clientID];
+             // Check connection pointers match before removing, in case of races
              if (info && info.connection == clientConnection) {
-                 NSLog(@"[FWADaemon] Removing client '%@' due to remote proxy error.", clientID);
+                 os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Removing client '%{public}@' due to remote proxy error.", clientID);
                  [self.connectedClients removeObjectForKey:clientID];
+                 // No need to invalidate here, error handler means it's likely already invalid
              }
-         });
+         }];
     }];
+
+    // Invalidation handler for the connection TO the client
     clientConnection.invalidationHandler = ^{
-        NSLog(@"[FWADaemon] Client connection invalidated for '%@'.", clientID);
-        dispatch_async(self.internalQueue, ^{
+        os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Client connection invalidated for '%{public}@'.", clientID);
+         // Use async on internal queue for removal
+        [self performOnInternalQueueAsync:^{
             ClientInfo *info = self.connectedClients[clientID];
             if (info && info.connection == clientConnection) {
-                NSLog(@"[FWADaemon] Removing client '%@' from registry.", clientID);
+                os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Removing client '%{public}@' from registry.", clientID);
                 [self.connectedClients removeObjectForKey:clientID];
             } else {
-                 NSLog(@"[FWADaemon] Invalidation handler: Client '%@' not found or connection mismatch.", clientID);
+                 os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Invalidation handler: Client '%{public}@' not found or connection mismatch.", clientID);
             }
-        });
+        }];
     };
+
     [clientConnection resume];
-    [self performOnInternalQueue:^{
-        if (self.connectedClients[clientID]) {
-            NSLog(@"[FWADaemon] WARNING: Client ID '%@' already registered. Overwriting.", clientID);
-            [self.connectedClients[clientID].connection invalidate];
+
+    // Store the new client info thread-safely
+    [self performOnInternalQueueSync:^{ // Use sync to ensure registration complete before reply
+        ClientInfo* existingClient = self.connectedClients[clientID];
+        if (existingClient) {
+            os_log_info(OS_LOG_DEFAULT, "[FWADaemon] WARNING: Client ID '%{public}@' already registered. Invalidating old connection.", clientID);
+            [existingClient.connection invalidate]; // Invalidate the previous connection
         }
         self.connectedClients[clientID] = newClientInfo;
-        NSLog(@"[FWADaemon] Client '%@' successfully registered.", clientID);
+        os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Client '%{public}@' successfully registered.", clientID);
     }];
+
+    // Prepare reply info
     NSDictionary *daemonInfo = @{ @"daemonVersion": @"0.1.0-stub" };
     if (reply) reply(YES, daemonInfo);
 }
 
 - (void)unregisterClient:(NSString *)clientID {
-     NSLog(@"[FWADaemon] Received unregisterClient request from '%@'", clientID);
-     [self performOnInternalQueue:^{
+     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received unregisterClient request from '%{public}@'", clientID);
+     [self performOnInternalQueueSync:^{ // Use sync to ensure removal is processed promptly
          ClientInfo *info = self.connectedClients[clientID];
          if (info) {
-             NSLog(@"[FWADaemon] STUB: Invalidating connection and removing client '%@'.", clientID);
-             [info.connection invalidate];
+             os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Invalidating connection and removing client '%{public}@'.", clientID);
+             [info.connection invalidate]; // Explicitly invalidate
              [self.connectedClients removeObjectForKey:clientID];
          } else {
-             NSLog(@"[FWADaemon] WARNING: unregisterClient called for unknown clientID '%@'.", clientID);
+             os_log_info(OS_LOG_DEFAULT, "[FWADaemon] WARNING: unregisterClient called for unknown clientID '%{public}@'.", clientID);
          }
      }];
 }
 
+// Shared memory setup method
 - (void)setupOutputRingBuffer:(NSFileHandle *)shmFD
                     withReply:(void (^)(BOOL))reply
 {
-    int fd = shmFD.fileDescriptor;      // duped for us by XPC runtime
-    BOOL ok = RingBufferManager::instance().map(fd);
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received setupOutputRingBuffer request.");
+    if (!shmFD) {
+         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: setupOutputRingBuffer received nil file handle.");
+         if (reply) reply(NO);
+         return;
+    }
+    int fd = shmFD.fileDescriptor; // XPC runtime dups the FD for us
+    if (fd < 0) {
+         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: setupOutputRingBuffer received invalid file descriptor.");
+         if (reply) reply(NO);
+         return;
+    }
+    // Call the C++ singleton to map the memory and start its reader thread
+    // BOOL ok = RingBufferManager::instance().map(fd);
+    BOOL ok = NO; // STUB: Replace with actual RingBufferManager call when available
+    // Note: NSFileHandle might close the original FD when it goes out of scope.
+    // The dup'd FD should remain valid for RingBufferManager.
     if (reply) reply(ok);
 }
+
 
 // --- Status & Config ---
 - (void)updateDeviceConnectionStatus:(uint64_t)guid
@@ -254,69 +190,208 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
                           deviceName:(NSString *)deviceName
                           vendorName:(NSString *)vendorName
 {
-    NSLog(@"[FWADaemon] Received updateDeviceConnectionStatus for GUID 0x%llx: connected=%d, initialized=%d, name='%@', vendor='%@'",
+     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received updateDeviceConnectionStatus for GUID 0x%llx: connected=%d, initialized=%d, name='%{public}@', vendor='%{public}@'",
           guid, isConnected, isInitialized, deviceName, vendorName);
-    // STUB: Log receipt, will later cache and broadcast.
+    // TODO: Cache state and broadcast to Driver client
 }
 
 - (void)updateDeviceConfiguration:(uint64_t)guid configInfo:(NSDictionary *)configInfo {
-    NSLog(@"[FWADaemon] Received updateDeviceConfiguration for GUID 0x%llx: %@", guid, configInfo);
-    // STUB: Log receipt, will later cache and broadcast.
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received updateDeviceConfiguration for GUID 0x%llx: %{public}@", guid, configInfo);
+     // TODO: Cache state and broadcast to Driver client
 }
 
 - (void)getDeviceConnectionStatus:(uint64_t)guid withReply:(void (^)(NSDictionary * _Nullable statusInfo))reply {
-    NSLog(@"[FWADaemon] Received getDeviceConnectionStatus request for GUID 0x%llx", guid);
-    NSLog(@"[FWADaemon] STUB: Replying nil to getDeviceConnectionStatus for GUID 0x%llx.", guid);
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received getDeviceConnectionStatus request for GUID 0x%llx", guid);
+    // TODO: Read from cache
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] STUB: Replying nil to getDeviceConnectionStatus for GUID 0x%llx.", guid);
     if (reply) reply(nil);
 }
 
 - (void)getDeviceConfiguration:(uint64_t)guid withReply:(void (^)(NSDictionary * _Nullable configInfo))reply {
-    NSLog(@"[FWADaemon] Received getDeviceConfiguration request for GUID 0x%llx", guid);
-    NSLog(@"[FWADaemon] STUB: Replying nil to getDeviceConfiguration for GUID 0x%llx.", guid);
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received getDeviceConfiguration request for GUID 0x%llx", guid);
+    // TODO: Read from cache
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] STUB: Replying nil to getDeviceConfiguration for GUID 0x%llx.", guid);
     if (reply) reply(nil);
 }
 
 - (void)getConnectedDeviceGUIDsWithReply:(void (^)(NSArray<NSNumber *> * _Nullable guids))reply {
-     NSLog(@"[FWADaemon] Received getConnectedDeviceGUIDs request");
-     NSLog(@"[FWADaemon] STUB: Replying empty array to getConnectedDeviceGUIDs.");
+     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received getConnectedDeviceGUIDs request");
+     // TODO: Read GUIDs from cached status
+     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] STUB: Replying empty array to getConnectedDeviceGUIDs.");
      if (reply) reply(@[]);
 }
 
+// --- Driver Presence ---
+- (void)setDriverPresenceStatus:(BOOL)isPresent {
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received setDriverPresenceStatus: %{public}d", isPresent);
+    [self performOnInternalQueueAsync:^{
+        if (self.driverIsConnected != isPresent) {
+            os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Driver connection status changed to %{public}d. Broadcasting...", isPresent);
+            self.driverIsConnected = isPresent;
+            [self broadcastDriverConnectionStatus:isPresent];
+        } else {
+            os_log_debug(OS_LOG_DEFAULT, "[FWADaemon] Driver connection status already %{public}d, no change.", isPresent);
+        }
+    }];
+}
+
+- (void)getIsDriverConnectedWithReply:(void (^)(BOOL isConnected))reply {
+    os_log_debug(OS_LOG_DEFAULT, "[FWADaemon] Received getIsDriverConnected request.");
+    if (!reply) return;
+    [self performOnInternalQueueSync:^{
+        BOOL currentStatus = self.driverIsConnected;
+        os_log_debug(OS_LOG_DEFAULT, "[FWADaemon] Replying to getIsDriverConnected with status: %{public}d", currentStatus);
+        reply(currentStatus);
+    }];
+}
+
+- (void)broadcastDriverConnectionStatus:(BOOL)isConnected {
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Broadcasting driverConnectionStatusDidChange: %{public}d", isConnected);
+    for (ClientInfo *info in self.connectedClients.allValues) {
+        if ([info.clientID hasPrefix:@"GUI"]) {
+            id<FWAClientNotificationProtocol> guiProxy = info.remoteProxy;
+            if (guiProxy) {
+                @try {
+                    [guiProxy driverConnectionStatusDidChange:isConnected];
+                } @catch (NSException *exception) {
+                    os_log_error(OS_LOG_DEFAULT, "[FWADaemon] Exception broadcasting driver status to GUI '%{public}@': %{public}@", info.clientID, exception);
+                }
+            }
+        }
+    }
+}
+
+// --- Helper to find GUI proxy ---
+- (id<FWAClientNotificationProtocol>)getGUIProxyForGUID:(uint64_t)guid {
+    // Note: In GUI-centric model, there might only be one GUI, or maybe one per device?
+    // This finds the *first* client whose ID starts with "GUI".
+    __block id<FWAClientNotificationProtocol> guiProxy = nil;
+    [self performOnInternalQueueSync:^{ // Sync needed to return value reliably
+        for (ClientInfo *info in self.connectedClients.allValues) {
+             // TODO: Need a better way to associate GUIDs with clients if multiple devices/GUI
+             if ([info.clientID hasPrefix:@"GUI"]) {
+                guiProxy = info.remoteProxy;
+                break;
+            }
+        }
+    }];
+    return guiProxy;
+}
+
+
 // --- Control Commands (Driver -> Daemon -> GUI) ---
 - (void)requestSetNominalSampleRate:(uint64_t)guid rate:(double)rate withReply:(void (^)(BOOL success))reply {
-    NSLog(@"[FWADaemon] Received requestSetNominalSampleRate for GUID 0x%llx to %.1f Hz", guid, rate);
-    NSLog(@"[FWADaemon] STUB: Replying success to requestSetNominalSampleRate.");
-    if (reply) reply(YES);
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Forwarding requestSetNominalSampleRate for GUID 0x%llx to %.1f Hz", guid, rate);
+    id<FWAClientNotificationProtocol> guiProxy = [self getGUIProxyForGUID:guid];
+    if (guiProxy) {
+        // Forward the request to the GUI client, passing the original reply block
+        [guiProxy performSetNominalSampleRate:guid rate:rate withReply:^(BOOL guiSuccess) {
+            os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Relaying reply (%d) for requestSetNominalSampleRate GUID 0x%llx", guiSuccess, guid);
+            if (reply) reply(guiSuccess);
+        }];
+    } else {
+        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: No GUI client found to forward requestSetNominalSampleRate for GUID 0x%llx.", guid);
+        if (reply) reply(NO);
+    }
+}
+
+- (void)requestSetClockSource:(uint64_t)guid clockSourceID:(uint32_t)clockSourceID withReply:(void (^)(BOOL success))reply {
+     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Forwarding requestSetClockSource for GUID 0x%llx to ID %u", guid, clockSourceID);
+    id<FWAClientNotificationProtocol> guiProxy = [self getGUIProxyForGUID:guid];
+    if (guiProxy) {
+        [guiProxy performSetClockSource:guid clockSourceID:clockSourceID withReply:^(BOOL guiSuccess) {
+             os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Relaying reply (%d) for requestSetClockSource GUID 0x%llx", guiSuccess, guid);
+            if (reply) reply(guiSuccess);
+        }];
+    } else {
+        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: No GUI client for requestSetClockSource GUID 0x%llx.", guid);
+        if (reply) reply(NO);
+    }
+}
+
+- (void)requestSetMasterVolumeScalar:(uint64_t)guid scope:(uint32_t)scope element:(uint32_t)element scalarValue:(float)scalarValue withReply:(void (^)(BOOL success))reply {
+     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Forwarding requestSetMasterVolumeScalar for GUID 0x%llx (Scope %u, Elem %u) to %.3f", guid, scope, element, scalarValue);
+     id<FWAClientNotificationProtocol> guiProxy = [self getGUIProxyForGUID:guid];
+    if (guiProxy) {
+        [guiProxy performSetMasterVolumeScalar:guid scope:scope element:element scalarValue:scalarValue withReply:^(BOOL guiSuccess) {
+             os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Relaying reply (%d) for requestSetMasterVolumeScalar GUID 0x%llx", guiSuccess, guid);
+            if (reply) reply(guiSuccess);
+        }];
+    } else {
+        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: No GUI client for requestSetMasterVolumeScalar GUID 0x%llx.", guid);
+        if (reply) reply(NO);
+    }
+}
+
+- (void)requestSetMasterMute:(uint64_t)guid scope:(uint32_t)scope element:(uint32_t)element muteState:(BOOL)muteState withReply:(void (^)(BOOL success))reply {
+     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Forwarding requestSetMasterMute for GUID 0x%llx (Scope %u, Elem %u) to %d", guid, scope, element, muteState);
+     id<FWAClientNotificationProtocol> guiProxy = [self getGUIProxyForGUID:guid];
+    if (guiProxy) {
+        [guiProxy performSetMasterMute:guid scope:scope element:element muteState:muteState withReply:^(BOOL guiSuccess) {
+             os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Relaying reply (%d) for requestSetMasterMute GUID 0x%llx", guiSuccess, guid);
+            if (reply) reply(guiSuccess);
+        }];
+    } else {
+        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: No GUI client for requestSetMasterMute GUID 0x%llx.", guid);
+        if (reply) reply(NO);
+    }
 }
 
 // --- IO State (Driver -> Daemon -> GUI) ---
 - (void)requestStartIO:(uint64_t)guid withReply:(void (^)(BOOL success))reply {
-    NSLog(@"[FWADaemon] Received requestStartIO for GUID 0x%llx", guid);
-    NSLog(@"[FWADaemon] STUB: Replying success to requestStartIO.");
-    if (reply) reply(YES);
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Forwarding requestStartIO for GUID 0x%llx", guid);
+    id<FWAClientNotificationProtocol> guiProxy = [self getGUIProxyForGUID:guid];
+     if (guiProxy) {
+        [guiProxy performStartIO:guid withReply:^(BOOL guiSuccess) {
+            os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Relaying reply (%d) for requestStartIO GUID 0x%llx", guiSuccess, guid);
+            if (reply) reply(guiSuccess);
+        }];
+    } else {
+        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: No GUI client for requestStartIO GUID 0x%llx.", guid);
+        if (reply) reply(NO); // Cannot start IO without GUI
+    }
 }
 
 - (void)requestStopIO:(uint64_t)guid {
-    NSLog(@"[FWADaemon] Received requestStopIO for GUID 0x%llx", guid);
-    NSLog(@"[FWADaemon] STUB: Logged requestStopIO.");
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Forwarding requestStopIO for GUID 0x%llx", guid);
+     id<FWAClientNotificationProtocol> guiProxy = [self getGUIProxyForGUID:guid];
+     if (guiProxy) {
+        [guiProxy performStopIO:guid]; // Fire and forget
+    } else {
+         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: No GUI client found to forward requestStopIO for GUID 0x%llx.", guid);
+    }
 }
 
 // --- Logging (Driver -> Daemon -> GUI) ---
 - (void)forwardLogMessageFromDriver:(int32_t)level message:(NSString *)message {
-     NSLog(@"[FWADaemon] Received log from Driver (Level %d): %@", level, message);
-     __block NSArray<ClientInfo *> *allClients;
-     [self performOnInternalQueue:^{
-        allClients = self.connectedClients.allValues;
-    }];
-    for (ClientInfo *info in allClients) {
-         if ([info.clientID hasPrefix:@"GUI"]) {
-              id<FWAClientNotificationProtocol> guiProxy = info.remoteProxy;
-              if (guiProxy) {
-                    NSLog(@"[FWADaemon] STUB: Forwarding driver log to GUI client '%@'", info.clientID);
-                    [guiProxy didReceiveLogMessageFrom:@"FWADriver" level:level message:message];
-              }
+     // os_log_debug(OS_LOG_DEFAULT, "[FWADaemon] Received log from Driver (Level %d): %{public}@", level, message); // Use debug level?
+     __block NSArray<ClientInfo *> *guiClients = [NSMutableArray array];
+     // Find GUI clients safely
+     [self performOnInternalQueueSync:^{
+         for (ClientInfo *info in self.connectedClients.allValues) {
+             if ([info.clientID hasPrefix:@"GUI"]) {
+                 [(NSMutableArray*)guiClients addObject:info]; // Cast needed inside block sometimes
+             }
          }
-    }
+     }];
+
+     // Forward to all found GUI clients
+     if ([guiClients count] > 0) {
+        // os_log_debug(OS_LOG_DEFAULT, "[FWADaemon] Forwarding driver log to %lu GUI client(s)", (unsigned long)[guiClients count]);
+         for (ClientInfo *info in guiClients) {
+             id<FWAClientNotificationProtocol> guiProxy = info.remoteProxy;
+             if (guiProxy) {
+                 @try {
+                    [guiProxy didReceiveLogMessageFrom:@"FWADriver" level:level message:message];
+                 } @catch (NSException *exception) {
+                    os_log_error(OS_LOG_DEFAULT, "[FWADaemon] Exception forwarding log to GUI client '%{public}@': %{public}@", info.clientID, exception);
+                    // Consider removing this client if forwarding fails repeatedly
+                 }
+             }
+         }
+     } else {
+          // os_log_debug(OS_LOG_DEFAULT, "[FWADaemon] No GUI client connected to forward driver log.");
+     }
 }
 
 @end

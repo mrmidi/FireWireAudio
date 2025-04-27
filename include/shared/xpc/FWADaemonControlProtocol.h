@@ -45,6 +45,18 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
 // --- Logging (Driver -> Daemon -> GUI) ---
 - (void)forwardLogMessageFromDriver:(int32_t)level message:(NSString *)message;
 
+/**
+ * @brief [Driver -> Daemon] Informs the daemon about the overall presence/absence of the driver.
+ * @param isPresent YES if the driver is loaded, initialized, and ready to interact, NO otherwise.
+ */
+- (void)setDriverPresenceStatus:(BOOL)isPresent;
+
+/**
+ * @brief [GUI -> Daemon] Requests the current driver presence status.
+ * @param reply Block called with YES if the driver is considered present, NO otherwise.
+ */
+- (void)getIsDriverConnectedWithReply:(void (^)(BOOL isConnected))reply;
+
 @end
 
 NS_ASSUME_NONNULL_END

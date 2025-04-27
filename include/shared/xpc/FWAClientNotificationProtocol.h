@@ -32,6 +32,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)performStartIO:(uint64_t)guid withReply:(void (^)(BOOL success))reply;
 - (void)performStopIO:(uint64_t)guid;
 
+/**
+ * @brief [Daemon -> GUI] Notifies the client that the driver's overall connection status has changed.
+ * @param isConnected YES if the driver is now considered connected/present, NO otherwise.
+ */
+- (void)driverConnectionStatusDidChange:(BOOL)isConnected;
+
 @optional // Optional notifications clients might care about
 
 - (void)clientDidChangeConnectionStatus:(NSString *)clientID isConnected:(BOOL)isConnected;
