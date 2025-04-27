@@ -224,6 +224,21 @@ if(CMAKE_GENERATOR MATCHES "Xcode")
         XCODE_ATTRIBUTE_SWIFT_INCLUDE_PATHS "${CMAKE_SOURCE_DIR}/include;${FWA_CAPI_MODULEMAP_PATH}"
         XCODE_ATTRIBUTE_SWIFT_OPTIMIZATION_LEVEL "-Onone"
     )
+    # --- Copy FWADaemon.xpc into FWA-Control Resources ---
+    add_custom_command(TARGET FWA-Control POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        $<TARGET_BUNDLE_DIR:FWADaemon>
+        $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Resources/FWADaemon.xpc
+    COMMENT "Copying FWADaemon.xpc into FWA-Control Resources"
+    )
+
+    # --- Copy FWADriver.kext (or bundle) into FWA-Control Resources ---
+    add_custom_command(TARGET FWA-Control POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        $<TARGET_BUNDLE_DIR:FWADriver>
+        $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Resources/FWADriver.kext
+    COMMENT "Copying FWADriver.kext into FWA-Control Resources"
+    )
     target_link_libraries(FWA-Control PRIVATE
         FWA
         "-framework SwiftUI"
@@ -233,7 +248,8 @@ if(CMAKE_GENERATOR MATCHES "Xcode")
         "-framework CoreFoundation"
         "-framework CoreAudio"
     )
-    add_dependencies(FWA-Control FWA)
+    # add_dependencies(FWA-Control FWA)
+    add_dependencies(FWA-Control FWADaemon FWADriver FWA)
 endif()
 
 # Ensure FWA-Control can find shared headers and links Shared

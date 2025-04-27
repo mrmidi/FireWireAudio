@@ -1,14 +1,19 @@
 // === FWA-Control/SettingsView.swift ===
 
 import SwiftUI
+import ServiceManagement
 
 struct SettingsView: View {
     @EnvironmentObject var manager: DeviceManager
+
+    // AppStorage-backed settings
     @AppStorage("settings.logBufferSize") private var logBufferSize: Int = 500
-    @AppStorage("settings.autoConnect") private var autoConnect: Bool = false
-    @State private var daemonInstalled = false // Placeholder
-    @State private var driverInstalled = false // Placeholder
-    
+    @AppStorage("settings.autoConnect")    private var autoConnect: Bool = false
+
+    // SMAppService for FWADaemon
+    @State private var daemonService: SMAppService?
+    @State private var daemonInstalled = false
+
     var body: some View {
         TabView {
             // --- Basic Settings Tab ---
@@ -51,39 +56,45 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 GroupBox(label: Label("Daemon", systemImage: "bolt.horizontal.circle").font(.headline)) {
                     HStack(spacing: 12) {
-                        Image(systemName: "circle.fill")
-                            .foregroundColor(.red)
+                        Image(systemName: daemonInstalled ? "circle.fill" : "circle")
+                            .foregroundColor(daemonInstalled ? .green : .red)
                             .imageScale(.large)
-                        Text("Not Installed")
-                            .foregroundColor(.red)
+                        Text(daemonInstalled ? "Installed" : "Not Installed")
+                            .foregroundColor(daemonInstalled ? .green : .red)
                         Spacer()
                         Button(daemonInstalled ? "Reinstall Daemon" : "Install Daemon") {
-                            // Placeholder action
+                            guard let svc = daemonService else { return }
+                            do {
+                                if daemonInstalled {
+                                    try svc.unregister()
+                                    daemonInstalled = false
+                                } else {
+                                    try svc.register()
+                                    daemonInstalled = true
+                                }
+                            } catch {
+                                print("⚠️ Failed to toggle daemon:", error)
+                            }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(true) // Placeholder
+                        .disabled(daemonService == nil)
                     }
                     .padding(.vertical, 4)
                 }
-                GroupBox(label: Label("Driver", systemImage: "shippingbox").font(.headline)) {
-                    HStack(spacing: 12) {
-                        Image(systemName: "circle.fill")
-                            .foregroundColor(.red)
-                            .imageScale(.large)
-                        Text("Not Installed")
-                            .foregroundColor(.red)
-                        Spacer()
-                        Button(driverInstalled ? "Reinstall Driver" : "Install Driver") {
-                            // Placeholder action
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(true) // Placeholder
-                    }
-                    .padding(.vertical, 4)
-                }
+                // ... Driver GroupBox can remain placeholder or use SMJobBless for kext ...
                 Spacer()
             }
             .padding()
+            .onAppear {
+                // Initialize the SMAppService and installed state
+                do {
+                    let svc = try SMAppService.loginItem(identifier: "net.mrmidi.FWADaemon")
+                    daemonService = svc
+                    daemonInstalled = (svc.status == .enabled)
+                } catch {
+                    print("⚠️ Error retrieving daemon service:", error)
+                }
+            }
             .tabItem {
                 Label("System", systemImage: "desktopcomputer")
             }
@@ -96,14 +107,8 @@ struct SettingsView: View {
 // MARK: - Preview
 struct SettingsView_Previews: PreviewProvider {
     static var previews: some View {
-        // Provide a dummy manager for the preview environment
         SettingsView()
             .environmentObject(DeviceManager())
             .frame(width: 400, height: 300)
-            .onAppear {
-                // Uncomment to reset prefs for preview
-                // UserDefaults.standard.removeObject(forKey: "settings.logBufferSize")
-                // UserDefaults.standard.removeObject(forKey: "settings.autoConnect")
-            }
     }
 }
