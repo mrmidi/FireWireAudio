@@ -31,10 +31,11 @@ struct SettingsView: View {
     }
     
     private func registerDaemon() async {
+        logger.info("Attempting to register daemon...") // Log button press
         do {
             try await daemonService.register()
+            logger.info("Daemon registration successful (may require approval).") // Log success
             updateDaemonStatus() // Update status after attempt
-            logger.info("Daemon registration requested.") // Add logging
         } catch {
             // Daemon registration failed: Error Domain=SMAppServiceErrorDomain Code=1 "Operation not permitted" UserInfo={NSLocalizedFailureReason=Operation not permitted}
             // DO NOT FAIL ON THIS
@@ -44,7 +45,7 @@ struct SettingsView: View {
                 logger.warning("Daemon registration requires user approval in System Settings.")
                 showAlert(title: "Daemon Registration Required", message: "Please approve the daemon in System Settings > Privacy & Security > Login Items & Extensions.", style: .informational)
             } else {
-                logger.error("Daemon registration failed: \(error)") // Log error
+                logger.error("Daemon registration failed: \(error.localizedDescription)") // Ensure error is logged
                 showAlert(title: "Daemon Registration Failed", message: error.localizedDescription, style: .critical)
             }
             updateDaemonStatus() // Update status even on failure
@@ -52,12 +53,13 @@ struct SettingsView: View {
     }
     
     private func unregisterDaemon() async {
+        logger.info("Attempting to unregister daemon...") // Log button press
         do {
              try await daemonService.unregister()
+             logger.info("Daemon unregistration successful.") // Log success
              updateDaemonStatus() // Update status after attempt
-             logger.info("Daemon unregistration requested.") // Add logging
          } catch {
-             logger.error("Daemon unregistration failed: \(error)") // Log error
+             logger.error("Daemon unregistration failed: \(error.localizedDescription)") // Ensure error is logged
              showAlert(title: "Daemon Unregistration Failed", message: error.localizedDescription, style: .critical)
              updateDaemonStatus() // Update status even on failure
          }
@@ -65,6 +67,12 @@ struct SettingsView: View {
     
     private func checkDriverStatus() {
         isDriverInstalled = FileManager.default.fileExists(atPath: driverPath)
+    }
+
+    private func installDriver() async {
+        logger.info("User initiated driver installation from Settings.")
+        await manager.installDriverFromBundle() // Manager already logs success/failure
+        checkDriverStatus() // Refresh status after attempt
     }
 
     // Helper for showing alerts (macOS only, simple implementation)
@@ -159,8 +167,8 @@ struct SettingsView: View {
                         Spacer()
                         Button(isDriverInstalled ? "Reinstall Driver" : "Install Driver") {
                             Task {
-                                await manager.installDriverFromBundle()
-                                checkDriverStatus()
+                                // No need for separate logger here, calling installDriver which logs
+                                await installDriver()
                             }
                         }
                         .buttonStyle(.borderedProminent)

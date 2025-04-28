@@ -81,28 +81,30 @@ bool RingBufferManager::map(int shmFd, bool isCreator)
     try {
          reader_ = std::thread(&RingBufferManager::readerLoop, this);
          os_log_info(OS_LOG_DEFAULT, "%s map: std::thread object created.", kLog);
-
-         reader_.detach();
-         os_log_info(OS_LOG_DEFAULT, "%s map: reader thread detached.", kLog);
-
+         // reader_.detach(); // <-- REMOVED
+         os_log_info(OS_LOG_DEFAULT, "%s map: reader thread started (joinable).", kLog);
     } catch (const std::exception& e) {
-         os_log_error(OS_LOG_DEFAULT, "%s map: Exception during thread creation/detach: %{public}s. Aborting map.", kLog, e.what());
-         // Cleanup before returning false
-         running_ = false; // Reset flag
-         // Destructor of shm_ was likely not called, manually unmap
+         os_log_error(OS_LOG_DEFAULT, "%s map: Exception during thread creation: %{public}s. Aborting map.", kLog, e.what());
+         running_ = false;
          if (shm_) {
             ::munlock(shm_, shmSize_);
             ::munmap(shm_, shmSize_);
             shm_ = nullptr;
+         } else if (ptr != MAP_FAILED) {
+            ::munlock(ptr, shmSize_);
+            ::munmap(ptr, shmSize_);
          }
          return false;
     } catch (...) {
-         os_log_error(OS_LOG_DEFAULT, "%s map: Unknown exception during thread creation/detach. Aborting map.", kLog);
+         os_log_error(OS_LOG_DEFAULT, "%s map: Unknown exception during thread creation. Aborting map.", kLog);
          running_ = false;
          if (shm_) {
-             ::munlock(shm_, shmSize_);
-             ::munmap(shm_, shmSize_);
-             shm_ = nullptr;
+            ::munlock(shm_, shmSize_);
+            ::munmap(shm_, shmSize_);
+            shm_ = nullptr;
+         } else if (ptr != MAP_FAILED) {
+            ::munlock(ptr, shmSize_);
+            ::munmap(ptr, shmSize_);
          }
          return false;
     }
@@ -114,12 +116,28 @@ bool RingBufferManager::map(int shmFd, bool isCreator)
 void RingBufferManager::unmap()
 {
     os_log_info(OS_LOG_DEFAULT, "%s unmap: Entered function.", kLog);
-    running_ = false; // Signal thread to stop (readerLoop checks this)
 
-    // Note: Since the thread is detached, we can't explicitly join() it here.
-    // The thread should ideally check `running_` and exit cleanly.
-    // A short sleep might give it time, but isn't guaranteed.
-    // std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Optional small delay
+    // --- Signal and Join Thread ---
+    if (running_.load()) {
+        running_ = false;
+        os_log_info(OS_LOG_DEFAULT, "%s unmap: Signaled reader thread to stop.", kLog);
+        if (reader_.joinable()) {
+            os_log_info(OS_LOG_DEFAULT, "%s unmap: Joining reader thread...", kLog);
+            try {
+                reader_.join();
+                os_log_info(OS_LOG_DEFAULT, "%s unmap: Reader thread joined successfully.", kLog);
+            } catch (const std::system_error& e) {
+                os_log_error(OS_LOG_DEFAULT, "%s unmap: Exception while joining thread: %d - %{public}s", kLog, e.code().value(), e.what());
+            } catch (...) {
+                os_log_error(OS_LOG_DEFAULT, "%s unmap: Unknown exception while joining thread", kLog);
+            }
+        } else {
+            os_log(OS_LOG_DEFAULT, "%s unmap: Reader thread was not joinable (already joined or not started?).", kLog);
+        }
+    } else {
+        os_log_info(OS_LOG_DEFAULT, "%s unmap: Thread was not running.", kLog);
+    }
+    // --- End Thread Join ---
 
     if (shm_)
     {

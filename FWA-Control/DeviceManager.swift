@@ -14,6 +14,7 @@ import FWA_CAPI // Import the C module (via module map)
 import Logging // Add swift-log
 import FWADaemonXPC
 import ServiceManagement
+import AppKit // For NSApplication activation state
 // Domain models are in DomainModels.swift
 // JSON decodables are in JsonDecodables.swift
 
@@ -47,6 +48,8 @@ final class DeviceManager: ObservableObject {
     private var fwaEngineRef: FWAEngineRef?
     private var cancellables = Set<AnyCancellable>()
     private let logger = AppLoggers.deviceManager
+    private var daemonStatusCheckTimer: Timer?
+    private var wasInBackground: Bool = false // Track app background state
     
     // MARK: - XPCManager Integration
     private let xpcManager = XPCManager() // Dedicated XPC manager
@@ -88,10 +91,18 @@ final class DeviceManager: ObservableObject {
                 self?.showDaemonInstallPrompt = (status != .enabled)
             }
             .store(in: &cancellables)
+        // Start timer only if needed initially
+        if daemonInstallStatus != .enabled && !xpcManager.isConnected {
+            startDaemonStatusTimer()
+        }
+        setupAppLifecycleObserver()
     }
     
     deinit {
         logger.warning("Deinitializing DeviceManager...")
+        Task { @MainActor in
+            stopDaemonStatusTimer() // Stop timer on deinit
+        }
         if let engine = fwaEngineRef {
             logger.info("Attempting to stop engine via C API during deinit...")
             let stopResult = FWAEngine_Stop(engine)
@@ -909,11 +920,75 @@ final class DeviceManager: ObservableObject {
         
     }
     
-    // MARK: - Daemon Install Status
+    // MARK: - Daemon Install Status & Auto-Connect
     func checkDaemonStatus() {
         let status = SMAppService.daemon(plistName: "FWADaemon.plist").status
-        daemonInstallStatus = status
-        logger.info("Checked daemon install status: \(status)")
-        showDaemonInstallPrompt = (status != .enabled)
+        logger.trace("Checking daemon status: \(status)") // Log every check
+        // Only update and potentially trigger connect if status changed or not connected
+        if status != daemonInstallStatus || (status == .enabled && !xpcManager.isConnected) {
+            logger.info("Daemon status changed to \(status) (was \(daemonInstallStatus))")
+            daemonInstallStatus = status
+            showDaemonInstallPrompt = (status != .enabled && status != .notFound) // Show prompt only if requires approval or disabled
+            // *** Automatic Connection Logic ***
+            if status == .enabled && !xpcManager.isConnected {
+                logger.info("Daemon is enabled and XPC is not connected. Attempting automatic connection...")
+                xpcManager.connect(reason: "Automatic connection on daemon enabled status") // Pass reason
+                stopDaemonStatusTimer() // Stop polling once enabled and connected
+            } else if status != .enabled && daemonStatusCheckTimer == nil {
+                // If status is not enabled, ensure timer is running (or start it)
+                logger.info("Daemon not enabled (\(status)). Starting status check timer.")
+                startDaemonStatusTimer()
+            } else if status == .enabled && xpcManager.isConnected {
+                // If daemon is enabled and we are connected, stop the timer
+                stopDaemonStatusTimer()
+            }
+        } else if status == .enabled && xpcManager.isConnected {
+            // Also stop timer if status is already enabled and we are connected (e.g., on initial check)
+            stopDaemonStatusTimer()
+        }
     }
-    } // End Class DeviceManager
+    @MainActor
+    private func startDaemonStatusTimer() {
+        guard daemonStatusCheckTimer == nil else { return } // Don't start multiple timers
+        logger.info("Starting daemon status check timer (interval: 5s).")
+        // Schedule timer on the main run loop
+        daemonStatusCheckTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in // Ensure check runs on main actor
+                // Only check if the app is active to avoid unnecessary work
+                if NSApplication.shared.isActive {
+                    self?.checkDaemonStatus()
+                } else {
+                    self?.logger.trace("App inactive, skipping periodic daemon status check.")
+                }
+            }
+        }
+        // Allow timer to run even when UI is tracking (e.g., scrolling)
+        RunLoop.current.add(daemonStatusCheckTimer!, forMode: RunLoopMode.commonModes)
+    }
+    @MainActor
+    private func stopDaemonStatusTimer() {
+        if daemonStatusCheckTimer != nil {
+            logger.info("Stopping daemon status check timer.")
+            daemonStatusCheckTimer?.invalidate()
+            daemonStatusCheckTimer = nil
+        }
+    }
+    // Setup observer for app activation/deactivation
+    private func setupAppLifecycleObserver() {
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self = self else { return }
+            self.logger.debug("App became active.")
+            // If we were in the background, trigger an immediate check upon activation
+            // especially if the daemon isn't enabled/connected yet.
+            if self.wasInBackground && self.daemonInstallStatus != .enabled {
+                self.logger.info("App activated, performing immediate daemon status check.")
+                self.checkDaemonStatus()
+            }
+            self.wasInBackground = false
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.logger.debug("App resigning active.")
+            self?.wasInBackground = true
+        }
+    }
+} // End Class DeviceManager

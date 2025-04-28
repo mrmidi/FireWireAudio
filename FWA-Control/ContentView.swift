@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     // The single source of truth for engine state and device data
     @StateObject private var manager = DeviceManager()
+    @Environment(\.openSettings) var openSettings // <-- Add this
+    private let logger = AppLoggers.app // Logger for ContentView actions
 
     // State for the selected tab
     @State private var selectedTab: Int = 0 // 0: Overview, 1: Matrix, 2: Logs, 3: AV/C
@@ -95,11 +97,21 @@ struct ContentView: View {
             isPresented: $manager.showDriverInstallPrompt // Bind to the manager's state
         ) {
             Button("Install Driver") {
+                logger.info("User clicked 'Install Driver' button.")
                 Task { await manager.installDriverFromBundle() }
             }
-            Button("Cancel", role: .cancel) { } // Default cancel action dismisses
+            Button("Cancel", role: .cancel) {
+                logger.info("User cancelled driver installation prompt.")
+            }
         } message: {
             Text("To communicate with your FireWire audio hardware, please install the driver. You will be prompted for admin credentials.")
+        }
+        .onChange(of: manager.showDriverInstallPrompt) { isShowing in // <-- Log when prompt appears/disappears
+            if isShowing {
+                logger.info("Presenting driver installation prompt.")
+            } else {
+                logger.debug("Driver installation prompt dismissed.")
+            }
         }
         // --- Daemon Install Alert ---
         .alert(
@@ -107,24 +119,21 @@ struct ContentView: View {
             isPresented: $manager.showDaemonInstallPrompt
         ) {
             Button("Go to Settings") {
-                // Open the settings window (⌘,) programmatically if possible
-                // We need to open SettingsView here and navigate to the System tab
-
-                let settingsWindow = NSApp.windows.first { $0.title == "Settings" }
-                if let settingsWindow = settingsWindow {
-                    settingsWindow.makeKeyAndOrderFront(nil)
-                    if let tabView = settingsWindow.contentView?.subviews.first(where: { $0 is NSTabView }) as? NSTabView {
-                        tabView.selectTabViewItem(at: 1) // Select the System tab
-                    }
-                } else {
-                    // Fallback to opening the Settings window normally
-                    NSApp.sendAction(#selector(NSWindow.makeKeyAndOrderFront(_:)), to: nil, from: nil)
-                }
-
+                logger.info("User clicked 'Go to Settings' for daemon installation.")
+                openSettings() // <-- Use the environment action
             }
-            Button("Cancel", role: .cancel) { }
+            Button("Cancel", role: .cancel) {
+                logger.info("User cancelled daemon installation prompt.")
+            }
         } message: {
             Text("The FireWire Daemon is required for device communication. Please go to Settings → System to install the daemon.")
+        }
+        .onChange(of: manager.showDaemonInstallPrompt) { isShowing in // <-- Log when prompt appears/disappears
+            if isShowing {
+                logger.info("Presenting daemon installation prompt.")
+            } else {
+                logger.debug("Daemon installation prompt dismissed.")
+            }
         }
     }
 

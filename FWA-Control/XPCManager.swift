@@ -32,12 +32,13 @@ import Foundation
         weak var deviceManager: DeviceManager? // For hardware callbacks
 
         // MARK: - Connection Management
-        func connect() {
+        func connect(reason: String? = nil) { // <-- Add optional reason parameter
             guard xpcConnection == nil else {
-                logger.info("🔌 XPC connection already exists or pending.")
+                logger.info("🔌 XPC connection already exists or pending. Reason for call: \(reason ?? "N/A")")
                 return
             }
-            logger.info("🔌 Attempting XPC connection to \(daemonServiceName)...")
+            let logReason = reason ?? "Manual or initial connection"
+            logger.info("🔌 Attempting XPC connection to \(daemonServiceName)... (\(logReason))")
 
             // 1. Setup listener for callbacks (Daemon -> GUI)
             self.notificationDelegate = XPCNotificationHandler(xpcManager: self)
@@ -65,12 +66,12 @@ import Foundation
             proxy.registerClient(self.clientID, clientNotificationEndpoint: listenerEndpoint) { [weak self] success, daemonInfo in
                 guard let self = self else { return }
                 if success {
-                    self.logger.info("✅ Registered with daemon successfully. Info: \(daemonInfo ?? [:])")
+                    self.logger.info("✅ Registered with daemon successfully (\(logReason)). Info: \(daemonInfo ?? [:])") // <-- Include reason in success log
                     Task { @MainActor in self.isConnected = true }
                     // After successful registration, query initial driver status
                     self.getInitialDriverStatus()
                 } else {
-                    self.logger.error("❌ Failed to register with daemon.")
+                    self.logger.error("❌ Failed to register with daemon (\(logReason)).") // <-- Include reason in failure log
                     Task { @MainActor in self.handleDisconnect("registration failed") }
                 }
             }
