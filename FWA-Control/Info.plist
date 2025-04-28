@@ -24,5 +24,11 @@
      <string>Copyright © 2025 Aleksandr Shabelnikov. All rights reserved.</string>
          <key>NSCameraUsageDescription</key>
     <string>This app requires access to FireWire device services (which macOS categorizes under Camera access) to communicate with your audio interface.</string>
+    <key>SMPrivilegedExecutables</key>
+    <dict>
+        <key>net.mrmidi.FWADaemon</key> <!-- Identifier of the Helper Tool -->
+        <!-- Code Signing Requirement String for the Helper Tool -->
+        <string>identifier "net.mrmidi.FWADaemon" and anchor apple generic and certificate leaf[subject.OU] = P2XLT99UQ3</string>
+    </dict>
 </dict>
 </plist>

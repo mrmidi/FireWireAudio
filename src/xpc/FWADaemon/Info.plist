@@ -11,7 +11,7 @@
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
     <key>LSMinimumSystemVersion</key>
-    <string>10.15</string>
+    <string>15.0</string>
     <!-- Removed XPCService and MachServices keys -->
     <!-- Removed CFBundlePackageType or set to APPL -->
 </dict>

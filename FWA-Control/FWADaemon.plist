@@ -11,11 +11,14 @@
         <true/>
     </dict>
 
-    <key>ProgramArguments</key>
+    <!-- <key>ProgramArguments</key>
     <array>
-        <!-- This MUST point to the final installed location -->
-        <string>/Library/PrivilegedHelperTools/FWADaemon</string>
-    </array>
+        
+        <string>Contents/Library/LaunchDaemons/FWADaemon</string>
+    </array> -->
+
+    <key>BundleProgram</key>
+    <string>Contents/Library/LaunchDaemons/FWADaemon</string>
 
     <key>RunAtLoad</key>
     <true/>                                 <!-- Start when loaded by launchd -->
