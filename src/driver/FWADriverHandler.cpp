@@ -28,7 +28,7 @@ bool FWADriverHandler::SetupSharedMemory(const std::string& shmName) {
         os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: shm_open failed for '%s': %{errno}d", LogPrefix, shmName.c_str(), errno);
         return false;
     }
-    shmSize_ = sizeof(RTShmRing::SharedRingBuffer);
+    shmSize_ = sizeof(RTShmRing::SharedRingBuffer_POD);
     shmPtr_ = mmap(nullptr, shmSize_, PROT_READ | PROT_WRITE, MAP_SHARED, shmFd_, 0);
     if (shmPtr_ == MAP_FAILED) {
         os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: mmap failed: %{errno}d", LogPrefix, errno);
@@ -40,20 +40,21 @@ bool FWADriverHandler::SetupSharedMemory(const std::string& shmName) {
     if (mlock(shmPtr_, shmSize_) != 0) {
         os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: WARNING - mlock failed: %{errno}d. Real-time performance may suffer.", LogPrefix, errno);
     }
-    volatile std::byte* touchPtr = static_cast<volatile std::byte*>(shmPtr_);
-    for (size_t i = 0; i < shmSize_; i += sysconf(_SC_PAGESIZE)) {
-        touchPtr[i] = std::byte{0};
+    os_log_info(OS_LOG_DEFAULT, "%sFWADriverHandler: Hinting kernel to prefetch pages (MADV_WILLNEED).", LogPrefix);
+    if (madvise(shmPtr_, shmSize_, MADV_WILLNEED) != 0) {
+        os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: WARNING - madvise(MADV_WILLNEED) failed: %{errno}d", LogPrefix, errno);
+        // This is just a hint, so failure isn't critical, just log it.
     }
-    RTShmRing::SharedRingBuffer* sharedRegion = static_cast<RTShmRing::SharedRingBuffer*>(shmPtr_);
+    RTShmRing::SharedRingBuffer_POD* sharedRegion = static_cast<RTShmRing::SharedRingBuffer_POD*>(shmPtr_);
     controlBlock_ = &(sharedRegion->control);
     ringBuffer_ = sharedRegion->ring;
-    if (controlBlock_->capacity != kRingCapacityPow2) {
-        os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: ERROR - Shared memory capacity mismatch (expected %zu, found %u). Tearing down.",
-            LogPrefix, kRingCapacityPow2, controlBlock_->capacity);
+    if (controlBlock_->abiVersion != kShmVersion || controlBlock_->capacity != kRingCapacityPow2) {
+        os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: ERROR - Shared memory header mismatch (abiVersion: %u, capacity: %u). Tearing down.",
+            LogPrefix, controlBlock_->abiVersion, controlBlock_->capacity);
         TeardownSharedMemory();
         return false;
     }
-    os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: Shared memory setup successful (Capacity: %u).", LogPrefix, controlBlock_->capacity);
+    os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: Shared memory setup successful (Capacity: %u, ABI: %u).", LogPrefix, controlBlock_->capacity, controlBlock_->abiVersion);
     return true;
 }
 

@@ -108,7 +108,19 @@ struct ContentView: View {
         ) {
             Button("Go to Settings") {
                 // Open the settings window (⌘,) programmatically if possible
-                NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+                // We need to open SettingsView here and navigate to the System tab
+
+                let settingsWindow = NSApp.windows.first { $0.title == "Settings" }
+                if let settingsWindow = settingsWindow {
+                    settingsWindow.makeKeyAndOrderFront(nil)
+                    if let tabView = settingsWindow.contentView?.subviews.first(where: { $0 is NSTabView }) as? NSTabView {
+                        tabView.selectTabViewItem(at: 1) // Select the System tab
+                    }
+                } else {
+                    // Fallback to opening the Settings window normally
+                    NSApp.sendAction(#selector(NSWindow.makeKeyAndOrderFront(_:)), to: nil, from: nil)
+                }
+
             }
             Button("Cancel", role: .cancel) { }
         } message: {

@@ -66,28 +66,38 @@ static const char* kSharedMemoryName = "/fwa_daemon_shm_v1";
 // +++ ADDED: Shared Memory Creation Method +++
 - (BOOL)setupSharedMemory {
     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Attempting to create/open shared memory segment: %s", kSharedMemoryName);
-    shm_unlink(kSharedMemoryName);
-    int fd = shm_open(kSharedMemoryName, O_CREAT | O_RDWR, 0666);
+    shm_unlink(kSharedMemoryName); // Optional: Remove any stale segment
+    int fd = shm_open(kSharedMemoryName, O_CREAT | O_EXCL | O_RDWR, 0666);
+    bool isCreator = false;
+    if (fd == -1 && errno == EEXIST) {
+        // Already exists, open for attach
+        fd = shm_open(kSharedMemoryName, O_RDWR, 0666);
+        isCreator = false;
+    } else if (fd != -1) {
+        isCreator = true;
+    }
     if (fd == -1) {
         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: shm_open failed for %s: %{errno}d - %s", kSharedMemoryName, errno, strerror(errno));
         return NO;
     }
-    off_t requiredSize = sizeof(RTShmRing::SharedRingBuffer);
-    if (ftruncate(fd, requiredSize) == -1) {
-        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: ftruncate failed for %s (fd %d): %{errno}d - %s", kSharedMemoryName, fd, errno, strerror(errno));
-        close(fd);
-        shm_unlink(kSharedMemoryName);
-        return NO;
+    off_t requiredSize = sizeof(RTShmRing::SharedRingBuffer_POD);
+    if (isCreator) {
+        if (ftruncate(fd, requiredSize) == -1) {
+            os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: ftruncate failed for %s (fd %d): %{errno}d - %s", kSharedMemoryName, fd, errno, strerror(errno));
+            close(fd);
+            shm_unlink(kSharedMemoryName);
+            return NO;
+        }
     }
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Shared memory created/opened (fd %d). Mapping with RingBufferManager...", fd);
-    bool mapSuccess = RingBufferManager::instance().map(fd);
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Shared memory (fd %d, creator=%d). Mapping with RingBufferManager...", fd, isCreator);
+    bool mapSuccess = RingBufferManager::instance().map(fd, isCreator);
     close(fd);
     if (!mapSuccess) {
          os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: RingBufferManager failed to map shared memory %s.", kSharedMemoryName);
          shm_unlink(kSharedMemoryName);
          return NO;
     }
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Shared memory '%s' successfully created and mapped.", kSharedMemoryName);
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Shared memory '%s' successfully created/mapped.", kSharedMemoryName);
     return YES;
 }
 

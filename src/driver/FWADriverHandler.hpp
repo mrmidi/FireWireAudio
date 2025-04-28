@@ -32,8 +32,8 @@ private:
     void* shmPtr_ = nullptr; // Raw pointer to the mapped memory
     int shmFd_ = -1;         // File descriptor for POSIX shared memory
     size_t shmSize_ = 0;     // Total size of the mapped region
-    RTShmRing::ControlBlock* controlBlock_ = nullptr; // Pointer into shmPtr_
-    RTShmRing::AudioChunk*   ringBuffer_ = nullptr;   // Pointer into shmPtr_
+    RTShmRing::ControlBlock_POD* controlBlock_ = nullptr; // Pointer into shmPtr_
+    RTShmRing::AudioChunk_POD*   ringBuffer_ = nullptr;   // Pointer into shmPtr_
 
     // Local non-atomic counter for RT thread (see recommendation 2.8)
     uint32_t localOverrunCounter_ = 0;

@@ -15,7 +15,7 @@ public:
     // Pass the packet‐provider; we will call pushAudioData on it directly
     void start(FWA::Isoch::ITransmitPacketProvider* provider);
     void stop();
-    void enqueue(const RTShmRing::AudioChunk& chunk);          // called from RingBufferManager
+    void enqueue(const RTShmRing::AudioChunk_POD& chunk);          // called from RingBufferManager
 
 private:
     ShmIsochBridge() = default;

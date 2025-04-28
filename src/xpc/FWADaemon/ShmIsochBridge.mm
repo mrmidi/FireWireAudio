@@ -26,7 +26,7 @@ void ShmIsochBridge::stop()
 
 ShmIsochBridge::~ShmIsochBridge() { stop(); }
 
-void ShmIsochBridge::enqueue(const RTShmRing::AudioChunk& chunk)
+void ShmIsochBridge::enqueue(const RTShmRing::AudioChunk_POD& chunk)
 {
     const size_t wr = writeIdx_.load(std::memory_order_relaxed);
     const size_t rd = readIdx_.load(std::memory_order_acquire);

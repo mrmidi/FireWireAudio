@@ -1,5 +1,3 @@
-// RingBufferManager.mm
-
 #include "RingBufferManager.hpp" // Assuming this includes SharedMemoryStructures.hpp
 #include "ShmIsochBridge.hpp"
 #include <sys/mman.h>
@@ -22,7 +20,7 @@ RingBufferManager& RingBufferManager::instance()
     return gInstance;
 }
 
-bool RingBufferManager::map(int shmFd)
+bool RingBufferManager::map(int shmFd, bool isCreator)
 {
     os_log_info(OS_LOG_DEFAULT, "%s map: Entered function. shmFd: %d", kLog, shmFd); // Log Entry + fd
 
@@ -31,7 +29,7 @@ bool RingBufferManager::map(int shmFd)
         return true; // Already mapped
     }
 
-    shmSize_ = sizeof(RTShmRing::SharedRingBuffer);
+    shmSize_ = sizeof(RTShmRing::SharedRingBuffer_POD);
     os_log_info(OS_LOG_DEFAULT, "%s map: Calculated size: %zu", kLog, shmSize_); // Log Size
 
     void *ptr = ::mmap(nullptr, shmSize_,
@@ -55,44 +53,25 @@ bool RingBufferManager::map(int shmFd)
     }
 
     // Assign pointer
-    shm_ = static_cast<RTShmRing::SharedRingBuffer*>(ptr);
+    shm_ = static_cast<RTShmRing::SharedRingBuffer_POD*>(ptr);
     os_log_info(OS_LOG_DEFAULT, "%s map: shm_ assigned pointer value: %p (should match ptr)", kLog, shm_); // Log shm_ VALUE
 
-    // Check and Initialize Memory (Option B: Zeroing + Default Member Init)
-    if (shm_) {
-         os_log_info(OS_LOG_DEFAULT, "%s map: Initializing (zeroing) mapped memory region...", kLog);
-
-         // Zero the entire mapped region first
-         std::memset(shm_, 0, shmSize_);
-         os_log_info(OS_LOG_DEFAULT, "%s map: Memory zeroed using memset.", kLog);
-
-         // Verify capacity *after* zeroing (relying on default member init in the struct)
-         // The struct has: const uint32_t capacity {kRingCapacityPow2};
-         uint32_t currentCapacity = shm_->control.capacity; // Read once
-         os_log_info(OS_LOG_DEFAULT, "%s map: Capacity check after zeroing (should be %zu): %u", kLog, kRingCapacityPow2, currentCapacity);
-
-         // Explicit check and error if capacity isn't right after initialization attempt
-         if (currentCapacity != kRingCapacityPow2) {
-             os_log_error(OS_LOG_DEFAULT, "%s map: CRITICAL - Capacity field is NOT %zu after init attempt! Value: %u. Aborting map.", kLog, kRingCapacityPow2, currentCapacity);
-             // Optional: Try placement new as a fallback? Or just fail.
-             // new (shm_) RTShmRing::SharedRingBuffer(); // Option A attempt
-             // if (shm_->control.capacity != kRingCapacityPow2) { ... fail ... }
-
-             // Cleanup before failing
-             ::munlock(ptr, shmSize_); // Try to unlock, ignore error
-             ::munmap(ptr, shmSize_);
-             shm_ = nullptr; // Ensure shm_ is null on failure path
-             return false;
-         }
-         os_log_info(OS_LOG_DEFAULT, "%s map: Memory initialization successful.", kLog);
-
+    if (isCreator) {
+        os_log_info(OS_LOG_DEFAULT, "%s map: Initializing (zeroing) mapped memory region as creator...", kLog);
+        std::memset(shm_, 0, shmSize_);
+        shm_->control.abiVersion = kShmVersion;
+        shm_->control.capacity   = kRingCapacityPow2;
+        os_log_info(OS_LOG_DEFAULT, "%s map: Set abiVersion=%u, capacity=%u", kLog, shm_->control.abiVersion, shm_->control.capacity);
     } else {
-         // This case means assignment failed even though mmap returned valid ptr
-         os_log_error(OS_LOG_DEFAULT, "%s map: CRITICAL - shm_ is NULL immediately after assignment from valid ptr (%p)! Aborting map.", kLog, ptr);
-         // Unmap the memory since mmap seemingly succeeded but assignment failed
-         ::munlock(ptr, shmSize_); // Try to unlock, ignore error
-         ::munmap(ptr, shmSize_);
-         return false;
+        os_log_info(OS_LOG_DEFAULT, "%s map: Attacher mode, verifying header fields...", kLog);
+        if (shm_->control.abiVersion != kShmVersion || shm_->control.capacity != kRingCapacityPow2) {
+            os_log_error(OS_LOG_DEFAULT, "%s map: ERROR - SHM header mismatch: abiVersion=%u (expected %u), capacity=%u (expected %zu)",
+                kLog, shm_->control.abiVersion, kShmVersion, shm_->control.capacity, kRingCapacityPow2);
+            ::munlock(ptr, shmSize_);
+            ::munmap(ptr, shmSize_);
+            shm_ = nullptr;
+            return false;
+        }
     }
 
     // Start the reader thread only after successful initialization
@@ -172,7 +151,7 @@ void RingBufferManager::readerLoop()
 {
     os_log_info(OS_LOG_DEFAULT, "%s readerLoop: Thread started.", kLog); // Log thread start
 
-    RTShmRing::AudioChunk localChunk; // Allocate local copy buffer ONCE outside the loop
+    RTShmRing::AudioChunk_POD localChunk; // Allocate local copy buffer ONCE outside the loop
 
     // Ensure shm_ is valid before entering loop (defensive check)
     if (!shm_) {

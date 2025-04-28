@@ -8,9 +8,9 @@ class RingBufferManager
 public:
     static RingBufferManager& instance();
 
-    bool map(int shmFd);          // driver calls once
+    // Accepts isCreator: true if this process created the SHM, false if attaching
+    bool map(int shmFd, bool isCreator);
     void unmap();                 // daemon shutdown
-    // --- ADDED: Check if mapped ---
     bool isMapped() const { return shm_ != nullptr; }
 
 private:
@@ -20,7 +20,7 @@ private:
     void readerLoop();            // background thread
 
     // --- SHM pointers ---
-    RTShmRing::SharedRingBuffer *shm_ = nullptr;
+    RTShmRing::SharedRingBuffer_POD *shm_ = nullptr;
     size_t                       shmSize_ = 0;
 
     // --- thread control ---
