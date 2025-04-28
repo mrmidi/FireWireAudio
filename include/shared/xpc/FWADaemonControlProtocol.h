@@ -57,6 +57,9 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
  */
 - (void)getIsDriverConnectedWithReply:(void (^)(BOOL isConnected))reply;
 
+// --- Shared Memory (Driver -> Daemon) ---
+- (void)getSharedMemoryNameWithReply:(void (^)(NSString * _Nullable shmName))reply;
+
 @end
 
 NS_ASSUME_NONNULL_END

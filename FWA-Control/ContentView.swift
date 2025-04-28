@@ -89,6 +89,31 @@ struct ContentView: View {
         ) { result in
             // Optionally handle result
         }
+        // --- Driver Install Alert ---
+        .alert(
+            "FireWire Driver Missing",
+            isPresented: $manager.showDriverInstallPrompt // Bind to the manager's state
+        ) {
+            Button("Install Driver") {
+                Task { await manager.installDriverFromBundle() }
+            }
+            Button("Cancel", role: .cancel) { } // Default cancel action dismisses
+        } message: {
+            Text("To communicate with your FireWire audio hardware, please install the driver. You will be prompted for admin credentials.")
+        }
+        // --- Daemon Install Alert ---
+        .alert(
+            "FireWire Daemon Not Installed",
+            isPresented: $manager.showDaemonInstallPrompt
+        ) {
+            Button("Go to Settings") {
+                // Open the settings window (⌘,) programmatically if possible
+                NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("The FireWire Daemon is required for device communication. Please go to Settings → System to install the daemon.")
+        }
     }
 
     private func showExportLogs() {

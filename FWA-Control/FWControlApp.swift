@@ -22,7 +22,7 @@ struct FWControlApp: App {
         }
 
         // Optional: Log that bootstrapping is done
-        let logger = Logger(label: "net.mrmidi.fwa-control.App")
+        let logger = AppLoggers.app // Use the centralized logger
         logger.info("Logging system bootstrapped (InMemoryLogHandler only).")
     }
 

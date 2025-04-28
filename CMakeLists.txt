@@ -219,6 +219,8 @@ target_include_directories(FWADriver PRIVATE
 target_link_libraries(FWADriver PRIVATE Shared "-framework Foundation")
 set_target_properties(FWADriver PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/driver/Info.plist"
+    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "net.mrmidi.FWADriver"
+    # XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_CURRENT_SOURCE_DIR}/src/driver/FWADriver.entitlements"
 )
 endif()
 
@@ -252,6 +254,9 @@ FWA-Control/UnitInfoSectionView.swift
 FWA-Control/ConnectionMatrixView.swift
 FWA-Control/SettingsView.swift
 FWA-Control/XPCManager.swift
+FWA-Control/AppLoggers.swift
+# Driver installer
+FWA-Control/DriverInstaller.swift
 # Models subdirectory
 FWA-Control/Models/DomainModels.swift
 FWA-Control/Models/Enums.swift
@@ -276,6 +281,17 @@ set_target_properties(FWA-Control PROPERTIES
     XCODE_ATTRIBUTE_SWIFT_INCLUDE_PATHS "${CMAKE_CURRENT_BINARY_DIR}/include;${CMAKE_SOURCE_DIR}/include;${CMAKE_SOURCE_DIR}/include/shared;${CMAKE_SOURCE_DIR}/include/shared/xpc;${FWA_CAPI_MODULEMAP_PATH}"
     XCODE_ATTRIBUTE_SWIFT_OPTIMIZATION_LEVEL "-Onone"
 )
+
+
+set(FWADAEMON_LAUNCHD_PLIST "${CMAKE_SOURCE_DIR}/FWA-Control/FWADaemon.plist")
+target_sources(FWA-Control PRIVATE "${FWADAEMON_LAUNCHD_PLIST}")
+set_source_files_properties(
+  "${FWADAEMON_LAUNCHD_PLIST}"
+  PROPERTIES
+    MACOSX_PACKAGE_LOCATION "Resources"
+)
+
+
 # Copy FWADaemon.xpc and FWADriver resources...
 # add_custom_command(TARGET FWA-Control POST_BUILD
 #     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -284,17 +300,28 @@ set_target_properties(FWA-Control PROPERTIES
 # )
 
 add_custom_command(TARGET FWA-Control POST_BUILD
-# add driver resources
-COMMAND ${CMAKE_COMMAND} -E copy_directory
-    $<TARGET_BUNDLE_CONTENT_DIR:FWADriver>
-    $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Contents/Resources
-
-COMMAND ${CMAKE_COMMAND} -E make_directory
-    $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/XPCServices
-COMMAND ${CMAKE_COMMAND} -E copy_directory
-    $<TARGET_BUNDLE_DIR:FWADaemon>
-    $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/XPCServices/FWADaemon.xpc
-COMMENT "Embedding FWADaemon.xpc into FWA-Control.app/Contents/XPCServices"
+            # Remove old helper tool directory if it exists
+            COMMAND ${CMAKE_COMMAND} -E rm -rf $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Library/LaunchDaemons
+            # Create the LaunchDaemons directory structure
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Library/LaunchDaemons
+            # Copy the FWADaemon executable into the correct location
+            COMMAND ${CMAKE_COMMAND} -E copy
+                $<TARGET_FILE:FWADaemon>
+                $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Library/LaunchDaemons/FWADaemon
+            # Copy plist file into the correct location (Library/LaunchDaemons)
+            COMMAND ${CMAKE_COMMAND} -E copy
+                ${FWADAEMON_LAUNCHD_PLIST}
+                $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Library/LaunchDaemons/FWADaemon.plist
+            # Copy plist file into the Resources folder (for reference)
+            COMMAND ${CMAKE_COMMAND} -E copy
+                ${FWADAEMON_LAUNCHD_PLIST}
+                $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Resources/FWADaemon.plist
+            # Copy the FWADriver.driver bundle into the Resources folder
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                $<TARGET_BUNDLE_DIR:FWADriver>
+                $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Resources/FWADriver.driver
+            COMMENT "Embedding FWADaemon helper, FWADriver.driver, and FWADaemon.plist into FWA-Control.app Resources folder and LaunchDaemons directory"
 )
 
 target_link_libraries(FWA-Control PRIVATE

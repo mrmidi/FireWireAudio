@@ -12,9 +12,71 @@ struct SettingsView: View {
     @State private var localLogBufferSize: Int = 500 // Local state
     @AppStorage("settings.autoConnect")    private var autoConnect: Bool = false
 
-    // SMAppService for FWADaemon
-    @State private var daemonService: SMAppService?
-    @State private var daemonInstalled = false
+    // Daemon status state
+    @State private var daemonStatus: SMAppService.Status = .notFound
+    
+    @State private var driverPath = "/Library/Audio/Plug-Ins/HAL/FWADriver.driver"
+    @State private var isDriverInstalled = false
+
+    private let logger = AppLoggers.settings // Logger for this view
+
+    // Helper for SMAppService (can be moved to DeviceManager later)
+    private var daemonService: SMAppService {
+        SMAppService.daemon(plistName: "FWADaemon.plist") // Use the plist filename
+    }
+    
+    private func updateDaemonStatus() {
+        daemonStatus = daemonService.status
+        logger.info("Daemon status updated: \(daemonStatus)")
+    }
+    
+    private func registerDaemon() async {
+        do {
+            try await daemonService.register()
+            updateDaemonStatus() // Update status after attempt
+            logger.info("Daemon registration requested.") // Add logging
+        } catch {
+            // Daemon registration failed: Error Domain=SMAppServiceErrorDomain Code=1 "Operation not permitted" UserInfo={NSLocalizedFailureReason=Operation not permitted}
+            // DO NOT FAIL ON THIS
+            // This is a non-fatal error, just log it and show an alert describing that the user needs to approve the daemon in System Settings > Login Items & Extensions > FWA-Control
+            if error.localizedDescription.contains("Operation not permitted") { // TODO: Make it i18n universal
+                // This is a non-fatal error, just log it and show an alert
+                logger.warning("Daemon registration requires user approval in System Settings.")
+                showAlert(title: "Daemon Registration Required", message: "Please approve the daemon in System Settings > Privacy & Security > Login Items & Extensions.", style: .informational)
+            } else {
+                logger.error("Daemon registration failed: \(error)") // Log error
+                showAlert(title: "Daemon Registration Failed", message: error.localizedDescription, style: .critical)
+            }
+            updateDaemonStatus() // Update status even on failure
+        }
+    }
+    
+    private func unregisterDaemon() async {
+        do {
+             try await daemonService.unregister()
+             updateDaemonStatus() // Update status after attempt
+             logger.info("Daemon unregistration requested.") // Add logging
+         } catch {
+             logger.error("Daemon unregistration failed: \(error)") // Log error
+             showAlert(title: "Daemon Unregistration Failed", message: error.localizedDescription, style: .critical)
+             updateDaemonStatus() // Update status even on failure
+         }
+    }
+    
+    private func checkDriverStatus() {
+        isDriverInstalled = FileManager.default.fileExists(atPath: driverPath)
+    }
+
+    // Helper for showing alerts (macOS only, simple implementation)
+    private func showAlert(title: String, message: String, style: NSAlert.Style) {
+#if os(macOS)
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = style
+        alert.runModal()
+#endif
+    }
 
     var body: some View {
         TabView {
@@ -58,42 +120,63 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 GroupBox(label: Label("Daemon", systemImage: "bolt.horizontal.circle").font(.headline)) {
                     HStack(spacing: 12) {
-                        Image(systemName: daemonInstalled ? "circle.fill" : "circle")
-                            .foregroundColor(daemonInstalled ? .green : .red)
+                        // Status indicator
+                        Image(systemName: daemonStatus == .enabled ? "circle.fill" : (daemonStatus == .requiresApproval ? "exclamationmark.triangle.fill" : "circle"))
+                            .foregroundColor(daemonStatus == .enabled ? .green : (daemonStatus == .requiresApproval ? .yellow : .red))
                             .imageScale(.large)
-                        Text(daemonInstalled ? "Installed" : "Not Installed")
-                            .foregroundColor(daemonInstalled ? .green : .red)
+                        Text(daemonStatus == .enabled ? "Installed" : (daemonStatus == .requiresApproval ? "Requires Approval" : "Not Installed"))
+                            .foregroundColor(daemonStatus == .enabled ? .green : (daemonStatus == .requiresApproval ? .yellow : .red))
                         Spacer()
-                        Button(daemonInstalled ? "Reinstall Daemon" : "Install Daemon") {
-                            guard let svc = daemonService else { return }
-                            do {
-                                if daemonInstalled {
-                                    try svc.unregister()
-                                    daemonInstalled = false
-                                } else {
-                                    try svc.register()
-                                    daemonInstalled = true
-                                }
-                            } catch {
-                                print("⚠️ Failed to toggle daemon:", error)
+                        if (daemonStatus == .enabled) {
+                            Button("Uninstall Daemon") {
+                                Task { await unregisterDaemon() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                        } else {
+                            Button("Install Daemon") {
+                                Task { await registerDaemon() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(daemonStatus == .requiresApproval)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    if daemonStatus == .requiresApproval {
+                        Text("Daemon requires user approval in System Settings > Privacy & Security.")
+                            .font(.caption)
+                            .foregroundColor(.yellow)
+                            .padding(.leading, 2)
+                    }
+                }
+                // --- Audio Driver Section ---
+                GroupBox(label: Label("Audio Driver", systemImage: "puzzlepiece.extension").font(.headline)) {
+                    HStack(spacing: 12) {
+                        Image(systemName: isDriverInstalled ? "checkmark.seal.fill" : "xmark.seal")
+                            .foregroundColor(isDriverInstalled ? .green : .red)
+                            .imageScale(.large)
+                        Text(isDriverInstalled ? "Installed" : "Not Installed")
+                            .foregroundColor(isDriverInstalled ? .green : .red)
+                        Spacer()
+                        Button(isDriverInstalled ? "Reinstall Driver" : "Install Driver") {
+                            Task {
+                                await manager.installDriverFromBundle()
+                                checkDriverStatus()
                             }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(daemonService == nil)
                     }
                     .padding(.vertical, 4)
+                    Text("The FireWire Audio Driver is required for device communication. You may be prompted for admin credentials.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.leading, 2)
                 }
                 Spacer()
             }
             .padding()
             .onAppear {
-                do {
-                    let svc = try SMAppService.loginItem(identifier: "net.mrmidi.FWADaemon")
-                    daemonService = svc
-                    daemonInstalled = (svc.status == .enabled)
-                } catch {
-                    print("⚠️ Error retrieving daemon service:", error)
-                }
+                updateDaemonStatus()
+                checkDriverStatus()
             }
             .tabItem {
                 Label("System", systemImage: "desktopcomputer")

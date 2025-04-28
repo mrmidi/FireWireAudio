@@ -5,14 +5,16 @@
 #include <aspl/DriverRequestHandler.hpp>
 #include <memory>
 #include <os/log.h>
+#include "FWADriverHandler.hpp" // Include the handler header
 
 class FWADriverInit : public aspl::DriverRequestHandler {
 public:
+    // Constructor now accepts handler
+    FWADriverInit(std::shared_ptr<FWADriverHandler> ioHandler);
     OSStatus OnInitialize() override;
-    // Add finalize hook
     // void OnFinalize() override;
 private:
-    // Placeholder for any handler or state
+    std::shared_ptr<FWADriverHandler> ioHandler_;
 };
 
 #endif // FWADRIVERINIT_HPP

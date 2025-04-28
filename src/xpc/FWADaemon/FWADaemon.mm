@@ -4,6 +4,16 @@
 // #import "shared/RingBufferManager.hpp" // If needed directly (unlikely now)
 #import <Foundation/Foundation.h>
 #import <os/log.h> // Use os_log
+#import <sys/mman.h>
+#import <sys/stat.h>
+#import <fcntl.h>
+#import <unistd.h>
+#import "shared/SharedMemoryStructures.hpp"
+#import "shared/xpc/RingBufferManager.hpp"
+#import "RingBufferManager.hpp" // Include RingBufferManager
+
+// +++ ADDED: Define the shared memory name +++
+static const char* kSharedMemoryName = "/fwa_daemon_shm_v1";
 
 // Simple class to hold client info (Keep this definition)
 @interface ClientInfo : NSObject
@@ -19,6 +29,7 @@
 @property (nonatomic, strong) NSMutableDictionary<NSString *, ClientInfo *> *connectedClients;
 @property (nonatomic, assign) BOOL driverIsConnected; // New state variable
 @property (nonatomic, strong) dispatch_queue_t internalQueue;
+@property (nonatomic, copy) NSString *sharedMemoryName;
 // Note: mutableClients and xpcQueue seem redundant if connectedClients and internalQueue are used properly.
 // Let's remove them for now unless needed for a specific reason.
 // @property (nonatomic, strong) NSMutableArray<NSXPCConnection *> *mutableClients;
@@ -43,10 +54,41 @@
         self.internalQueue = dispatch_queue_create("net.mrmidi.FWADaemon.internalQueue", DISPATCH_QUEUE_SERIAL);
         self.connectedClients = [NSMutableDictionary dictionary];
         _driverIsConnected = NO; // Explicitly initialize
+        self.sharedMemoryName = @(kSharedMemoryName);
         os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Initialized FWADaemon singleton and internal queue.");
-        // Initialize other properties if needed
+
+        // +++ ADDED: Create Shared Memory on Init +++
+        [self setupSharedMemory];
     }
     return self;
+}
+
+// +++ ADDED: Shared Memory Creation Method +++
+- (BOOL)setupSharedMemory {
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Attempting to create/open shared memory segment: %s", kSharedMemoryName);
+    shm_unlink(kSharedMemoryName);
+    int fd = shm_open(kSharedMemoryName, O_CREAT | O_RDWR, 0666);
+    if (fd == -1) {
+        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: shm_open failed for %s: %{errno}d - %s", kSharedMemoryName, errno, strerror(errno));
+        return NO;
+    }
+    off_t requiredSize = sizeof(RTShmRing::SharedRingBuffer);
+    if (ftruncate(fd, requiredSize) == -1) {
+        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: ftruncate failed for %s (fd %d): %{errno}d - %s", kSharedMemoryName, fd, errno, strerror(errno));
+        close(fd);
+        shm_unlink(kSharedMemoryName);
+        return NO;
+    }
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Shared memory created/opened (fd %d). Mapping with RingBufferManager...", fd);
+    bool mapSuccess = RingBufferManager::instance().map(fd);
+    close(fd);
+    if (!mapSuccess) {
+         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: RingBufferManager failed to map shared memory %s.", kSharedMemoryName);
+         shm_unlink(kSharedMemoryName);
+         return NO;
+    }
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Shared memory '%s' successfully created and mapped.", kSharedMemoryName);
+    return YES;
 }
 
 // Remove obsolete clients getter if mutableClients is removed
@@ -157,31 +199,6 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
          }
      }];
 }
-
-// Shared memory setup method
-- (void)setupOutputRingBuffer:(NSFileHandle *)shmFD
-                    withReply:(void (^)(BOOL))reply
-{
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received setupOutputRingBuffer request.");
-    if (!shmFD) {
-         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: setupOutputRingBuffer received nil file handle.");
-         if (reply) reply(NO);
-         return;
-    }
-    int fd = shmFD.fileDescriptor; // XPC runtime dups the FD for us
-    if (fd < 0) {
-         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: setupOutputRingBuffer received invalid file descriptor.");
-         if (reply) reply(NO);
-         return;
-    }
-    // Call the C++ singleton to map the memory and start its reader thread
-    // BOOL ok = RingBufferManager::instance().map(fd);
-    BOOL ok = NO; // STUB: Replace with actual RingBufferManager call when available
-    // Note: NSFileHandle might close the original FD when it goes out of scope.
-    // The dup'd FD should remain valid for RingBufferManager.
-    if (reply) reply(ok);
-}
-
 
 // --- Status & Config ---
 - (void)updateDeviceConnectionStatus:(uint64_t)guid
@@ -392,6 +409,21 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
      } else {
           // os_log_debug(OS_LOG_DEFAULT, "[FWADaemon] No GUI client connected to forward driver log.");
      }
+}
+
+// --- New XPC method for shared memory name ---
+- (void)getSharedMemoryNameWithReply:(void (^)(NSString * _Nullable shmName))reply {
+    // Ensure SHM setup has likely occurred (best effort check)
+    if (!RingBufferManager::instance().isMapped()) { // Assumes RingBufferManager has an isMapped() method
+         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: getSharedMemoryName called but SHM is not mapped!");
+         if(reply) reply(nil);
+         return;
+    }
+    NSString* name = @(kSharedMemoryName); // Convert C string constant to NSString
+    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Replying to getSharedMemoryName with: %{public}@", name);
+    if (reply) {
+        reply(name);
+    }
 }
 
 @end

@@ -10,6 +10,8 @@ public:
 
     bool map(int shmFd);          // driver calls once
     void unmap();                 // daemon shutdown
+    // --- ADDED: Check if mapped ---
+    bool isMapped() const { return shm_ != nullptr; }
 
 private:
     RingBufferManager() = default;

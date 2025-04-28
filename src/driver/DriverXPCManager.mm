@@ -122,3 +122,52 @@ void DriverXPCManager::setPresenceStatus(bool isPresent) {
         handleDaemonDisconnect("exception on setPresenceStatus");
     }
 }
+
+#include <dispatch/dispatch.h>
+#define SHM_NAME_TIMEOUT_NS (5 * NSEC_PER_SEC)
+
+std::string DriverXPCManager::getSharedMemoryName() {
+    if (!isConnected_.load() || !xpcConnection_ || !daemonProxy_) {
+        os_log_error(OS_LOG_DEFAULT, "%sCannot get SHM name - not connected.", LogPrefix);
+        return "";
+    }
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    __block NSString* receivedName = nil;
+    __block bool success = false;
+    os_log_debug(OS_LOG_DEFAULT, "%sRequesting shared memory name from daemon...", LogPrefix);
+    id<FWADaemonControlProtocol> proxy = (id<FWADaemonControlProtocol>)daemonProxy_;
+    if (!proxy) {
+        os_log_error(OS_LOG_DEFAULT, "%sDaemon proxy is nil, cannot call getSharedMemoryName.", LogPrefix);
+        dispatch_semaphore_signal(sema);
+        dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_MSEC));
+        return "";
+    }
+    @try {
+        [proxy getSharedMemoryNameWithReply:^(NSString * _Nullable shmName) {
+            if (shmName && [shmName length] > 0) {
+                os_log_info(OS_LOG_DEFAULT, "%sReceived SHM name: %{public}@", LogPrefix, shmName);
+                receivedName = [shmName copy];
+                success = true;
+            } else {
+                os_log_error(OS_LOG_DEFAULT, "%sDaemon replied with nil or empty SHM name.", LogPrefix);
+                success = false;
+            }
+            dispatch_semaphore_signal(sema);
+        }];
+    } @catch (NSException *exception) {
+        os_log_error(OS_LOG_DEFAULT, "%sException calling getSharedMemoryNameWithReply: %{public}@", LogPrefix, exception);
+        success = false;
+        dispatch_semaphore_signal(sema);
+    }
+    long waitResult = dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, SHM_NAME_TIMEOUT_NS));
+    if (waitResult != 0) {
+        os_log_error(OS_LOG_DEFAULT, "%sTimed out waiting for SHM name reply from daemon.", LogPrefix);
+        return "";
+    }
+    if (success && receivedName) {
+        return std::string([receivedName UTF8String]);
+    } else {
+        os_log_error(OS_LOG_DEFAULT, "%sFailed to get valid SHM name from daemon (success=%d).", LogPrefix, success);
+        return "";
+    }
+}

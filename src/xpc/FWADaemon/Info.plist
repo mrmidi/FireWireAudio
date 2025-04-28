@@ -3,9 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>net.mrmidi.FWADaemon</string>
-    <key>CFBundlePackageType</key>
-    <string>XPC!</string>
+    <string>net.mrmidi.FWADaemon</string> <!-- Still useful for identification -->
     <key>CFBundleName</key>
     <string>FWADaemon</string>
     <key>CFBundleVersion</key>
@@ -14,19 +12,7 @@
     <string>1.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
-    <key>XPCService</key>
-    <dict>
-        <key>ServiceType</key>
-        <string>User</string>
-        <key>RunLoopType</key>
-        <string>NSRunLoop</string>
-        <key>JoinExistingSession</key>
-        <true/>
-    </dict>
-        <key>MachServices</key>
-    <dict>
-        <key>net.mrmidi.FWADaemon</key>
-        <true/>
-    </dict>
+    <!-- Removed XPCService and MachServices keys -->
+    <!-- Removed CFBundlePackageType or set to APPL -->
 </dict>
 </plist>

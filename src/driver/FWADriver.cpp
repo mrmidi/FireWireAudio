@@ -70,7 +70,8 @@ std::shared_ptr<aspl::Driver> CreateDriver()
     plugin->AddDevice(device);
 
     std::shared_ptr<aspl::Driver> driver = std::make_shared<aspl::Driver>(context, plugin);
-    auto initHandler = std::make_shared<FWADriverInit>();
+    // Pass handler to FWADriverInit
+    auto initHandler = std::make_shared<FWADriverInit>(handler);
     driver->SetDriverHandler(initHandler);
     context->Tracer->Message("%sDriver configuration complete.", LogPrefix);
     return driver;
@@ -88,28 +89,19 @@ std::shared_ptr<aspl::Driver> CreateDriver()
  */
 extern "C" void* EntryPoint(CFAllocatorRef allocator, CFUUIDRef typeUUID)
 {
-    #if DEBUG
-    // Use os_log for critical bootstrap errors as Tracer might not be fully set up
-    #define BOOTSTRAP_LOG(msg) os_log_info(OS_LOG_DEFAULT, "%sEntryPoint: %s", LogPrefix, msg)
-    #define BOOTSTRAP_ERR(msg) os_log_error(OS_LOG_DEFAULT, "%sEntryPoint Error: %s", LogPrefix, msg)
-    #else
-    #define BOOTSTRAP_LOG(msg) do {} while(0)
-    #define BOOTSTRAP_ERR(msg) os_log_error(OS_LOG_DEFAULT, "%sEntryPoint Error: %s", LogPrefix, msg) // Keep errors maybe
-    #endif
-
-    BOOTSTRAP_LOG("Checking typeUUID...");
+    os_log(OS_LOG_DEFAULT, "FWADriverASPL: EntryPoint called!");
     if (!CFEqual(typeUUID, kAudioServerPlugInTypeUUID)) {
-        BOOTSTRAP_ERR("Incorrect typeUUID requested.");
+        os_log(OS_LOG_DEFAULT, "%sEntryPoint: Incorrect typeUUID requested.", LogPrefix);
         return nullptr;
     }
 
     static std::shared_ptr<aspl::Driver> driver = CreateDriver();
 
     if (!driver) {
-        BOOTSTRAP_ERR("CreateDriver failed to return a driver instance.");
+        os_log(OS_LOG_DEFAULT, "%sEntryPoint: CreateDriver failed to return a driver instance.", LogPrefix);
         return nullptr;
     }
 
-    BOOTSTRAP_LOG("Driver created, returning reference.");
+    os_log(OS_LOG_DEFAULT, "%sEntryPoint: Driver created, returning reference.", LogPrefix);
     return driver->GetReference();
 }

@@ -22,6 +22,13 @@ public:
     void disconnect();
     bool isConnected() const;
     void setPresenceStatus(bool isPresent);
+
+    /**
+     * @brief Synchronously requests the shared memory name from the daemon via XPC.
+     * @return The shared memory name string provided by the daemon, or an empty string on error or timeout.
+     */
+    std::string getSharedMemoryName();
+
 private:
     DriverXPCManager();
     ~DriverXPCManager();
