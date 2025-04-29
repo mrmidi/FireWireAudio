@@ -2,52 +2,67 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
-import Logging // Add Logging import
+import Logging
+
+extension Logger.Level {
+    /// A numeric rank so we can compare severity.
+    fileprivate var severity: Int {
+        switch self {
+        case .trace:    return 0
+        case .debug:    return 1
+        case .info:     return 2
+        case .notice:   return 3
+        case .warning:  return 4
+        case .error:    return 5
+        case .critical: return 6
+        }
+    }
+}
+
+extension Logger.Level: Comparable {
+    public static func < (lhs: Logger.Level, rhs: Logger.Level) -> Bool {
+        lhs.severity < rhs.severity
+    }
+}
 
 struct LogConsoleView: View {
-    @EnvironmentObject var manager: DeviceManager // Get the manager from the environment
-
-    // State for filtering and UI controls
-    @State private var selectedMinLevel: Logger.Level = .trace // Use Logger.Level
+    @EnvironmentObject var manager: DeviceManager
+    private let logger = AppLoggers.app
+    @State private var selectedMinLevel: Logger.Level = .info
     @State private var searchText: String = ""
     @State private var isAutoScrollEnabled: Bool = true
     @State private var showExportSheet = false
     @State private var logExportContent: String = ""
 
-    // Computed property to filter logs based on state
     var filteredLogs: [UILogEntry] {
-        manager.uiLogEntries.filter { entry in
-            // Filter by level (entry level must be >= selectedMinLevel)
+        manager.uiLogEntries.filterBy { entry in
             let levelMatch = entry.level >= selectedMinLevel
-
-            // Filter by search text (if not empty)
-            let searchMatch = searchText.isEmpty ||
-                              entry.displayMessage.localizedCaseInsensitiveContains(searchText) ||
-                              entry.level.rawValue.localizedCaseInsensitiveContains(searchText) ||
-                              entry.source.localizedCaseInsensitiveContains(searchText)
-
+            let searchMatch = searchText.isEmpty
+                          || entry.displayMessage.localizedCaseInsensitiveContains(searchText)
+                          || entry.level.rawValue.localizedCaseInsensitiveContains(searchText)
+                          || entry.source.localizedCaseInsensitiveContains(searchText)
             return levelMatch && searchMatch
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
+            logToolbar
+            Divider()
             ScrollViewReader { proxy in
                 List {
                     ForEach(filteredLogs) { entry in
                         logEntryRow(entry)
                             .id(entry.id)
                     }
-                    .onChange(of: filteredLogs) { _ in
-                        if isAutoScrollEnabled, let lastID = filteredLogs.last?.id {
-                            DispatchQueue.main.async {
-                                proxy.scrollTo(lastID, anchor: .bottom)
-                            }
-                        }
+                    .onChange(of: filteredLogs.count) { _ in
+                        scrollToBottomIfNeeded(proxy: proxy)
+                    }
+                    .onAppear {
+                        scrollToBottomIfNeeded(proxy: proxy)
                     }
                 }
                 .listStyle(.plain)
-                .border(Color.gray.opacity(0.3), width: 1)
             }
         }
         .fileExporter(
@@ -58,9 +73,9 @@ struct LogConsoleView: View {
          ) { result in
              switch result {
              case .success(let url):
-                 print("Log exported successfully to: \(url)")
+                 logger.info("Log exported successfully to: \(url.path)")
              case .failure(let error):
-                 print("Log export failed: \(error.localizedDescription)")
+                 logger.error("Log export failed: \(error.localizedDescription)")
              }
          }
     }
@@ -75,37 +90,60 @@ struct LogConsoleView: View {
             }
             .pickerStyle(.menu)
             .frame(maxWidth: 120)
+            .help("Show logs at this level or higher")
 
             TextField("Search Logs", text: $searchText)
                 .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 200)
+                .frame(maxWidth: 250)
 
             Spacer()
 
             Toggle("Auto-Scroll", isOn: $isAutoScrollEnabled)
                 .toggleStyle(.checkbox)
+                .onChange(of: isAutoScrollEnabled) { enabled in
+                    if enabled {
+                        // No-op: handled in list's onChange
+                    }
+                }
 
             Button {
-                logExportContent = manager.exportLogs()
-                showExportSheet = true
+                logger.info("Export Logs button clicked. Preparing content...")
+                logExportContent = manager.exportLogs(filtered: filteredLogs)
+                if logExportContent.isEmpty {
+                    logger.warning("No log entries to export.")
+                } else {
+                    showExportSheet = true
+                }
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
             }
-            .help("Export displayed logs to a text file")
+            .help("Export currently displayed logs to a text file")
+            .disabled(filteredLogs.isEmpty)
 
             Button(role: .destructive) {
+                logger.info("Clear Logs button clicked.")
                 manager.clearLogs()
             } label: {
                 Label("Clear", systemImage: "trash")
             }
-            .help("Clear the log display")
+            .help("Clear all log entries")
+            .disabled(manager.uiLogEntries.isEmpty)
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(.thinMaterial)
     }
 
-    // Helper function to format a log entry row using UILogEntry
+    private func scrollToBottomIfNeeded(proxy: ScrollViewProxy) {
+        if isAutoScrollEnabled, let lastID = filteredLogs.last?.id {
+            DispatchQueue.main.async {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(lastID, anchor: .bottom)
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private func logEntryRow(_ entry: UILogEntry) -> some View {
         HStack(alignment: .top, spacing: 8) {
@@ -129,7 +167,6 @@ struct LogConsoleView: View {
         }
     }
 
-    // Helper function for log level color based on Logger.Level
     private func logColor(_ level: Logger.Level) -> Color {
         switch level {
             case .trace:    return .gray
@@ -139,7 +176,6 @@ struct LogConsoleView: View {
             case .warning:  return .orange
             case .error:    return .red
             case .critical: return .red.opacity(0.8)
-            default:        return .clear
         }
     }
 
@@ -148,19 +184,6 @@ struct LogConsoleView: View {
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         return formatter.string(from: Date())
     }
-}
-
-// Add CaseIterable conformance to Logger.Level for Picker
-extension Logger.Level: CaseIterable {
-    public static var allCases: [Logger.Level] = [
-        .trace,
-        .debug,
-        .info,
-        .notice,
-        .warning,
-        .error,
-        .critical
-    ]
 }
 
 struct LogDocument: FileDocument {
@@ -199,5 +222,13 @@ struct LogConsoleView_Previews: PreviewProvider {
         return LogConsoleView()
             .environmentObject(previewManager)
             .frame(height: 400)
+    }
+}
+
+private extension Sequence {
+    /// A non-ambiguous version of `filter(_:)` that always uses the
+    /// classic `(Element) -> Bool` overload.
+    func filterBy(_ isIncluded: (Element) -> Bool) -> [Element] {
+        filter(isIncluded)
     }
 }

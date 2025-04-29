@@ -45,14 +45,16 @@ final class DeviceManager: ObservableObject {
     @AppStorage("settings.logDisplayBufferSize") var logDisplayBufferSize: Int = 500
     
     // MARK: - Internal State
-    private var fwaEngineRef: FWAEngineRef?
+    var fwaEngineRef: FWAEngineRef? // Made internal for access by helpers
     private var cancellables = Set<AnyCancellable>()
-    private let logger = AppLoggers.deviceManager
+    let logger = AppLoggers.deviceManager // Public let for helpers
     private var daemonStatusCheckTimer: Timer?
     private var wasInBackground: Bool = false // Track app background state
     
-    // MARK: - XPCManager Integration
-    private let xpcManager = XPCManager() // Dedicated XPC manager
+    // MARK: - Dependencies / Helpers
+    private var xpcManager = XPCManager()
+    private var hardwareInterface: HardwareInterface!
+    private var callbackHandler: CAPICallbackHandler!
     
     // MARK: - Daemon setup
     
@@ -66,36 +68,39 @@ final class DeviceManager: ObservableObject {
     
     // MARK: - Initialization / Deinitialization
     init() {
-        logger.info("Initializing DeviceManager...")
+        logger.info("--- DeviceManager Initialization START ---")
+        // --- Initialize Dependencies FIRST ---
+        // (Do not use self here yet)
+        // --- Initialize C API Engine ---
         self.fwaEngineRef = FWAEngine_Create()
-        
+        // Now safe to use self
+        self.hardwareInterface = HardwareInterface(manager: self)
+        self.callbackHandler = CAPICallbackHandler(manager: self)
+        logger.info("Dependencies (HardwareInterface, CAPICallbackHandler) initialized.")
         if self.fwaEngineRef == nil {
             logger.critical("Failed to create FWA Engine C API instance!")
         } else {
             logger.info("FWA C API Engine created successfully.")
-            do {
-                try setupCAPILoggingCallback()
-            } catch {
-                logger.error("setupCAPILoggingCallback failed: \(error.localizedDescription)")
-            }
-            setupLogSubscription()
+            callbackHandler.setupCAPILoggingCallback(engine: self.fwaEngineRef!)
+            logger.info("C API callbacks configured via CAPICallbackHandler.")
         }
+        // --- Setup Swift Log Subscription ---
+        setupLogSubscription()
+        // --- Setup XPC ---
         setupXPCBindings()
-        xpcManager.connect() // Initiate XPC connection
-        checkDaemonStatus() // Check daemon install status on init
-        // Example: If you want to react to daemonInstallStatus changes elsewhere
-        $daemonInstallStatus
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] status in
-                // Show prompt if daemon is not enabled
-                self?.showDaemonInstallPrompt = (status != .enabled)
-            }
-            .store(in: &cancellables)
-        // Start timer only if needed initially
-        if daemonInstallStatus != .enabled && !xpcManager.isConnected {
-            startDaemonStatusTimer()
-        }
+        xpcManager.assignHardwareInterface(hardwareInterface)
+        logger.info("XPC bindings configured.")
+        // --- Initial Status Checks & Auto-Connect ---
+        checkDaemonStatus()
+        // --- App Lifecycle Observer ---
         setupAppLifecycleObserver()
+        logger.info("App lifecycle observers setup.")
+        // --- Auto-Start Engine (if configured) ---
+        if UserDefaults.standard.bool(forKey: "settings.autoConnect") {
+             logger.info("Auto-connect enabled, attempting to start engine...")
+             start()
+        }
+        logger.info("--- DeviceManager Initialization COMPLETE ---")
     }
     
     deinit {
@@ -249,41 +254,20 @@ final class DeviceManager: ObservableObject {
             logger.warning("Start called, but engine already running.")
             return
         }
-        
+        guard let deviceCallback = callbackHandler.getCDeviceCallback() else {
+            logger.error("Cannot start, failed to get device callback closure.")
+            return
+        }
         logger.info("Starting FWA Engine via C API...")
         let context = Unmanaged.passUnretained(self).toOpaque()
-        
-        // --- Define Device Callback ---
-        let swiftDeviceCallback: FWADeviceNotificationCallback = { (contextPtr, deviceRef, connected) in
-            guard let context = contextPtr else {
-                Logging.Logger(label: "DeviceCallback.Error").error("Received device callback with null context.")
-                return
-            }
-            let manager = Unmanaged<DeviceManager>.fromOpaque(context).takeUnretainedValue()
-            
-            var guid: UInt64 = 0
-            let guidResult = FWADevice_GetGUID(deviceRef, &guid) // Use deviceRef directly
-            
-            if guidResult == kIOReturnSuccess && guid != 0 {
-                manager.logger.debug("Device Callback: GUID 0x\(String(format: "%llX", guid)), Connected: \(connected)")
-                Task { // Use Task for async operations on main actor
-                    await manager.handleDeviceUpdate(guid: guid, added: connected)
-                }
-            } else {
-                manager.logger.error("Failed to get GUID from deviceRef in callback. Connected: \(connected), Error: \(guidResult)")
-            }
-        }
-        self.cDeviceCallbackClosure = swiftDeviceCallback // Store reference
-        
-        // --- Call C API Start ---
-        let result = FWAEngine_Start(engine, swiftDeviceCallback, context)
-        
+        let result = FWAEngine_Start(engine, deviceCallback, context)
         if result == kIOReturnSuccess {
             self.isRunning = true
-            logger.info("FWA Engine started successfully via C API.")
+            logger.info("✅ FWA Engine started successfully via C API.")
         } else {
             self.isRunning = false
-            logger.error("Failed to start FWA Engine via C API: IOReturn \(result)")
+            logger.error("❌ Failed to start FWA Engine via C API: IOReturn \(result)")
+            showAlert(title: "Engine Start Failed", message: "Could not start the FireWire audio engine (Error: \(result)). Check logs and driver status.", style: .critical)
         }
     }
     
@@ -438,7 +422,7 @@ final class DeviceManager: ObservableObject {
     }
     
     /// Handles device notifications received from the C callback (runs on main actor via Task).
-    private func handleDeviceUpdate(guid: UInt64, added: Bool) async {
+    internal func handleDeviceUpdate(guid: UInt64, added: Bool) async {
         // This method is now async and called within a Task on the main actor
         if added {
             logger.info("Device added: GUID 0x\(String(format: "%llX", guid)). Fetching details...")
@@ -823,6 +807,19 @@ final class DeviceManager: ObservableObject {
         return logText
     }
     
+    /// Exports the given log entries as a formatted string.
+    /// - Parameter entries: The log entries to export.
+    /// - Returns: A string containing the filtered log entries, formatted with timestamp, level, and message.
+    func exportLogs(filtered entries: [UILogEntry]) -> String {
+        logger.info("Exporting \(entries.count) filtered log entries.")
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        return entries.map { entry in
+            let timestampStr = dateFormatter.string(from: entry.timestamp)
+            return "\(timestampStr) [\(entry.level.rawValue.uppercased())] \(entry.displayMessage)"
+        }.joined(separator: "\n")
+    }
+    
     func updateLogBufferSize(_ newSize: Int) {
         self.logDisplayBufferSize = newSize
         if uiLogEntries.count > logDisplayBufferSize {
@@ -907,6 +904,13 @@ final class DeviceManager: ObservableObject {
             logger.error("Task.sleep failed: \(error.localizedDescription)")
         }
         logger.warning("--> Hardware CMD: Stop IO - STUBBED")
+    }
+    
+    // Placeholder for updating device IO state (start/stop IO)
+    // In a real implementation, this would update the device's running state in the UI or model.
+    func updateDeviceIOState(guid: UInt64, isRunning: Bool) {
+        // TODO: Implement actual state update logic if needed
+        logger.info("[Placeholder] updateDeviceIOState called for GUID 0x\(String(format: "%llX", guid)), isRunning: \(isRunning)")
     }
     
     // MARK: - Driver Installation

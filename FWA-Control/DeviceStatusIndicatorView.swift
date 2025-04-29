@@ -1,21 +1,17 @@
 import SwiftUI
 
 struct DeviceStatusIndicatorView: View {
-    var label: String? = nil // Optional label (e.g., "Daemon", "Driver")
+    var statusTypeLabel: String // e.g., "Daemon", "Driver". Used for default help text.
+    var systemImageName: String // System image name for the icon
     var isConnected: Bool
+    var helpText: String? = nil // Optional explicit help tooltip
+
     var body: some View {
-        HStack {
-            if let label = label {
-                Text("\(label):")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            Circle()
-                .fill(isConnected ? Color.green : Color.red)
-                .frame(width: 10, height: 10)
-            Text(isConnected ? "Connected" : "Disconnected")
-                .foregroundColor(isConnected ? .green : .red)
-                .font(.caption)
+        HStack(spacing: 4) {
+            Image(systemName: systemImageName)
+                .foregroundColor(isConnected ? .green : .secondary)
+                .imageScale(.medium)
         }
+        .help(helpText ?? (isConnected ? "\(statusTypeLabel) Status: Connected" : "\(statusTypeLabel) Status: Disconnected"))
     }
 }

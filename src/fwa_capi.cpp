@@ -207,35 +207,30 @@ void FWAEngine_Destroy(FWAEngineRef engine) {
     delete engine;
 }
 
-IOReturn FWAEngine_SetLogCallback(FWAEngineRef engine, FWALogCallback callback, void* user_data) {
-    if (!engine) {
-        return kIOReturnBadArgument;
-    }
-    if (!engine->logger) {
-         auto global_logger = get_global_logger();
-         if (!global_logger) return kIOReturnNotReady;
-         engine->logger = global_logger;
-         engine->logger->warn("Engine logger was null, using global logger for SetLogCallback.");
-    }
-    try {
-        engine->log_callback = callback;
-        engine->log_user_data = user_data;
-        auto c_sink = std::make_shared<FWACCallbackSink<std::mutex>>(engine);
-        c_sink->set_level(spdlog::level::trace);
-        c_sink->set_formatter(std::make_unique<spdlog::pattern_formatter>("%^[%Y-%m-%d %H:%M:%S.%e] [%l] %v%$"));
-        engine->logger->sinks().clear();
-        engine->logger->sinks().push_back(c_sink);
-        engine->logger->set_level(spdlog::level::trace);
-        engine->logger->flush_on(spdlog::level::trace);
-        engine->logger->info("Registered C log callback.");
-        return kIOReturnSuccess;
-    } catch (const std::exception& e) {
-         std::cerr << "Error setting log callback: " << e.what() << std::endl;
-         return kIOReturnInternalError;
-    } catch (...) {
-         std::cerr << "Unknown error setting log callback." << std::endl;
-         return kIOReturnInternalError;
-    }
+IOReturn FWAEngine_SetLogCallback(FWAEngineRef engine,
+                                  FWALogCallback callback,
+                                  void* user_data)
+{
+    if (!engine) return kIOReturnBadArgument;
+
+    engine->log_callback = callback;
+    engine->log_user_data = user_data;
+
+    auto cb_sink = std::make_shared<FWACCallbackSink<std::mutex>>(engine);
+    cb_sink->set_level(spdlog::level::trace);
+
+    // (optional) keep local stderr sink so debug prints still show in Xcode
+    auto stderr_sink = std::make_shared<spdlog::sinks::stderr_sink_mt>();
+
+    engine->logger->sinks().clear();
+    engine->logger->sinks().push_back(cb_sink);
+    engine->logger->sinks().push_back(stderr_sink);
+
+    // 👇 **THIS LINE MAKES EVERY spdlog::<level>() GO THROUGH YOUR SINK**
+    spdlog::set_default_logger(engine->logger);
+
+    engine->logger->info("Registered C log callback.");
+    return kIOReturnSuccess;
 }
 
 IOReturn FWAEngine_Start(FWAEngineRef engine, FWADeviceNotificationCallback notification_callback, void* user_data) {

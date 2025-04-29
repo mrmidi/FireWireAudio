@@ -5,81 +5,78 @@ import UniformTypeIdentifiers
 
 
 struct ContentView: View {
-    // The single source of truth for engine state and device data
-    @StateObject private var manager = DeviceManager()
-    @Environment(\.openSettings) var openSettings // <-- Add this
-    private let logger = AppLoggers.app // Logger for ContentView actions
-
-    // State for the selected tab
-    @State private var selectedTab: Int = 0 // 0: Overview, 1: Matrix, 2: Logs, 3: AV/C
-
-    // State for file export
+    @EnvironmentObject var manager: DeviceManager // Now always from environment
+    @State private var selectedTab: Int = 0
     @State private var showExportJsonSheet = false
     @State private var exportJsonContent: String = ""
+    @Environment(\.openSettings) var openSettings
+    private let logger = AppLoggers.app
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            // --- Overview Tab ---
-            OverviewView()
-                .tabItem { Label("Overview", systemImage: "dial.medium") }
-                .tag(0)
-                .keyboardShortcut("1", modifiers: .command)
+        VStack(spacing: 0) { // Use spacing 0 to have status bar directly below TabView
+            TabView(selection: $selectedTab) {
+                // --- Overview Tab ---
+                OverviewView()
+                    .tabItem { Label("Overview", systemImage: "dial.medium") }
+                    .tag(0)
+                    .keyboardShortcut("1", modifiers: .command)
 
-            // --- Connection Matrix Tab ---
-            ConnectionMatrixView()
-                .tabItem { Label("Matrix", systemImage: "rectangle.grid.3x2") }
-                .tag(1)
-                .keyboardShortcut("2", modifiers: .command)
+                // --- Connection Matrix Tab ---
+                ConnectionMatrixView()
+                    .tabItem { Label("Matrix", systemImage: "rectangle.grid.3x2") }
+                    .tag(1)
+                    .keyboardShortcut("2", modifiers: .command)
 
-            // --- Log Console Tab ---
-            LogConsoleView()
-                .tabItem { Label("Logs", systemImage: "doc.plaintext") }
-                .tag(2)
-                .keyboardShortcut("3", modifiers: .command)
+                // --- Log Console Tab ---
+                LogConsoleView()
+                    .tabItem { Label("Logs", systemImage: "doc.plaintext") }
+                    .tag(2)
+                    .keyboardShortcut("3", modifiers: .command)
 
-            // --- AV/C Tab ---
-            AVCTabView()
-                .tabItem { Label("AV/C", systemImage: "terminal") }
-                .tag(3)
-                .keyboardShortcut("4", modifiers: .command)
+                // --- AV/C Tab ---
+                AVCTabView()
+                    .tabItem { Label("AV/C", systemImage: "terminal") }
+                    .tag(3)
+                    .keyboardShortcut("4", modifiers: .command)
+            }
+            Divider() // Separator line
+            StatusBarView() // <-- Add the status bar here
         }
-        .environmentObject(manager) // Make manager available to all tabs
-        .navigationTitle("FWA Control") // Keep the window title
+        .environmentObject(manager)
+        .navigationTitle("FWA Control")
         .toolbar {
-            // --- Export JSON Button ---
             ToolbarItemGroup {
-                if let guid = manager.devices.keys.sorted().first, // Use first device for now
-                   let json = manager.deviceJsons[guid], !json.isEmpty {
+                if manager.devices.first?.value != nil {
                     Button {
-                        exportJsonContent = json
-                        showExportJsonSheet = true
+                        if let guid = manager.devices.keys.sorted().first,
+                           let json = manager.deviceJsons[guid] {
+                            exportJsonContent = json
+                            showExportJsonSheet = true
+                            logger.info("User requested export JSON for GUID 0x\(String(format: "%llX", guid))")
+                        } else {
+                            logger.warning("Export JSON requested, but no device or JSON found.")
+                        }
                     } label: {
                         Label("Export JSON", systemImage: "square.and.arrow.up")
                     }
-                    .help("Export original device JSON")
+                    .help("Export original device JSON (first device)")
                 }
             }
-            // Always‐visible engine controls (no explicit placement)
             ToolbarItemGroup {
                 Button { manager.start() } label: { Label("Start", systemImage: "play.fill") }
                     .help("Start CoreAudio Driver Discovery (requires driver)")
                     .disabled(manager.isRunning)
-                // Optional: Disable start if driver isn't connected?
-                // .disabled(manager.isRunning || !manager.isDriverConnected)
-
-                // Display Driver connection status next to engine controls
-                DeviceStatusIndicatorView(label: "Driver", isConnected: manager.isDriverConnected)
-
                 Button { manager.stop() }  label: { Label("Stop", systemImage: "stop.fill") }
                     .disabled(!manager.isRunning)
             }
-            // Contextual per‐tab actions
             ToolbarItemGroup {
-                if selectedTab == 1 {
-                    Button { manager.refreshAllDevices() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-                }
-                if selectedTab == 2 {
-                    Button { showExportLogs() } label: { Label("Export Logs", systemImage: "square.and.arrow.up") }
+                if selectedTab == 0 || selectedTab == 1 {
+                    Button {
+                        logger.info("User requested refresh all devices.")
+                        manager.refreshAllDevices()
+                    } label: { Label("Refresh Devices", systemImage: "arrow.clockwise") }
+                    .disabled(!manager.isRunning)
+                    .help("Refresh data for all connected devices")
                 }
             }
         }
@@ -89,12 +86,17 @@ struct ContentView: View {
             contentType: .json,
             defaultFilename: "fwa-device.json"
         ) { result in
-            // Optionally handle result
+            switch result {
+            case .success(let url):
+                logger.info("JSON exported successfully to: \(url.path)")
+            case .failure(let error):
+                logger.error("JSON export failed: \(error.localizedDescription)")
+            }
         }
-        // --- Driver Install Alert ---
+        // --- Alerts ---
         .alert(
             "FireWire Driver Missing",
-            isPresented: $manager.showDriverInstallPrompt // Bind to the manager's state
+            isPresented: $manager.showDriverInstallPrompt
         ) {
             Button("Install Driver") {
                 logger.info("User clicked 'Install Driver' button.")
@@ -113,7 +115,6 @@ struct ContentView: View {
                 logger.debug("Driver installation prompt dismissed.")
             }
         }
-        // --- Daemon Install Alert ---
         .alert(
             "FireWire Daemon Not Installed",
             isPresented: $manager.showDaemonInstallPrompt

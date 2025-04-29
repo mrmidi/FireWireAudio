@@ -265,6 +265,10 @@ FWA-Control/AVCTabView.swift
 FWA-Control/OverviewView.swift
 # Logging subdirectory
 FWA-Control/Logging/InMemoryLogHandler.swift
+# Newly added files for refactor
+FWA-Control/HardwareInterface.swift
+FWA-Control/CAPICallbackHandler.swift
+FWA-Control/StatusBarView.swift
 )
 
 
