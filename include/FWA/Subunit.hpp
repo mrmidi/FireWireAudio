@@ -1,93 +1,63 @@
+// include/FWA/Subunit.hpp
 #pragma once
-#include "AudioPlug.hpp"
-#include <vector>
-#include <memory>
+
+#include "FWA/Enums.hpp"        // Include Enums (needed for SubunitType)
 #include <cstdint>
-#include <optional>
+#include <string>
 
 namespace FWA {
 
-class MusicSubunit {
-public:
-    MusicSubunit() = default;
-    ~MusicSubunit() = default;
-    
-    // Plug count getters
-    uint32_t getIsoInputCount() const { return isoInputCount_; }
-    uint32_t getIsoOutputCount() const { return isoOutputCount_; }
-    uint32_t getExternalInputCount() const { return externalInputCount_; }
-    uint32_t getExternalOutputCount() const { return externalOutputCount_; }
-    uint32_t getMusicDestPlugCount() const { return musicDestPlugCount_; }
-    uint32_t getMusicSourcePlugCount() const { return musicSourcePlugCount_; }
-    
-    // Setters for plug counts
-    void setIsoInputCount(uint32_t count) { isoInputCount_ = count; }
-    void setIsoOutputCount(uint32_t count) { isoOutputCount_ = count; }
-    void setExternalInputCount(uint32_t count) { externalInputCount_ = count; }
-    void setExternalOutputCount(uint32_t count) { externalOutputCount_ = count; }
-    void setMusicDestPlugCount(uint32_t count) { musicDestPlugCount_ = count; }
-    void setMusicSourcePlugCount(uint32_t count) { musicSourcePlugCount_ = count; }
-    
-    // Plug management
-    void addIsoInputPlug(std::shared_ptr<AudioPlug> plug) { isoInputPlugs_.push_back(plug); }
-    void addIsoOutputPlug(std::shared_ptr<AudioPlug> plug) { isoOutputPlugs_.push_back(plug); }
-    void addExternalInputPlug(std::shared_ptr<AudioPlug> plug) { externalInputPlugs_.push_back(plug); }
-    void addExternalOutputPlug(std::shared_ptr<AudioPlug> plug) { externalOutputPlugs_.push_back(plug); }
-    void addMusicDestPlug(std::shared_ptr<AudioPlug> plug) { musicDestPlugs_.push_back(plug); }
-    void addMusicSourcePlug(std::shared_ptr<AudioPlug> plug) { musicSourcePlugs_.push_back(plug); }
-    
-    const std::vector<std::shared_ptr<AudioPlug>>& getIsoInputPlugs() const { return isoInputPlugs_; }
-    const std::vector<std::shared_ptr<AudioPlug>>& getIsoOutputPlugs() const { return isoOutputPlugs_; }
-    const std::vector<std::shared_ptr<AudioPlug>>& getExternalInputPlugs() const { return externalInputPlugs_; }
-    const std::vector<std::shared_ptr<AudioPlug>>& getExternalOutputPlugs() const { return externalOutputPlugs_; }
-    const std::vector<std::shared_ptr<AudioPlug>>& getMusicDestPlugs() const { return musicDestPlugs_; }
-    const std::vector<std::shared_ptr<AudioPlug>>& getMusicSourcePlugs() const { return musicSourcePlugs_; }
-    
-    // Raw descriptor data (if parsed from the device)
-    void setStatusDescriptorData(const std::vector<uint8_t>& data) { statusDescriptorData_ = data; }
-    const std::optional<std::vector<uint8_t>>& getStatusDescriptorData() const { return statusDescriptorData_; }
-    
+/**
+ * @brief Abstract base class for AV/C subunits (Music, Audio, etc.).
+ *
+ * Provides a common interface and basic properties for different subunit types.
+ */
+class Subunit {
+public: // Make interface methods public
+    /**
+     * @brief Virtual destructor to ensure proper cleanup in derived classes.
+     */
+    virtual ~Subunit() = default;
+
+    /**
+     * @brief Get the instance ID of this subunit.
+     * @return uint8_t The subunit instance ID (0-7).
+     */
+    uint8_t getId() const { return id_; }
+
+    /**
+     * @brief Get the specific type of this subunit.
+     * @return SubunitType The enum value representing the subunit type.
+     */
+    virtual SubunitType getSubunitType() const = 0; // Pure virtual
+
+    /**
+     * @brief Get a human-readable name for the subunit type.
+     * @return std::string The name of the subunit type (e.g., "Music").
+     */
+    virtual std::string getSubunitTypeName() const = 0; // Pure virtual
+
+    void setId(uint8_t id) { id_ = id; }
+
+protected:
+    /**
+     * @brief Protected constructor for base class.
+     * @param id The subunit instance ID (0-7).
+     */
+    explicit Subunit(uint8_t id) : id_(id) {} // Use explicit, remove default value if always set
+
+    // Add common protected members if needed later.
+
 private:
-    uint32_t isoInputCount_{0};
-    uint32_t isoOutputCount_{0};
-    uint32_t externalInputCount_{0};
-    uint32_t externalOutputCount_{0};
-    uint32_t musicDestPlugCount_{0};
-    uint32_t musicSourcePlugCount_{0};
-    
-    std::vector<std::shared_ptr<AudioPlug>> isoInputPlugs_;
-    std::vector<std::shared_ptr<AudioPlug>> isoOutputPlugs_;
-    std::vector<std::shared_ptr<AudioPlug>> externalInputPlugs_;
-    std::vector<std::shared_ptr<AudioPlug>> externalOutputPlugs_;
-    std::vector<std::shared_ptr<AudioPlug>> musicDestPlugs_;
-    std::vector<std::shared_ptr<AudioPlug>> musicSourcePlugs_;
-    
-    std::optional<std::vector<uint8_t>> statusDescriptorData_;
+    uint8_t id_;
+
+    // Prevent copying and moving of subunits by default
+    Subunit(const Subunit&) = delete;
+    Subunit& operator=(const Subunit&) = delete;
+    Subunit(Subunit&&) = delete;
+    Subunit& operator=(Subunit&&) = delete;
 };
 
-class AudioSubunit {
-public:
-    AudioSubunit() = default;
-    ~AudioSubunit() = default;
-    
-    uint32_t getAudioDestPlugCount() const { return audioDestPlugCount_; }
-    uint32_t getAudioSourcePlugCount() const { return audioSourcePlugCount_; }
-    
-    void setAudioDestPlugCount(uint32_t count) { audioDestPlugCount_ = count; }
-    void setAudioSourcePlugCount(uint32_t count) { audioSourcePlugCount_ = count; }
-    
-    void addAudioDestPlug(std::shared_ptr<AudioPlug> plug) { audioDestPlugs_.push_back(plug); }
-    void addAudioSourcePlug(std::shared_ptr<AudioPlug> plug) { audioSourcePlugs_.push_back(plug); }
-    
-    const std::vector<std::shared_ptr<AudioPlug>>& getAudioDestPlugs() const { return audioDestPlugs_; }
-    const std::vector<std::shared_ptr<AudioPlug>>& getAudioSourcePlugs() const { return audioSourcePlugs_; }
-    
-private:
-    uint32_t audioDestPlugCount_{0};
-    uint32_t audioSourcePlugCount_{0};
-    
-    std::vector<std::shared_ptr<AudioPlug>> audioDestPlugs_;
-    std::vector<std::shared_ptr<AudioPlug>> audioSourcePlugs_;
-};
+// NO DEFINITIONS FOR MusicSubunit or AudioSubunit HERE!
 
 } // namespace FWA

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>net.mrmidi.FWADaemon</string>   <!-- Must match CFBundleIdentifier -->
+
+    <key>MachServices</key>
+    <dict>
+        <key>net.mrmidi.FWADaemon</key>     <!-- The service name clients will look up -->
+        <true/>
+    </dict>
+
+    <!-- <key>ProgramArguments</key>
+    <array>
+        
+        <string>Contents/Library/LaunchDaemons/FWADaemon</string>
+    </array> -->
+
+    <key>BundleProgram</key>
+    <string>Contents/Library/LaunchDaemons/FWADaemon</string>
+
+    <key>RunAtLoad</key>
+    <true/>                                 <!-- Start when loaded by launchd -->
+
+    <key>KeepAlive</key>
+    <true/>                                 <!-- Restart if it exits/crashes -->
+
+    <!-- Optional but recommended for debugging -->
+    <key>StandardErrorPath</key>
+    <string>/var/log/fwadaemon.err</string>
+    <key>StandardOutPath</key>
+    <string>/var/log/fwadaemon.out</string>
+
+    <!-- NO XPCService key -->
+    <!-- Basic bundle keys like CFBundleIdentifier etc. are NOT needed here -->
+
+</dict>
+</plist>

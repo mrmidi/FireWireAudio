@@ -1,10 +1,13 @@
 # Ignore build directories
 build/
+cmake/
 build-*/
 cmake-build-*/
 out/
 bin/
 lib/
+xbuild/
+extern/
 
 # Xcode
 *.xcodeproj/
@@ -66,6 +69,15 @@ compile_commands.json
 
 # helper scripts
 SKELETON*
+fwa.txt
+isoch.txt
 skeleton.sh
-compile_commands.json
 cmakeupdate.py
+isoch.sh
+modified.txt
+swift.txt
+driver.txt
+xpc.txt
+
+# AppleHeaders folder
+AppleHeaders/
