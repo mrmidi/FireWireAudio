@@ -1,7 +1,6 @@
 #import "FWADaemon.h" // Import the interface declaration
 #import "shared/xpc/FWAClientNotificationProtocol.h" // Correct client protocol
 // #import "shared/xpc/FWADaemonControlProtocol.h" // Protocol imported via FWADaemon.h
-// #import "shared/RingBufferManager.hpp" // If needed directly (unlikely now)
 #import <Foundation/Foundation.h>
 #import <os/log.h> // Use os_log
 #import <sys/mman.h>
@@ -10,7 +9,13 @@
 #import <unistd.h>
 #import "shared/SharedMemoryStructures.hpp"
 #import "shared/xpc/RingBufferManager.hpp"
-#import "RingBufferManager.hpp" // Include RingBufferManager
+// +++ spdlog includes +++
+#define SPDLOG_ENABLE_HIGH_RESOLUTION_TIMER
+#include <spdlog/spdlog.h>
+#include <spdlog/pattern_formatter.h>
+// +++ custom sinks +++
+#include "OsLogSink.hpp"
+#include "GuiCallbackSink.hpp"
 
 // +++ ADDED: Define the shared memory name +++
 static const char* kSharedMemoryName = "/fwa_daemon_shm_v1";
@@ -48,16 +53,55 @@ static const char* kSharedMemoryName = "/fwa_daemon_shm_v1";
 }
 
 - (instancetype)init {
-    self = [super init]; // Call super init (now that we inherit from NSObject)
+    self = [super init];
     if (self) {
-        // Use self. notation for properties
         self.internalQueue = dispatch_queue_create("net.mrmidi.FWADaemon.internalQueue", DISPATCH_QUEUE_SERIAL);
         self.connectedClients = [NSMutableDictionary dictionary];
-        _driverIsConnected = NO; // Explicitly initialize
+        _driverIsConnected = NO;
         self.sharedMemoryName = @(kSharedMemoryName);
-        os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Initialized FWADaemon singleton and internal queue.");
+        // +++ Phase 3 spdlog Initialization (OsLog + GUI Sinks) +++
+        try {
+            // Create the sinks (thread-safe)
+            auto os_sink = std::make_shared<os_log_sink_mt>(OS_LOG_DEFAULT);
+            auto gui_sink = std::make_shared<gui_callback_sink_mt>(self);
+            #ifdef DEBUG
+            auto stderr_sink = std::make_shared<spdlog::sinks::stderr_sink_mt>();
+            std::vector<spdlog::sink_ptr> sinks { os_sink, gui_sink, stderr_sink };
+            #else
+            std::vector<spdlog::sink_ptr> sinks { os_sink, gui_sink };
+            #endif
 
-        // +++ ADDED: Create Shared Memory on Init +++
+            // Set per-sink patterns
+            os_sink->set_pattern("[%^%l%$] %v"); // Simpler for os_log
+            gui_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v"); // Detailed for GUI
+            // Optionally set pattern for stderr_sink if present
+            #ifdef DEBUG
+            stderr_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
+            #endif
+
+            // Create the logger using the sinks
+            auto logger = std::make_shared<spdlog::logger>("FWADaemon", sinks.begin(), sinks.end());
+            logger->set_level(spdlog::level::trace);        // Log everything during setup/testing
+            logger->flush_on(spdlog::level::warn);          // Flush automatically on warnings and above
+
+            // Register the logger
+            spdlog::register_logger(logger);
+            // Set as default
+            spdlog::set_default_logger(logger);
+
+            // Log initialization success via spdlog itself
+            SPDLOG_INFO("--------------------------------------------------");
+            SPDLOG_INFO("FWADaemon spdlog initialized. Sinks: os_log, GUI_XPC.");
+            SPDLOG_INFO("FWADaemon singleton and internal queue ready.");
+        } catch (const spdlog::spdlog_ex& ex) {
+            os_log_error(OS_LOG_DEFAULT, "[FWADaemon] !!! spdlog initialization failed: %{public}s", ex.what());
+        } catch (const std::exception& std_ex) {
+            os_log_error(OS_LOG_DEFAULT, "[FWADaemon] !!! std exception during spdlog initialization: %{public}s", std_ex.what());
+        } catch (...) {
+            os_log_error(OS_LOG_DEFAULT, "[FWADaemon] !!! Unknown exception during spdlog initialization.");
+        }
+        // +++ END Phase 3 spdlog Initialization +++
+
         [self setupSharedMemory];
     }
     return self;
@@ -65,39 +109,40 @@ static const char* kSharedMemoryName = "/fwa_daemon_shm_v1";
 
 // +++ ADDED: Shared Memory Creation Method +++
 - (BOOL)setupSharedMemory {
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Attempting to create/open shared memory segment: %s", kSharedMemoryName);
+    SPDLOG_INFO("Attempting to create/open shared memory segment: {}", kSharedMemoryName);
     shm_unlink(kSharedMemoryName); // Optional: Remove any stale segment
     int fd = shm_open(kSharedMemoryName, O_CREAT | O_EXCL | O_RDWR, 0666);
     bool isCreator = false;
     if (fd == -1 && errno == EEXIST) {
-        // Already exists, open for attach
+        SPDLOG_INFO("SHM segment {} already exists, opening...", kSharedMemoryName);
         fd = shm_open(kSharedMemoryName, O_RDWR, 0666);
         isCreator = false;
     } else if (fd != -1) {
+        SPDLOG_INFO("SHM segment {} created successfully.", kSharedMemoryName);
         isCreator = true;
     }
     if (fd == -1) {
-        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: shm_open failed for %s: %{errno}d - %s", kSharedMemoryName, errno, strerror(errno));
+        SPDLOG_ERROR("shm_open failed for {}: {} - {}", kSharedMemoryName, errno, strerror(errno));
         return NO;
     }
     off_t requiredSize = sizeof(RTShmRing::SharedRingBuffer_POD);
     if (isCreator) {
         if (ftruncate(fd, requiredSize) == -1) {
-            os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: ftruncate failed for %s (fd %d): %{errno}d - %s", kSharedMemoryName, fd, errno, strerror(errno));
+            SPDLOG_ERROR("ftruncate failed for {} (fd {}): {} - {}", kSharedMemoryName, fd, errno, strerror(errno));
             close(fd);
             shm_unlink(kSharedMemoryName);
             return NO;
         }
     }
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Shared memory (fd %d, creator=%d). Mapping with RingBufferManager...", fd, isCreator);
+    SPDLOG_INFO("Shared memory (fd {}, creator={}). Mapping with RingBufferManager...", fd, isCreator);
     bool mapSuccess = RingBufferManager::instance().map(fd, isCreator);
     close(fd);
     if (!mapSuccess) {
-         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: RingBufferManager failed to map shared memory %s.", kSharedMemoryName);
-         shm_unlink(kSharedMemoryName);
-         return NO;
+        SPDLOG_ERROR("RingBufferManager failed to map shared memory {}.", kSharedMemoryName);
+        shm_unlink(kSharedMemoryName);
+        return NO;
     }
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Shared memory '%s' successfully created/mapped.", kSharedMemoryName);
+    SPDLOG_INFO("Shared memory '{}' successfully created/mapped.", kSharedMemoryName);
     return YES;
 }
 
@@ -133,9 +178,9 @@ static const char* kSharedMemoryName = "/fwa_daemon_shm_v1";
 clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
            withReply:(void (^)(BOOL success, NSDictionary * _Nullable daemonInfo))reply
 {
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received registerClient request from '%{public}@'", clientID);
+    SPDLOG_INFO("Received registerClient request from '{}'", [clientID UTF8String] ?: "<nil_client_id>");
     if (!clientID || [clientID length] == 0 || !clientNotificationEndpoint) {
-        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: Registration failed - invalid clientID or endpoint for '%{public}@'.", clientID ?: @"<nil>");
+        SPDLOG_ERROR("Registration failed - invalid clientID or endpoint for '{}'.", [clientID UTF8String] ?: "<nil_client_id>");
         if (reply) reply(NO, nil);
         return;
     }
@@ -150,30 +195,31 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
 
     // Error handler for the connection TO the client
     newClientInfo.remoteProxy = [clientConnection remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: XPC error calling remote proxy for client '%{public}@': %{public}@", clientID, error);
-        // Use async on internal queue for removal
+        const char* clientID_cstr = [clientID UTF8String];
+        const char* error_cstr = [[error description] UTF8String];
+        SPDLOG_ERROR("XPC error calling remote proxy for client '{}': {}",
+                     clientID_cstr ? clientID_cstr : "<nil_id>",
+                     error_cstr ? error_cstr : "<nil_error>");
         [self performOnInternalQueueAsync:^{
              ClientInfo *info = self.connectedClients[clientID];
-             // Check connection pointers match before removing, in case of races
              if (info && info.connection == clientConnection) {
-                 os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Removing client '%{public}@' due to remote proxy error.", clientID);
+                 SPDLOG_INFO("Removing client '{}' due to remote proxy error.", clientID_cstr ? clientID_cstr : "<nil_id>");
                  [self.connectedClients removeObjectForKey:clientID];
-                 // No need to invalidate here, error handler means it's likely already invalid
              }
          }];
     }];
 
     // Invalidation handler for the connection TO the client
     clientConnection.invalidationHandler = ^{
-        os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Client connection invalidated for '%{public}@'.", clientID);
-         // Use async on internal queue for removal
+        const char* clientID_cstr = [clientID UTF8String];
+        SPDLOG_INFO("Client connection invalidated for '{}'.", clientID_cstr ? clientID_cstr : "<nil_id>");
         [self performOnInternalQueueAsync:^{
             ClientInfo *info = self.connectedClients[clientID];
             if (info && info.connection == clientConnection) {
-                os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Removing client '%{public}@' from registry.", clientID);
+                SPDLOG_INFO("Removing client '{}' from registry.", clientID_cstr ? clientID_cstr : "<nil_id>");
                 [self.connectedClients removeObjectForKey:clientID];
             } else {
-                 os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Invalidation handler: Client '%{public}@' not found or connection mismatch.", clientID);
+                SPDLOG_INFO("Invalidation handler: Client '{}' not found or connection mismatch.", clientID_cstr ? clientID_cstr : "<nil_id>");
             }
         }];
     };
@@ -181,14 +227,14 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
     [clientConnection resume];
 
     // Store the new client info thread-safely
-    [self performOnInternalQueueSync:^{ // Use sync to ensure registration complete before reply
+    [self performOnInternalQueueSync:^{
         ClientInfo* existingClient = self.connectedClients[clientID];
         if (existingClient) {
-            os_log_info(OS_LOG_DEFAULT, "[FWADaemon] WARNING: Client ID '%{public}@' already registered. Invalidating old connection.", clientID);
-            [existingClient.connection invalidate]; // Invalidate the previous connection
+            SPDLOG_WARN("Client ID '{}' already registered. Invalidating old connection.", [clientID UTF8String]);
+            [existingClient.connection invalidate];
         }
         self.connectedClients[clientID] = newClientInfo;
-        os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Client '%{public}@' successfully registered.", clientID);
+        SPDLOG_INFO("Client '{}' successfully registered.", [clientID UTF8String]);
     }];
 
     // Prepare reply info
@@ -308,16 +354,15 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
 
 // --- Control Commands (Driver -> Daemon -> GUI) ---
 - (void)requestSetNominalSampleRate:(uint64_t)guid rate:(double)rate withReply:(void (^)(BOOL success))reply {
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Forwarding requestSetNominalSampleRate for GUID 0x%llx to %.1f Hz", guid, rate);
+    SPDLOG_INFO("--> Forwarding SetNominalSampleRate(GUID: 0x{:x}, Rate: {:.1f} Hz) to GUI", guid, rate);
     id<FWAClientNotificationProtocol> guiProxy = [self getGUIProxyForGUID:guid];
     if (guiProxy) {
-        // Forward the request to the GUI client, passing the original reply block
         [guiProxy performSetNominalSampleRate:guid rate:rate withReply:^(BOOL guiSuccess) {
-            os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Relaying reply (%d) for requestSetNominalSampleRate GUID 0x%llx", guiSuccess, guid);
+            SPDLOG_INFO("<-- Relaying reply ({}) for SetNominalSampleRate(GUID: 0x{:x})", guiSuccess ? "Success" : "Fail", guid);
             if (reply) reply(guiSuccess);
         }];
     } else {
-        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: No GUI client found to forward requestSetNominalSampleRate for GUID 0x%llx.", guid);
+        SPDLOG_ERROR("No GUI client found to forward SetNominalSampleRate(GUID: 0x{:x}). Replying NO.", guid);
         if (reply) reply(NO);
     }
 }
@@ -435,5 +480,90 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
         reply(name);
     }
 }
+
+// ADDED/MOVED Method Implementations +++
+- (BOOL)hasActiveGuiClients {
+    __block BOOL hasGui = NO;
+    // Access the dictionary safely on the internal queue
+    [self performOnInternalQueueSync:^{ // Sync to ensure we get the result before returning
+        if (self.connectedClients.count == 0) {
+            hasGui = NO;
+            return;
+        }
+        for (NSString *clientID in self.connectedClients) {
+            if ([clientID hasPrefix:@"GUI"]) {
+                // Optionally check if the connection is actually valid
+                ClientInfo *info = self.connectedClients[clientID];
+                if (info && info.connection) {
+                    hasGui = YES;
+                    break;
+                }
+            }
+        }
+    }];
+    return hasGui;
+}
+
+- (void)forwardLogMessageToClients:(NSString *)senderID level:(int32_t)level message:(NSString *)message {
+    // This method now assumes the check `hasActiveGuiClients` was already done
+    // by the caller (GuiCallbackSink) if the intention is *only* to send to GUIs.
+    // However, we keep the check here for safety if called from elsewhere.
+    // Let's keep the check for robustness.
+
+    __block NSMutableArray<ClientInfo *> *guiClients = [NSMutableArray array];
+    // Find GUI clients safely
+    [self performOnInternalQueueSync:^{ // Sync to safely copy client info
+        for (ClientInfo *info in self.connectedClients.allValues) {
+            if ([info.clientID hasPrefix:@"GUI"]) {
+                // Optionally check if connection is valid before adding
+                if (info.connection) {
+                    [guiClients addObject:info];
+                }
+            }
+        }
+    }];
+
+    if ([guiClients count] > 0) {
+        // Use dispatch_async to avoid blocking the logging thread/sink
+        // IMPORTANT: Ensure self.internalQueue is valid before dispatching
+        dispatch_queue_t queue = self.internalQueue;
+        if (!queue) {
+            SPDLOG_ERROR("Cannot forward log message, internal queue is nil!");
+            return;
+        }
+        dispatch_async(queue, ^{ // Perform XPC calls asynchronously
+            for (ClientInfo *info in guiClients) {
+                id<FWAClientNotificationProtocol> guiProxy = info.remoteProxy;
+                // Perform extra check for proxy validity inside async block
+                if (guiProxy && info.connection) {
+                    @try {
+                        // Use the actual senderID now
+                        [guiProxy didReceiveLogMessageFrom:senderID level:level message:message];
+                    } @catch (NSException *exception) {
+                        // Use spdlog for logging daemon errors now
+                        // CONVERT NSString* arguments to const char* using UTF8String
+                        const char* senderID_cstr = [senderID UTF8String];
+                        const char* clientID_cstr = [info.clientID UTF8String];
+                        const char* exception_cstr = [[exception description] UTF8String];
+
+                        // Use the C-string pointers in the spdlog call
+                        SPDLOG_ERROR("Exception forwarding log ({}) to GUI client '{}': {}",
+                                     senderID_cstr ? senderID_cstr : "<nil_sender>",        // Use ternary for safety
+                                     clientID_cstr ? clientID_cstr : "<nil_client_id>",     // Use ternary for safety
+                                     exception_cstr ? exception_cstr : "<nil_exception>"); // Use ternary for safety
+                        // Maybe invalidate this client connection if exceptions persist?
+                        // Consider adding logic here to remove the client if sending fails repeatedly.
+                    } @finally {
+                        // ARC handles proxy release
+                    }
+                } else {
+                    SPDLOG_WARN("Skipping log forward to client '{}': Proxy or connection invalid.", [info.clientID UTF8String]);
+                }
+            }
+        });
+    }
+    // No need for an 'else' log here, the sink already decided not to call if no clients.
+}
+// END ADDED/MOVED Method Implementations +++
 
 @end

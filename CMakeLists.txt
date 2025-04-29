@@ -1,372 +1,261 @@
 cmake_minimum_required(VERSION 3.26)
 
-# Set policies before project() command
+# Ensure we link libc++ for all C++ targets (especially universal)
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -stdlib=libc++")
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -stdlib=libc++")
+set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -stdlib=libc++")
+
+# --- Policies ---
 cmake_policy(SET CMP0114 NEW)
 cmake_policy(SET CMP0175 NEW)
 
+# --- Deployment target and architectures ---
 set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment version")
 
-# Check generator is Xcode
-if(CMAKE_GENERATOR MATCHES "Xcode")
-# add swift to languages
-project(FireWireAudioDaemon LANGUAGES C CXX Swift OBJC OBJCXX)
+option(BUILD_X86_64_TARGETS "Also build separate x86_64 targets" OFF)
+
+## --- Deployment target and architectures ---
+set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment version")
+
+# Optionally force all targets to x86_64 only
+option(BUILD_X86_64_TARGETS "Build all targets for x86_64 only (default: arm64)" OFF)
+if(BUILD_X86_64_TARGETS)
+  message(STATUS "⚙️  Forcing build architecture to x86_64")
+  set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "" FORCE)
 else()
-# Remove swift from languages
-project(FireWireAudioDaemon LANGUAGES C CXX OBJC OBJCXX)
-endif()  
+  message(STATUS "⚙️  Building native architecture only (arm64)")
+  set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "" FORCE)
+endif()
 
+# --- Project declaration ---
+project(FireWireAudioDaemon LANGUAGES C CXX Swift OBJC OBJCXX)
 
+# --- Compiler settings ---
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_CXX_FLAGS   "${CMAKE_CXX_FLAGS}   -stdlib=libc++")
-set(CMAKE_OBJCXX_FLAGS "${CMAKE_OBJCXX_FLAGS} -stdlib=libc++")
+# Apply -stdlib=libc++ only for CXX and ObjC++
+add_compile_options(
+  $<$<COMPILE_LANGUAGE:CXX>:-stdlib=libc++>
+  $<$<COMPILE_LANGUAGE:OBJCXX>:-stdlib=libc++>
+)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# --- Sanitizer Setup ---
+# --- Sanitizer setup ---
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(ENABLE_TSAN "Enable ThreadSanitizer (cannot use with ASan)" OFF)
 
 if(ENABLE_ASAN AND ENABLE_TSAN)
-message(FATAL_ERROR "AddressSanitizer (ASan) and ThreadSanitizer (TSan) cannot be enabled simultaneously.")
+  message(FATAL_ERROR "ASan and TSan cannot be enabled simultaneously.")
 endif()
 
-set(SANITIZER_FLAGS "") # Initialize empty
+set(SANITIZER_FLAGS "")
 set(SANITIZER_LINK_FLAGS "")
 
-# Helper macro to append flags cleanly
-macro(append_flag variable flag)
-if(${variable})
-    set(${variable} "${${variable}} ${flag}") # Add space if not empty
-else()
-    set(${variable} "${flag}") # No leading space if empty
-endif()
+macro(append_flag var flag)
+  if(${var})
+    set(${var} "${${var}} ${flag}")
+  else()
+    set(${var} "${flag}")
+  endif()
 endmacro()
 
 if(ENABLE_ASAN)
-message(STATUS "AddressSanitizer (ASan) Enabled")
-append_flag(SANITIZER_FLAGS "-fsanitize=address")
-append_flag(SANITIZER_FLAGS "-fno-omit-frame-pointer")
-append_flag(SANITIZER_LINK_FLAGS "-fsanitize=address")
+  message(STATUS "ASan enabled")
+  append_flag(SANITIZER_FLAGS "-fsanitize=address")
+  append_flag(SANITIZER_FLAGS "-fno-omit-frame-pointer")
+  append_flag(SANITIZER_LINK_FLAGS "-fsanitize=address")
 endif()
 
 if(ENABLE_UBSAN)
-message(STATUS "UndefinedBehaviorSanitizer (UBSan) Enabled")
-append_flag(SANITIZER_FLAGS "-fsanitize=undefined")
-if(NOT ENABLE_ASAN)
+  message(STATUS "UBSan enabled")
+  append_flag(SANITIZER_FLAGS "-fsanitize=undefined")
+  if(NOT ENABLE_ASAN)
     append_flag(SANITIZER_FLAGS "-fno-omit-frame-pointer")
-endif()
-append_flag(SANITIZER_LINK_FLAGS "-fsanitize=undefined")
+  endif()
+  append_flag(SANITIZER_LINK_FLAGS "-fsanitize=undefined")
 endif()
 
 if(ENABLE_TSAN)
-message(STATUS "ThreadSanitizer (TSan) Enabled")
-append_flag(SANITIZER_FLAGS "-fsanitize=thread")
-append_flag(SANITIZER_LINK_FLAGS "-fsanitize=thread")
+  message(STATUS "TSan enabled")
+  append_flag(SANITIZER_FLAGS "-fsanitize=thread")
+  append_flag(SANITIZER_LINK_FLAGS "-fsanitize=thread")
 endif()
-# --- End Sanitizer Variable Setup ---
 
-# --- Dependencies using FetchContent ---
+# --- Dependencies via FetchContent ---
 include(FetchContent)
-FetchContent_Declare(spdlog GIT_REPOSITORY https://github.com/gabime/spdlog.git GIT_TAG v1.15.2)
-FetchContent_Declare(nlohmann_json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG v3.12.0)
-set(JSON_BuildTests OFF CACHE BOOL "Disable nlohmann_json tests")
-FetchContent_Declare(catch2 GIT_REPOSITORY https://github.com/catchorg/Catch2.git GIT_TAG v3.8.0)
-set(CATCH2_BUILD_TESTS OFF CACHE BOOL "Disable Catch2 tests")
-FetchContent_Declare(libASPL GIT_REPOSITORY https://github.com/mrmidi/libASPL.git GIT_TAG main)
-set(FETCHCONTENT_FULLY_DISCONNECTED OFF)
 
-if(CMAKE_GENERATOR MATCHES "Xcode")
-# Swift-Log package sources only for Xcode
+# Core C++ deps
+FetchContent_Declare(spdlog        GIT_REPOSITORY https://github.com/gabime/spdlog.git        GIT_TAG v1.15.2)
+FetchContent_Declare(nlohmann_json GIT_REPOSITORY https://github.com/nlohmann/json.git        GIT_TAG v3.12.0)
+set(JSON_BuildTests OFF CACHE BOOL "Disable nlohmann_json tests")
+FetchContent_Declare(catch2        GIT_REPOSITORY https://github.com/catchorg/Catch2.git      GIT_TAG v3.8.0)
+set(CATCH2_BUILD_TESTS OFF CACHE BOOL "Disable Catch2 tests")
+FetchContent_Declare(libASPL       GIT_REPOSITORY https://github.com/mrmidi/libASPL.git         GIT_TAG main)
+
+# Swift-Log (now unconditional)
 FetchContent_Declare(swift_log
     GIT_REPOSITORY https://github.com/apple/swift-log.git
     GIT_TAG        1.5.4
 )
+
+# Pull them all in
+set(FETCHCONTENT_FULLY_DISCONNECTED OFF)
 FetchContent_MakeAvailable(
-    spdlog
-    nlohmann_json
-    catch2
-    libASPL
-    swift_log
+  spdlog
+  nlohmann_json
+  catch2
+  libASPL
+  swift_log
 )
-# --- Manually Build swift-log ---
-FetchContent_GetProperties(swift_log)  # swift_log is already populated by MakeAvailable
+
+# Manual build of swift-log sources
+FetchContent_GetProperties(swift_log)
 if(NOT swift_log_POPULATED)
-    message(FATAL_ERROR "swift-log FetchContent failed to populate.")
+  message(FATAL_ERROR "swift-log failed to populate.")
 endif()
-file(GLOB SWIFT_LOG_SOURCES
-    "${swift_log_SOURCE_DIR}/Sources/Logging/*.swift"
-)
+file(GLOB SWIFT_LOG_SOURCES "${swift_log_SOURCE_DIR}/Sources/Logging/*.swift")
 add_library(Logging STATIC ${SWIFT_LOG_SOURCES})
 target_compile_definitions(Logging PUBLIC SWIFT_PACKAGE)
 set_target_properties(Logging PROPERTIES FOLDER "Dependencies/Swift")
-message(STATUS "Configured manual swift-log target 'Logging' from ${swift_log_SOURCE_DIR}")
 source_group("Dependencies/Swift/Logging" FILES ${SWIFT_LOG_SOURCES})
-else()
-FetchContent_MakeAvailable(
-    spdlog
-    nlohmann_json
-    catch2
-    libASPL
-)
-endif()
+message(STATUS "Configured manual swift-log target 'Logging'")
+
+
 
 # --- Shared library for common code ---
 add_library(Shared STATIC
-src/shared/SharedMemoryStructures.cpp
-# src/shared/MixedAudioBuffer.m
+  src/shared/SharedMemoryStructures.cpp
 )
 target_include_directories(Shared PUBLIC
-${CMAKE_CURRENT_SOURCE_DIR}/include
-${CMAKE_CURRENT_SOURCE_DIR}/include/shared
-${CMAKE_CURRENT_SOURCE_DIR}/include/shared/xpc
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/shared
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/shared/xpc
 )
 target_link_libraries(Shared PUBLIC spdlog "-framework Foundation")
 
-# --- Modularized Subdirectories ---
+# --- Subdirectories ---
 add_subdirectory(src/FWA/XPC)
 add_subdirectory(src/Isoch)
 add_subdirectory(src/FWA)
 add_subdirectory(src/driver)
+add_subdirectory(FWA-Control)
 
-# --- XPC Service Target ---
+# --- XPC Service bundle ---
 set(XPC_SERVICE_NAME "FWADaemon")
 set(XPC_SERVICE_SOURCES
-src/xpc/FWADaemon/main.m
-src/xpc/FWADaemon/FWADaemon.mm
-src/xpc/FWADaemon/RingBufferManager.mm
-src/xpc/FWADaemon/ShmIsochBridge.mm
+  src/xpc/FWADaemon/main.m
+  src/xpc/FWADaemon/FWADaemon.mm
+  src/xpc/FWADaemon/RingBufferManager.mm
+  src/xpc/FWADaemon/ShmIsochBridge.mm
 )
-
-# Create XPC Service bundle target as an executable
 add_executable(${XPC_SERVICE_NAME} MACOSX_BUNDLE ${XPC_SERVICE_SOURCES})
-
-# Set XPC Service bundle properties
 set_target_properties(${XPC_SERVICE_NAME} PROPERTIES
-BUNDLE TRUE
-BUNDLE_EXTENSION "xpc"
-MACOSX_BUNDLE TRUE
-MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon/Info.plist"
-XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon/FWADaemon.entitlements"
-XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
-PREFIX ""
-SUFFIX ""
-MACOSX_BUNDLE_BUNDLE_NAME "FWADaemon"
-MACOSX_BUNDLE_BUNDLE_VERSION "1.0"
-MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
-MACOSX_BUNDLE_GUI_IDENTIFIER "net.mrmidi.FWADaemon"
-XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "net.mrmidi.FWADaemon"
+  BUNDLE                     TRUE
+  SUFFIX                     ""
+  MACOSX_BUNDLE_EXTENSION    "xpc"
+  MACOSX_BUNDLE_INFO_PLIST   "${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon/Info.plist"
+  XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon/FWADaemon.entitlements"
+  XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
+  PREFIX ""
+  MACOSX_BUNDLE_BUNDLE_NAME         "FWADaemon"
+  MACOSX_BUNDLE_BUNDLE_VERSION      "1.0"
+  MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+  MACOSX_BUNDLE_GUI_IDENTIFIER      "net.mrmidi.FWADaemon"
+  XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "net.mrmidi.FWADaemon"
 )
-
-# Set include directories for XPC Service
 target_include_directories(${XPC_SERVICE_NAME} PRIVATE
-${CMAKE_CURRENT_SOURCE_DIR}/include/shared/xpc
-${CMAKE_CURRENT_SOURCE_DIR}/include/shared
-${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/shared/xpc
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/shared
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon
 )
-
-# Link frameworks for XPC Service
 target_link_libraries(${XPC_SERVICE_NAME} PRIVATE
-"-framework Foundation"
-Shared
+  spdlog
+  "-framework Foundation"
+  Shared
 )
 
-# Ensure FWADaemon can find shared headers and links Shared
-if(TARGET FWADaemon)
-target_include_directories(FWADaemon PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/shared/xpc
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/shared
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+# Post-build copy of assets
+add_custom_command(TARGET ${XPC_SERVICE_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon/Assets.xcassets
+    $<TARGET_BUNDLE_CONTENT_DIR:${XPC_SERVICE_NAME}>/Resources/Assets.xcassets
 )
-target_link_libraries(FWADaemon PRIVATE Shared)
-endif()
 
-# --- Standalone Test Daemon (if not using Xcode) ---
-if(NOT CMAKE_GENERATOR MATCHES "Xcode")
-message(STATUS "Xcode generator not detected, building FirewireAudioDaemon from main.cpp")
+# --- Standalone CLI daemon ---
 add_executable(FirewireAudioDaemon src/main.cpp)
-target_link_libraries(FirewireAudioDaemon PRIVATE FWA) # Link against the core FWA library
-
-# Apply sanitizer flags if enabled
+target_link_libraries(FirewireAudioDaemon PRIVATE FWA Shared)
 if(SANITIZER_FLAGS)
-    target_compile_options(FirewireAudioDaemon PRIVATE ${SANITIZER_FLAGS})
+  target_compile_options(FirewireAudioDaemon PRIVATE ${SANITIZER_FLAGS})
 endif()
 if(SANITIZER_LINK_FLAGS)
-    target_link_options(FirewireAudioDaemon PRIVATE ${SANITIZER_LINK_FLAGS})
+  target_link_options(FirewireAudioDaemon PRIVATE ${SANITIZER_LINK_FLAGS})
 endif()
 
-# Add install rule if desired
-# install(TARGETS FirewireAudioDaemon DESTINATION bin)
-
-else()
-    message(STATUS "Xcode generator detected, skipping standalone FirewireAudioDaemon target.")
-endif()
-
-# Ensure FirewireAudioDaemon can find shared headers and links Shared
-if(TARGET FirewireAudioDaemon)
-target_link_libraries(FirewireAudioDaemon PRIVATE Shared)
-endif()
-
-# Ensure FWADriver can find shared headers and links Shared
-if(TARGET FWADriver)
-target_include_directories(FWADriver PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/driver
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/shared/xpc
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/shared
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_link_libraries(FWADriver PRIVATE Shared "-framework Foundation")
-set_target_properties(FWADriver PROPERTIES
-    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/driver/Info.plist"
-    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "net.mrmidi.FWADriver"
-    # XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_CURRENT_SOURCE_DIR}/src/driver/FWADriver.entitlements"
-)
-endif()
-
-# Copy XPC Service assets with explicit POST_BUILD
-add_custom_command(TARGET ${XPC_SERVICE_NAME} POST_BUILD
-COMMAND ${CMAKE_COMMAND} -E copy_directory
-${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon/Assets.xcassets
-$<TARGET_BUNDLE_CONTENT_DIR:${XPC_SERVICE_NAME}>/Resources/Assets.xcassets
-)
-
-# DEFINE THE LIST OF SOURCES *BEFORE* THE IF CHECK
-set(SWIFT_APP_SOURCES
-FWA-Control/DeviceManager.swift
-FWA-Control/FWControlApp.swift
-FWA-Control/ContentView.swift
-FWA-Control/AudioSubunitDetailsView.swift
-FWA-Control/DeviceBasicInfoView.swift
-FWA-Control/DeviceRefreshButton.swift
-FWA-Control/DeviceStatusIndicatorView.swift
-FWA-Control/ExpandableSectionView.swift
-FWA-Control/FWAManagerBridge.swift
-FWA-Control/HexDumpView.swift
-FWA-Control/InfoBlockDetailView.swift
-FWA-Control/LogConsoleView.swift
-FWA-Control/MusicSubunitDetailsView.swift
-FWA-Control/PlugDetailView.swift
-FWA-Control/PlugListView.swift
-FWA-Control/SubunitInfoSectionView.swift
-FWA-Control/Test.swift
-FWA-Control/UnitInfoSectionView.swift
-FWA-Control/ConnectionMatrixView.swift
-FWA-Control/SettingsView.swift
-FWA-Control/XPCManager.swift
-FWA-Control/AppLoggers.swift
-# Driver installer
-FWA-Control/DriverInstaller.swift
-# Models subdirectory
-FWA-Control/Models/DomainModels.swift
-FWA-Control/Models/Enums.swift
-FWA-Control/Models/JsonDecodables.swift
-FWA-Control/AVCTabView.swift
-FWA-Control/OverviewView.swift
-# Logging subdirectory
-FWA-Control/Logging/InMemoryLogHandler.swift
-# Newly added files for refactor
-FWA-Control/HardwareInterface.swift
-FWA-Control/CAPICallbackHandler.swift
-FWA-Control/StatusBarView.swift
-)
-
-
-# --- FWA-Control Target ---
-if(CMAKE_GENERATOR MATCHES "Xcode")
+# --- FWA-Control Swift GUI app ---
+file(GLOB_RECURSE SWIFT_APP_SOURCES FWA-Control/*.swift)
 add_executable(FWA-Control MACOSX_BUNDLE ${SWIFT_APP_SOURCES})
 set_target_properties(FWA-Control PROPERTIES
-    MACOSX_BUNDLE TRUE
-    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/FWA-Control/Info.plist"
-    MACOSX_BUNDLE_GUI_IDENTIFIER "net.mrmidi.fwa-control"
-    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "net.mrmidi.fwa-control"
-    XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_SOURCE_DIR}/FWA-Control/FWA_Control.entitlements"
-    XCODE_ATTRIBUTE_SWIFT_OBJC_INTEROP_MODE "objc"
-    XCODE_ATTRIBUTE_SWIFT_INCLUDE_PATHS "${CMAKE_CURRENT_BINARY_DIR}/include;${CMAKE_SOURCE_DIR}/include;${CMAKE_SOURCE_DIR}/include/shared;${CMAKE_SOURCE_DIR}/include/shared/xpc;${FWA_CAPI_MODULEMAP_PATH}"
-    XCODE_ATTRIBUTE_SWIFT_OPTIMIZATION_LEVEL "-Onone"
+  MACOSX_BUNDLE TRUE
+  MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/FWA-Control/Info.plist"
+  MACOSX_BUNDLE_GUI_IDENTIFIER "net.mrmidi.fwa-control"
+  XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "net.mrmidi.fwa-control"
+  XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_SOURCE_DIR}/FWA-Control/FWA_Control.entitlements"
+  XCODE_ATTRIBUTE_SWIFT_OBJC_INTEROP_MODE "objc"
+  XCODE_ATTRIBUTE_SWIFT_INCLUDE_PATHS
+    "${CMAKE_CURRENT_BINARY_DIR}/include;${CMAKE_SOURCE_DIR}/include;${CMAKE_SOURCE_DIR}/include/shared;${CMAKE_SOURCE_DIR}/include/shared/xpc;${FWA_CAPI_MODULEMAP_PATH}"
+  XCODE_ATTRIBUTE_SWIFT_OPTIMIZATION_LEVEL "-Onone"
 )
-
-
 set(FWADAEMON_LAUNCHD_PLIST "${CMAKE_SOURCE_DIR}/FWA-Control/FWADaemon.plist")
 target_sources(FWA-Control PRIVATE "${FWADAEMON_LAUNCHD_PLIST}")
 set_source_files_properties(
   "${FWADAEMON_LAUNCHD_PLIST}"
-  PROPERTIES
-    MACOSX_PACKAGE_LOCATION "Resources"
+  PROPERTIES MACOSX_PACKAGE_LOCATION "Resources"
 )
-
-
-# Copy FWADaemon.xpc and FWADriver resources...
-# add_custom_command(TARGET FWA-Control POST_BUILD
-#     COMMAND ${CMAKE_COMMAND} -E copy_directory
-#     $<TARGET_BUNDLE_CONTENT_DIR:${XPC_SERVICE_NAME}>
-#     $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Contents/Resources/${XPC_SERVICE_NAME}
-# )
-
 add_custom_command(TARGET FWA-Control POST_BUILD
-            # Remove old helper tool directory if it exists
-            COMMAND ${CMAKE_COMMAND} -E rm -rf $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Library/LaunchDaemons
-            # Create the LaunchDaemons directory structure
-            COMMAND ${CMAKE_COMMAND} -E make_directory
-                $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Library/LaunchDaemons
-            # Copy the FWADaemon executable into the correct location
-            COMMAND ${CMAKE_COMMAND} -E copy
-                $<TARGET_FILE:FWADaemon>
-                $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Library/LaunchDaemons/FWADaemon
-            # Copy plist file into the correct location (Library/LaunchDaemons)
-            COMMAND ${CMAKE_COMMAND} -E copy
-                ${FWADAEMON_LAUNCHD_PLIST}
-                $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Library/LaunchDaemons/FWADaemon.plist
-            # Copy plist file into the Resources folder (for reference)
-            COMMAND ${CMAKE_COMMAND} -E copy
-                ${FWADAEMON_LAUNCHD_PLIST}
-                $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Resources/FWADaemon.plist
-            # Copy the FWADriver.driver bundle into the Resources folder
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                $<TARGET_BUNDLE_DIR:FWADriver>
-                $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Resources/FWADriver.driver
-            COMMENT "Embedding FWADaemon helper, FWADriver.driver, and FWADaemon.plist into FWA-Control.app Resources folder and LaunchDaemons directory"
+  COMMAND ${CMAKE_COMMAND} -E rm -rf
+          $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Library/LaunchDaemons
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Library/LaunchDaemons
+  COMMAND ${CMAKE_COMMAND} -E copy
+          $<TARGET_FILE:FWADaemon>
+          $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Library/LaunchDaemons/FWADaemon
+  COMMAND ${CMAKE_COMMAND} -E copy
+          ${FWADAEMON_LAUNCHD_PLIST}
+          $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Library/LaunchDaemons/FWADaemon.plist
+  COMMAND ${CMAKE_COMMAND} -E copy
+          ${FWADAEMON_LAUNCHD_PLIST}
+          $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Resources/FWADaemon.plist
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          $<TARGET_BUNDLE_DIR:FWADriver>
+          $<TARGET_BUNDLE_CONTENT_DIR:FWA-Control>/Resources/FWADriver.driver
+  COMMENT "Embedding helper tools and resources into FWA-Control.app"
 )
-
 target_link_libraries(FWA-Control PRIVATE
-    Logging
-    FWA
-    Shared
-    "-framework SwiftUI"
-    "-framework Cocoa"
-    "-framework Foundation"
-    "-framework IOKit"
-    "-framework CoreFoundation"
-    "-framework CoreAudio"
+  Logging FWA Shared
+  "-framework SwiftUI"
+  "-framework Cocoa"
+  "-framework Foundation"
+  "-framework IOKit"
+  "-framework CoreFoundation"
+  "-framework CoreAudio"
+  "-framework AVFoundation"
 )
-add_dependencies(FWA-Control
-    Logging
-    FWADaemon
-    FWADriver
-    FWA
-    Shared
-)
-endif()
+add_dependencies(FWA-Control Logging FWADaemon FWADriver FWA Shared)
 
-# --- Documentation ---
+# --- Documentation and testing (unchanged) ---
 find_package(Doxygen)
 if(DOXYGEN_FOUND)
-set(DOXYGEN_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/docs)
-set(DOXYGEN_PROJECT_NAME "FireWire Audio Daemon")
-set(DOXYGEN_PROJECT_BRIEF "A FireWire Audio Driver and Daemon for macOS")
-set(DOXYGEN_EXTRACT_ALL YES)
-set(DOXYGEN_EXTRACT_PRIVATE YES)
-set(DOXYGEN_EXTRACT_STATIC YES)
-set(DOXYGEN_RECURSIVE YES)
-
-doxygen_add_docs(docs 
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  set(DOXYGEN_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/docs)
+  set(DOXYGEN_PROJECT_NAME "FireWire Audio Daemon")
+  set(DOXYGEN_EXTRACT_ALL YES)
+  set(DOXYGEN_RECURSIVE YES)
+  doxygen_add_docs(docs ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include
     COMMENT "Generating documentation with Doxygen"
-)
+  )
 endif()
 
-# --- Testing ---
 enable_testing()
 add_subdirectory(test)
 

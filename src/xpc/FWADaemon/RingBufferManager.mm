@@ -1,3 +1,4 @@
+#include <spdlog/spdlog.h>
 #include "RingBufferManager.hpp" // Assuming this includes SharedMemoryStructures.hpp
 #include "ShmIsochBridge.hpp"
 #include <sys/mman.h>
@@ -39,7 +40,7 @@ bool RingBufferManager::map(int shmFd, bool isCreator)
 
     if (ptr == MAP_FAILED)
     {
-        os_log_error(OS_LOG_DEFAULT, "%s map: mmap failed: %{errno}d", kLog, errno);
+        SPDLOG_ERROR("map: mmap failed: {}", errno);
         // shmFd is closed by caller (FWADaemon.mm)
         return false;
     }
@@ -109,7 +110,7 @@ bool RingBufferManager::map(int shmFd, bool isCreator)
          return false;
     }
 
-    os_log_info(OS_LOG_DEFAULT, "%s map: Exiting function successfully.", kLog); // Log successful exit
+    SPDLOG_INFO("map: Exiting function successfully."); // Log successful exit
     return true;
 }
 

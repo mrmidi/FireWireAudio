@@ -59,7 +59,7 @@ class CAPICallbackHandler {
             logger.error("Cannot get C device callback, manager is nil.")
             return nil
         }
-        let context = Unmanaged.passUnretained(manager).toOpaque()
+        let _ = Unmanaged.passUnretained(manager).toOpaque()
         let swiftDeviceCallback: FWADeviceNotificationCallback = { (contextPtr, deviceRef, connected) in
             guard let context = contextPtr else {
                 Logging.Logger(label: "DeviceCallback.Error").error("Received device callback with null context.")

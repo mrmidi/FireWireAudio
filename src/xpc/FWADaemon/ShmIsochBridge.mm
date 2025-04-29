@@ -1,3 +1,4 @@
+#include <spdlog/spdlog.h>
 #import "ShmIsochBridge.hpp"
 #include <os/log.h>
 
@@ -59,7 +60,7 @@ void ShmIsochBridge::worker()
         const auto& item = q_[slot];
 
         if (!prov->pushAudioData(item.data.data(), item.data.size()))
-            os_log_error(OS_LOG_DEFAULT, "%s Isoch FIFO overflow", kLog);
+            SPDLOG_ERROR("Isoch FIFO overflow");
 
         readIdx_.store(rd + 1, std::memory_order_release);
     }

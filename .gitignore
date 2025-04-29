@@ -7,6 +7,7 @@ out/
 bin/
 lib/
 xbuild/
+ubuild/
 extern/
 
 # Xcode

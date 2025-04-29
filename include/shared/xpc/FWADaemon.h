@@ -14,6 +14,10 @@
 // Declare any other methods the main.m might *theoretically* need,
 // though usually just the singleton is enough.
 
+// Declare methods needed by C++ sinks (or other external callers)
+- (BOOL)hasActiveGuiClients;
+- (void)forwardLogMessageToClients:(NSString *)senderID level:(int32_t)level message:(NSString *)message;
+
 @end
 
 #endif /* FWADaemon_h */

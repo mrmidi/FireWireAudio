@@ -79,7 +79,7 @@ struct ConnectionMatrixView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .onChange(of: selectedGuid) { _ in
+                .onChange(of: selectedGuid) { _, _ in
                     simulatedConnections = [:]
                 }
                 Spacer()
@@ -95,7 +95,7 @@ struct ConnectionMatrixView: View {
             {
                 GeometryReader { geometry in
                     let gridItemSize = min((geometry.size.width - rowHeaderWidth) / CGFloat(sourcePlugs.count), 40)
-                    let fixedItems = Array(repeating: GridItem(.fixed(gridItemSize), spacing: 1), count: sourcePlugs.count)
+                    let _ = Array(repeating: GridItem(.fixed(gridItemSize), spacing: 1), count: sourcePlugs.count)
 
                     ScrollView([.horizontal, .vertical]) {
                         Grid(alignment: .topLeading, horizontalSpacing: 1, verticalSpacing: 1) {
@@ -146,7 +146,7 @@ struct ConnectionMatrixView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onChange(of: manager.devices) { _ in
+        .onChange(of: manager.devices) { _, _ in
             if selectedGuid == nil, let first = sortedDevices.first?.guid {
                 selectedGuid = first
             } else if let guid = selectedGuid, manager.devices[guid] == nil {

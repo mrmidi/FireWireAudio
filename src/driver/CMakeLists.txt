@@ -17,7 +17,7 @@ add_library(FWADriver MODULE
 set_target_properties(FWADriver PROPERTIES
     BUNDLE TRUE
     BUNDLE_EXTENSION "driver"
-    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}src/driver/Info.plist
+    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/src/driver/Info.plist
     PREFIX ""
     SUFFIX ""
 )

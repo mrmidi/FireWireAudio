@@ -19,11 +19,6 @@ extension Logger.Level {
     }
 }
 
-extension Logger.Level: Comparable {
-    public static func < (lhs: Logger.Level, rhs: Logger.Level) -> Bool {
-        lhs.severity < rhs.severity
-    }
-}
 
 struct LogConsoleView: View {
     @EnvironmentObject var manager: DeviceManager
@@ -201,6 +196,14 @@ struct LogDocument: FileDocument {
     }
 }
 
+private extension Sequence {
+    /// A non-ambiguous version of `filter(_:)` that always uses the
+    /// classic `(Element) -> Bool` overload.
+    func filterBy(_ isIncluded: (Element) -> Bool) -> [Element] {
+        filter(isIncluded)
+    }
+}
+
 // MARK: - Preview
 struct LogConsoleView_Previews: PreviewProvider {
     static var previews: some View {
@@ -225,10 +228,3 @@ struct LogConsoleView_Previews: PreviewProvider {
     }
 }
 
-private extension Sequence {
-    /// A non-ambiguous version of `filter(_:)` that always uses the
-    /// classic `(Element) -> Bool` overload.
-    func filterBy(_ isIncluded: (Element) -> Bool) -> [Element] {
-        filter(isIncluded)
-    }
-}

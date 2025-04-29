@@ -108,7 +108,7 @@ struct ContentView: View {
         } message: {
             Text("To communicate with your FireWire audio hardware, please install the driver. You will be prompted for admin credentials.")
         }
-        .onChange(of: manager.showDriverInstallPrompt) { isShowing in // <-- Log when prompt appears/disappears
+        .onChange(of: manager.showDriverInstallPrompt) { _, isShowing in // <-- Log when prompt appears/disappears
             if isShowing {
                 logger.info("Presenting driver installation prompt.")
             } else {
@@ -129,7 +129,7 @@ struct ContentView: View {
         } message: {
             Text("The FireWire Daemon is required for device communication. Please go to Settings → System to install the daemon.")
         }
-        .onChange(of: manager.showDaemonInstallPrompt) { isShowing in // <-- Log when prompt appears/disappears
+        .onChange(of: manager.showDaemonInstallPrompt) { _, isShowing in // <-- Log when prompt appears/disappears
             if isShowing {
                 logger.info("Presenting daemon installation prompt.")
             } else {

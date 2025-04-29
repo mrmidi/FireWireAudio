@@ -14,7 +14,7 @@ class HardwareInterface {
     }
 
     func performHardwareSampleRateSet(guid: UInt64, rate: Double) async -> Bool {
-        guard let engine = manager?.fwaEngineRef else {
+        guard let _engine = manager?.fwaEngineRef else {
             logger.error("Cannot set sample rate, engine ref is nil.")
             return false
         }
@@ -30,7 +30,7 @@ class HardwareInterface {
     }
 
     func performHardwareClockSourceSet(guid: UInt64, sourceID: UInt32) async -> Bool {
-        guard let engine = manager?.fwaEngineRef else {
+        guard let _engine = manager?.fwaEngineRef else {
             logger.error("Cannot set clock source, engine ref is nil.")
             return false
         }
@@ -46,7 +46,7 @@ class HardwareInterface {
     }
 
     func performHardwareVolumeSet(guid: UInt64, scope: UInt32, element: UInt32, value: Float) async -> Bool {
-        guard let engine = manager?.fwaEngineRef else {
+        guard let _engine = manager?.fwaEngineRef else {
             logger.error("Cannot set volume, engine ref is nil.")
             return false
         }
@@ -62,7 +62,7 @@ class HardwareInterface {
     }
 
     func performHardwareMuteSet(guid: UInt64, scope: UInt32, element: UInt32, state: Bool) async -> Bool {
-        guard let engine = manager?.fwaEngineRef else {
+        guard let _engine = manager?.fwaEngineRef else {
             logger.error("Cannot set mute, engine ref is nil.")
             return false
         }
@@ -78,7 +78,7 @@ class HardwareInterface {
     }
 
     func performHardwareStartIO(guid: UInt64) async -> Bool {
-        guard let engine = manager?.fwaEngineRef else {
+        guard let _engine = manager?.fwaEngineRef else {
             logger.error("Cannot start IO, engine ref is nil.")
             return false
         }
@@ -95,7 +95,7 @@ class HardwareInterface {
     }
 
     func performHardwareStopIO(guid: UInt64) async {
-        guard let engine = manager?.fwaEngineRef else {
+        guard let _engine = manager?.fwaEngineRef else {
             logger.error("Cannot stop IO, engine ref is nil.")
             return
         }

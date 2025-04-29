@@ -61,9 +61,7 @@ IOReturn FWAEngine_SendCommand(FWAEngineRef engine,
                                uint8_t** out_resp_data,
                                size_t* out_resp_len);
 
-// --- REMOVE OR COMMENT OUT DEVICE-REF BASED VERSIONS ---
-// char* FWADevice_GetInfoJSON(FWADeviceRef device);
-// IOReturn FWADevice_SendCommand(FWADeviceRef device, ...);
+IOReturn FWAEngine_SetLogLevel(FWAEngineRef engine, FWALogLevel level);
 
 #ifdef __cplusplus
 } // extern "C"

@@ -15,6 +15,7 @@ import Logging // Add swift-log
 import FWADaemonXPC
 import ServiceManagement
 import AppKit // For NSApplication activation state
+import AVFoundation /// <- add this
 // Domain models are in DomainModels.swift
 // JSON decodables are in JsonDecodables.swift
 
@@ -69,6 +70,14 @@ final class DeviceManager: ObservableObject {
     // MARK: - Initialization / Deinitialization
     init() {
         logger.info("--- DeviceManager Initialization START ---")
+        // Request camera access permission
+        AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+            if granted {
+                self?.logger.info("Camera access granted.")
+            } else {
+                self?.logger.error("Camera access denied.")
+            }
+        }
         // --- Initialize Dependencies FIRST ---
         // (Do not use self here yet)
         // --- Initialize C API Engine ---

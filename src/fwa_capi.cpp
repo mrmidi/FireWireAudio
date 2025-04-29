@@ -520,3 +520,25 @@ IOReturn FWAEngine_SendCommand(FWAEngineRef engine,
         return kIOReturnInternalError;
     }
 }
+
+static spdlog::level::level_enum toSpd(FWALogLevel lvl) {
+    switch (lvl) {
+        case FWA_LOG_LEVEL_TRACE:    return spdlog::level::trace;
+        case FWA_LOG_LEVEL_DEBUG:    return spdlog::level::debug;
+        case FWA_LOG_LEVEL_INFO:     return spdlog::level::info;
+        case FWA_LOG_LEVEL_WARN:     return spdlog::level::warn;
+        case FWA_LOG_LEVEL_ERROR:    return spdlog::level::err;
+        case FWA_LOG_LEVEL_CRITICAL: return spdlog::level::critical;
+        case FWA_LOG_LEVEL_OFF:      return spdlog::level::off;
+    }
+    return spdlog::level::info; // fallback
+}
+
+IOReturn FWAEngine_SetLogLevel(FWAEngineRef engine, FWALogLevel lvl)
+{
+    if (!engine || !engine->logger) return kIOReturnBadArgument;
+    auto spdLvl = toSpd(lvl);
+    engine->logger->set_level(spdLvl);
+    spdlog::set_level(spdLvl);          // affects global logger & helpers
+    return kIOReturnSuccess;
+}
