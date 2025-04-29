@@ -59,13 +59,14 @@ struct AVCTabView: View {
     guard let guid = guid else { return }
 
     // Convert hex string → Data
-    let bytes = hexCommand
-      .split(whereSeparator: \.isWhitespace)
-      .compactMap { UInt8($0, radix:16) }
-    guard bytes.count * 3 >= hexCommand.count / 2 else {
-      errorMessage = "Invalid hex format"
-      return
+    let tokens = hexCommand.split(whereSeparator: \.isWhitespace)
+    for token in tokens {
+      guard token.count == 2, token.allSatisfy({ $0.isHexDigit }) else {
+        errorMessage = "Invalid hex format"
+        return
+      }
     }
+    let bytes = tokens.compactMap { UInt8($0, radix: 16) }
 
     if let resp = manager.sendCommand(guid: guid, command: Data(bytes)) {
       responseHex = resp.map { String(format: "%02X", $0) }.joined(separator: " ")
