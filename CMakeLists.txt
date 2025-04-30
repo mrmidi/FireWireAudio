@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.26)
 cmake_policy(SET CMP0114 NEW)
 cmake_policy(SET CMP0175 NEW)
 
-set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment version")
+set(CMAKE_OSX_DEPLOYMENT_TARGET "14.6" CACHE STRING "Minimum macOS deployment version")
 
 # Check generator is Xcode
 if(CMAKE_GENERATOR MATCHES "Xcode")
