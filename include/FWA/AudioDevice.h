@@ -215,6 +215,12 @@ public:
     std::expected<void, IOKitError> defaultConfigureMusicPlugs();
     // --- END NEW CONTROL METHODS ---
 
+protected: // Changed from private to allow derived class access
+    // Interface
+    IOFireWireLibDeviceRef deviceInterface = nullptr;
+    IOFireWireAVCLibUnitInterface **avcInterface_ = nullptr;
+    DeviceController *deviceController_ = nullptr;
+
 private:
     std::uint64_t guid_;
     std::string deviceName_;
@@ -235,11 +241,6 @@ private:
     io_service_t fwDevice_ = 0;
     io_service_t busController_ = 0;
     io_object_t interestNotification_ = 0;
-    
-    // Interface
-    IOFireWireLibDeviceRef deviceInterface = nullptr;
-    IOFireWireAVCLibUnitInterface **avcInterface_ = nullptr;
-    DeviceController *deviceController_ = nullptr;
 
     // IOKit notification port.
     IONotificationPortRef notificationPort_ = nullptr;
