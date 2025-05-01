@@ -23,6 +23,8 @@ add_library(FWA STATIC
     MusicSubunitDescriptorParser.cpp
     JsonHelpers.cpp
     DiceAudioDevice.cpp
+    DiceEAP.cpp
+    DiceRouter.cpp
     ../fwa_capi.cpp
 )
 set_target_properties(FWA PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)

@@ -12,6 +12,8 @@ enum class IOKitError {
     Success = 0,                    // Operation completed successfully
     Error = 0x2bc,                 // General error
     NoMemory = 0x2bd,             // Memory allocation failed
+    NotInitialized = 0x2bc + 0x100, // Not initialized
+    ReadOnly = 0x2bc + 0x101,       // Read only
     NoResources = 0x2be,          // Resource shortage
     IPCError = 0x2bf,             // Error during IPC
     NoDevice = 0x2c0,             // No such device

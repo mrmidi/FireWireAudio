@@ -1,6 +1,8 @@
 // src/FWA/DiceAudioDevice.cpp
 #include "FWA/DiceAudioDevice.h"
 #include "FWA/DiceDefines.hpp"
+#include "FWA/DiceEAP.hpp"
+#include "FWA/DiceRouter.hpp"
 #include "FWA/DeviceController.h"
 #include <spdlog/spdlog.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -18,19 +20,7 @@
 namespace FWA
 {
 
-	// Forward declaration for EAP class
-	class DiceEAP
-	{
-	public:
-		DiceEAP(DiceAudioDevice &device) : device_(device) {}
-		~DiceEAP() = default;
-
-		bool init() { return true; } // Placeholder implementation
-		void update() {}						 // Placeholder implementation
-
-	private:
-		DiceAudioDevice &device_;
-	};
+	// Forward declarations are in header file
 
 	DiceAudioDevice::DiceAudioDevice(std::uint64_t guid,
 																	 const std::string &deviceName,
@@ -120,11 +110,27 @@ namespace FWA
 		}
 
 		// Initialize EAP if available
-		eap_ = std::make_unique<DiceEAP>(*this);
-		if (eap_ && !eap_->init())
+		if (DiceEAP::supportsEAP(*this))
 		{
-			spdlog::warn("Could not initialize EAP interface");
-			eap_.reset();
+			eap_ = std::make_unique<DiceEAP>(*this);
+			auto eapInit = eap_->init();
+			if (!eapInit)
+			{
+				spdlog::warn("Could not initialize EAP interface: {}", static_cast<int>(eapInit.error()));
+				eap_.reset();
+			}
+			else
+			{
+				spdlog::info("EAP interface initialized successfully");
+
+				// Initialize the router if EAP was successful
+				router_ = std::make_unique<DiceRouter>(*eap_);
+				spdlog::info("Router interface initialized");
+			}
+		}
+		else
+		{
+			spdlog::debug("This device does not support EAP");
 		}
 
 		return {};
@@ -409,7 +415,11 @@ namespace FWA
 		// Update EAP if available
 		if (eap_)
 		{
-			eap_->update();
+			auto eapUpdate = eap_->update();
+			if (!eapUpdate)
+			{
+				spdlog::warn("Failed to update EAP: {}", static_cast<int>(eapUpdate.error()));
+			}
 		}
 
 		return {};

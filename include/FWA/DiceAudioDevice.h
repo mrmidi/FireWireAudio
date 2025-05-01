@@ -12,16 +12,20 @@
 namespace FWA
 {
 
-	class DiceEAP; // Forward declaration for Extended Application Protocol
+	class DiceEAP;		// Forward declaration for Extended Application Protocol
+	class DiceRouter; // Forward declaration for Router Interface
 
 	/**
 	 * @brief Specialized AudioDevice class for DICE-based FireWire audio interfaces
 	 *
+	 * @note The DiceEAP class is declared as a friend to allow direct access
+	 * to register operations for better performance when implementing the EAP.
 	 * This class extends the base AudioDevice to provide support for devices
 	 * using the DICE chipset from TC Applied Technologies (TCAT).
 	 */
 	class DiceAudioDevice : public AudioDevice
 	{
+		friend class DiceEAP; // Allow DiceEAP to access private methods
 	public:
 		/**
 		 * @brief Construct a new DICE Audio Device
@@ -129,6 +133,12 @@ namespace FWA
 		DiceEAP *getEAP() const { return eap_.get(); }
 
 		/**
+		 * @brief Get access to the Router interface
+		 * @return Pointer to the Router interface or nullptr if not supported
+		 */
+		DiceRouter *getRouter() const { return router_.get(); }
+
+		/**
 		 * @brief Lock the device for exclusive access.
 		 * @return Success or error status.
 		 */
@@ -197,6 +207,9 @@ namespace FWA
 
 		// Extended Application Protocol interface
 		std::unique_ptr<DiceEAP> eap_;
+
+		// Router interface for configuring device routing
+		std::unique_ptr<DiceRouter> router_;
 
 		// Notifier for device events
 		io_object_t notifier_;
