@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 
 
 struct ContentView: View {
-    @EnvironmentObject var manager: DeviceManager // Now always from environment
+    @EnvironmentObject var uiManager: UIManager
     @State private var selectedTab: Int = 0
     @State private var showExportJsonSheet = false
     @State private var exportJsonContent: String = ""
@@ -13,73 +13,13 @@ struct ContentView: View {
     private let logger = AppLoggers.app
 
     var body: some View {
-        VStack(spacing: 0) { // Use spacing 0 to have status bar directly below TabView
-            TabView(selection: $selectedTab) {
-                // --- Overview Tab ---
-                OverviewView()
-                    .tabItem { Label("Overview", systemImage: "dial.medium") }
-                    .tag(0)
-                    .keyboardShortcut("1", modifiers: .command)
-
-                // --- Connection Matrix Tab ---
-                ConnectionMatrixView()
-                    .tabItem { Label("Matrix", systemImage: "rectangle.grid.3x2") }
-                    .tag(1)
-                    .keyboardShortcut("2", modifiers: .command)
-
-                // --- Log Console Tab ---
-                LogConsoleView()
-                    .tabItem { Label("Logs", systemImage: "doc.plaintext") }
-                    .tag(2)
-                    .keyboardShortcut("3", modifiers: .command)
-
-                // --- AV/C Tab ---
-                AVCTabView()
-                    .tabItem { Label("AV/C", systemImage: "terminal") }
-                    .tag(3)
-                    .keyboardShortcut("4", modifiers: .command)
-            }
-            Divider() // Separator line
-            StatusBarView() // <-- Add the status bar here
+        VStack(spacing: 0) {
+            mainTabView
+            Divider()
+            StatusBarView()
         }
-        .environmentObject(manager)
         .navigationTitle("FWA Control")
-        .toolbar {
-            ToolbarItemGroup {
-                if manager.devices.first?.value != nil {
-                    Button {
-                        if let guid = manager.devices.keys.sorted().first,
-                           let json = manager.deviceJsons[guid] {
-                            exportJsonContent = json
-                            showExportJsonSheet = true
-                            logger.info("User requested export JSON for GUID 0x\(String(format: "%llX", guid))")
-                        } else {
-                            logger.warning("Export JSON requested, but no device or JSON found.")
-                        }
-                    } label: {
-                        Label("Export JSON", systemImage: "square.and.arrow.up")
-                    }
-                    .help("Export original device JSON (first device)")
-                }
-            }
-            ToolbarItemGroup {
-                Button { manager.start() } label: { Label("Start", systemImage: "play.fill") }
-                    .help("Start CoreAudio Driver Discovery (requires driver)")
-                    .disabled(manager.isRunning)
-                Button { manager.stop() }  label: { Label("Stop", systemImage: "stop.fill") }
-                    .disabled(!manager.isRunning)
-            }
-            ToolbarItemGroup {
-                if selectedTab == 0 || selectedTab == 1 {
-                    Button {
-                        logger.info("User requested refresh all devices.")
-                        manager.refreshAllDevices()
-                    } label: { Label("Refresh Devices", systemImage: "arrow.clockwise") }
-                    .disabled(!manager.isRunning)
-                    .help("Refresh data for all connected devices")
-                }
-            }
-        }
+        .toolbar(content: mainToolbar)
         .fileExporter(
             isPresented: $showExportJsonSheet,
             document: JsonDocument(content: exportJsonContent),
@@ -93,49 +33,106 @@ struct ContentView: View {
                 logger.error("JSON export failed: \(error.localizedDescription)")
             }
         }
-        // --- Alerts ---
-        .alert(
-            "FireWire Driver Missing",
-            isPresented: $manager.showDriverInstallPrompt
-        ) {
-            Button("Install Driver") {
-                logger.info("User clicked 'Install Driver' button.")
-                Task { await manager.installDriverFromBundle() }
-            }
-            Button("Cancel", role: .cancel) {
-                logger.info("User cancelled driver installation prompt.")
-            }
-        } message: {
-            Text("To communicate with your FireWire audio hardware, please install the driver. You will be prompted for admin credentials.")
+        .alert("FireWire Driver Missing", isPresented: $uiManager.showDriverInstallPrompt, actions: driverAlertActions, message: driverAlertMessage)
+        .onChange(of: uiManager.showDriverInstallPrompt, perform: handleDriverPromptChange)
+        .alert("FireWire Daemon Not Installed", isPresented: $uiManager.showDaemonInstallPrompt, actions: daemonAlertActions, message: daemonAlertMessage)
+        .onChange(of: uiManager.showDaemonInstallPrompt, perform: handleDaemonPromptChange)
+    }
+
+    @ViewBuilder private var mainTabView: some View {
+        TabView(selection: $selectedTab) {
+            OverviewView()
+                .tabItem { Label("Overview", systemImage: "dial.medium") }
+                .tag(0)
+                .keyboardShortcut("1", modifiers: .command)
+            ConnectionMatrixView()
+                .tabItem { Label("Matrix", systemImage: "rectangle.grid.3x2") }
+                .tag(1)
+                .keyboardShortcut("2", modifiers: .command)
+            LogConsoleView()
+                .tabItem { Label("Logs", systemImage: "doc.plaintext") }
+                .tag(2)
+                .keyboardShortcut("3", modifiers: .command)
+            AVCTabView()
+                .tabItem { Label("AV/C", systemImage: "terminal") }
+                .tag(3)
+                .keyboardShortcut("4", modifiers: .command)
         }
-        .onChange(of: manager.showDriverInstallPrompt) { _, isShowing in // <-- Log when prompt appears/disappears
-            if isShowing {
-                logger.info("Presenting driver installation prompt.")
-            } else {
-                logger.debug("Driver installation prompt dismissed.")
+    }
+
+    @ToolbarContentBuilder private func mainToolbar() -> some ToolbarContent {
+        ToolbarItemGroup {
+            if uiManager.devices.first?.value != nil {
+                Button {
+                    if let guid = uiManager.devices.keys.sorted().first,
+                       let json = uiManager.deviceJsons[guid] {
+                        exportJsonContent = json
+                        showExportJsonSheet = true
+                        logger.info("User requested export JSON for GUID 0x\(String(format: "%016llX", guid))")
+                    } else {
+                        logger.warning("Export JSON requested, but no device or JSON found.")
+                    }
+                } label: {
+                    Label("Export JSON", systemImage: "square.and.arrow.up")
+                }
+                .help("Export original device JSON (first device)")
             }
         }
-        .alert(
-            "FireWire Daemon Not Installed",
-            isPresented: $manager.showDaemonInstallPrompt
-        ) {
-            Button("Go to Settings") {
-                logger.info("User clicked 'Go to Settings' for daemon installation.")
-                openSettings() // <-- Use the environment action
-            }
-            Button("Cancel", role: .cancel) {
-                logger.info("User cancelled daemon installation prompt.")
-            }
-        } message: {
-            Text("The FireWire Daemon is required for device communication. Please go to Settings → System to install the daemon.")
+        ToolbarItemGroup {
+            Button { uiManager.startEngine() } label: { Label("Start", systemImage: "play.fill") }
+                .help("Start Engine Service")
+                .disabled(uiManager.isRunning)
+            Button { uiManager.stopEngine() }  label: { Label("Stop", systemImage: "stop.fill") }
+                .disabled(!uiManager.isRunning)
         }
-        .onChange(of: manager.showDaemonInstallPrompt) { _, isShowing in // <-- Log when prompt appears/disappears
-            if isShowing {
-                logger.info("Presenting daemon installation prompt.")
-            } else {
-                logger.debug("Daemon installation prompt dismissed.")
+        ToolbarItemGroup {
+            if selectedTab == 0 || selectedTab == 1 {
+                Button {
+                    logger.info("User requested refresh all devices.")
+                    uiManager.refreshAllDevices()
+                } label: { Label("Refresh Devices", systemImage: "arrow.clockwise") }
+                .disabled(!uiManager.isRunning)
+                .help("Refresh data for all connected devices")
             }
         }
+    }
+
+    @ViewBuilder private func driverAlertActions() -> some View {
+        Button("Install Driver") {
+            logger.info("User clicked 'Install Driver' button.")
+            uiManager.installDriver()
+        }
+        Button("Cancel", role: .cancel) {
+            logger.info("User cancelled driver installation prompt.")
+        }
+    }
+
+    @ViewBuilder private func driverAlertMessage() -> some View {
+        Text("To communicate with your FireWire audio hardware, please install the driver. You will be prompted for admin credentials.")
+    }
+
+    @ViewBuilder private func daemonAlertActions() -> some View {
+        Button("Go to Settings") {
+            logger.info("User clicked 'Go to Settings' for daemon installation.")
+            openSettings()
+        }
+        Button("Cancel", role: .cancel) {
+            logger.info("User cancelled daemon installation prompt.")
+        }
+    }
+
+    @ViewBuilder private func daemonAlertMessage() -> some View {
+        Text("The FireWire Daemon is required for device communication. Please go to Settings → System to install the daemon.")
+    }
+
+    private func handleDriverPromptChange(isShowing: Bool) {
+        if isShowing { logger.info("Presenting driver installation prompt.") }
+        else { logger.debug("Driver installation prompt dismissed.") }
+    }
+
+    private func handleDaemonPromptChange(isShowing: Bool) {
+        if isShowing { logger.info("Presenting daemon installation prompt.") }
+        else { logger.debug("Daemon installation prompt dismissed.") }
     }
 
     private func showExportLogs() {
@@ -160,9 +157,34 @@ struct JsonDocument: FileDocument {
 }
 
 // MARK: - Preview
-struct RootView_Previews: PreviewProvider {
+struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
-        ContentView()
-            .environmentObject(DeviceManager())
+        // --- FIX: Robust UIManager preview initialization ---
+        let previewUIManager: UIManager = {
+            if let engine = EngineService() {
+                let permManager = PermissionManager()
+                let daemonManager = DaemonServiceManager()
+                let systemServices = SystemServicesManager(
+                    engineService: engine,
+                    permissionManager: permManager,
+                    daemonServiceManager: daemonManager
+                )
+                let logStore = LogStore()
+                let uiManager = UIManager(
+                    engineService: engine,
+                    systemServicesManager: systemServices,
+                    logStore: logStore
+                )
+                // Optionally set preview state:
+                // uiManager.isRunning = true
+                // uiManager.showDriverInstallPrompt = true
+                return uiManager
+            } else {
+                // Fallback: nil dependencies
+                return UIManager(engineService: nil, systemServicesManager: nil, logStore: nil)
+            }
+        }()
+        return ContentView()
+            .environmentObject(previewUIManager)
     }
 }

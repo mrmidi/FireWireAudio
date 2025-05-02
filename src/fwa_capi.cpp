@@ -20,6 +20,8 @@
 #include <iostream>
 #include <expected>
 
+
+
 struct FWAEngine {
     std::shared_ptr<FWA::DeviceController> controller;
     FWALogCallback log_callback = nullptr;

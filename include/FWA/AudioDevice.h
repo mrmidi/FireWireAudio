@@ -159,12 +159,11 @@ public:
      */
     const DeviceInfo& getDeviceInfo() const { return info_; }
 
-    // ---- NEW GETTERS ----
     uint32_t getVendorID() const { return vendorID_; }
     uint32_t getModelID() const { return modelID_; }
     // -------------------
 
-    // --- NEW CONTROL METHODS ---
+
     std::expected<void, IOKitError> connectMusicPlug(
         uint8_t musicPlugType,
         uint16_t musicPlugID,
@@ -213,7 +212,6 @@ public:
      * @return Success or IOKitError.
      */
     std::expected<void, IOKitError> defaultConfigureMusicPlugs();
-    // --- END NEW CONTROL METHODS ---
 
 private:
     std::uint64_t guid_;
@@ -259,12 +257,9 @@ private:
     // Device capabilities container
     DeviceInfo info_;
 
-    // ---- NEW MEMBERS ----
     uint32_t vendorID_ = 0;
     uint32_t modelID_ = 0;
-    // -------------------
 
-    // --- NEW PRIVATE HELPERS ---
     std::vector<uint8_t> buildDestPlugConfigureControlCmd(
         uint8_t subfunction,
         uint8_t musicPlugType,
@@ -285,7 +280,6 @@ private:
     std::expected<void, IOKitError> checkDestPlugConfigureControlSubcommandResponse(
         const std::vector<uint8_t>& response,
         const char* commandName);
-    // --- END NEW PRIVATE HELPERS ---
 
     friend class DeviceParser;
 };

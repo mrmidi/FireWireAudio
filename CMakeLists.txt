@@ -93,6 +93,9 @@ set(JSON_BuildTests OFF CACHE BOOL "Disable nlohmann_json tests")
 FetchContent_Declare(catch2        GIT_REPOSITORY https://github.com/catchorg/Catch2.git      GIT_TAG v3.8.0)
 set(CATCH2_BUILD_TESTS OFF CACHE BOOL "Disable Catch2 tests")
 FetchContent_Declare(libASPL       GIT_REPOSITORY https://github.com/mrmidi/libASPL.git         GIT_TAG main)
+# Swift Collections
+FetchContent_Declare(swift_collections
+    GIT_REPOSITORY https://github.com/apple/swift-collections.git GIT_TAG main)
 
 # Swift-Log (now unconditional)
 FetchContent_Declare(swift_log
@@ -108,6 +111,7 @@ FetchContent_MakeAvailable(
   catch2
   libASPL
   swift_log
+  swift_collections
 )
 
 # Manual build of swift-log sources
@@ -194,7 +198,77 @@ if(SANITIZER_LINK_FLAGS)
 endif()
 
 # --- FWA-Control Swift GUI app ---
-file(GLOB_RECURSE SWIFT_APP_SOURCES FWA-Control/*.swift)
+# Define Swift source files explicitly by group 
+# (Instead of using GLOB which can be problematic with source_group)
+set(SWIFT_MODEL_SOURCES
+  FWA-Control/Models/DomainModels.swift
+  FWA-Control/Models/Enums.swift
+  FWA-Control/Models/JsonDecodables.swift
+  FWA-Control/Models/ModelTypes.swift
+)
+
+set(SWIFT_VIEW_SOURCES
+  FWA-Control/ContentView.swift
+  FWA-Control/OverviewView.swift
+  FWA-Control/StatusBarView.swift
+  FWA-Control/SettingsView.swift
+  FWA-Control/AVCTabView.swift
+  FWA-Control/ConnectionMatrixView.swift
+  FWA-Control/LogConsoleView.swift
+  FWA-Control/AudioSubunitDetailsView.swift
+  FWA-Control/DeviceBasicInfoView.swift
+  FWA-Control/DeviceRefreshButton.swift
+  FWA-Control/DeviceStatusIndicatorView.swift
+  FWA-Control/ExpandableSectionView.swift
+  FWA-Control/HexDumpView.swift
+  FWA-Control/InfoBlockDetailView.swift
+  FWA-Control/MusicSubunitDetailsView.swift
+  FWA-Control/PlugDetailView.swift
+  FWA-Control/PlugListView.swift
+  FWA-Control/SubunitInfoSectionView.swift
+  FWA-Control/UnitInfoSectionView.swift
+)
+
+set(SWIFT_VIEWMODEL_SOURCES
+  FWA-Control/UIManager.swift
+)
+
+set(SWIFT_SERVICE_SOURCES
+  FWA-Control/EngineService.swift
+  FWA-Control/SystemServicesManager.swift
+  FWA-Control/LogStore.swift
+  FWA-Control/DeviceDataMapper.swift
+  FWA-Control/DriverInstallService.swift
+  FWA-Control/DriverInstallerService.swift
+  FWA-Control/HardwareInterface.swift
+  FWA-Control/CAPICallbackHandler.swift
+  FWA-Control/XPCManager.swift
+  FWA-Control/DaemonServiceManager.swift
+  FWA-Control/FWAManagerBridge.swift
+  FWA-Control/PermissionManager.swift
+  # FWA-Control/DriverInstaller.swift
+)
+
+set(SWIFT_APP_CONFIG_SOURCES
+  FWA-Control/FWControlApp.swift
+  FWA-Control/AppLoggers.swift
+  FWA-Control/Test.swift
+)
+
+set(SWIFT_LOGGING_SOURCES
+  FWA-Control/Logging/InMemoryLogHandler.swift
+)
+
+# Combine all sources
+set(SWIFT_APP_SOURCES
+  ${SWIFT_MODEL_SOURCES}
+  ${SWIFT_VIEW_SOURCES}
+  ${SWIFT_VIEWMODEL_SOURCES}
+  ${SWIFT_SERVICE_SOURCES}
+  ${SWIFT_APP_CONFIG_SOURCES}
+  ${SWIFT_LOGGING_SOURCES}
+)
+
 add_executable(FWA-Control MACOSX_BUNDLE ${SWIFT_APP_SOURCES})
 set_target_properties(FWA-Control PROPERTIES
   MACOSX_BUNDLE TRUE
@@ -206,7 +280,11 @@ set_target_properties(FWA-Control PROPERTIES
   XCODE_ATTRIBUTE_SWIFT_INCLUDE_PATHS
     "${CMAKE_CURRENT_BINARY_DIR}/include;${CMAKE_SOURCE_DIR}/include;${CMAKE_SOURCE_DIR}/include/shared;${CMAKE_SOURCE_DIR}/include/shared/xpc;${FWA_CAPI_MODULEMAP_PATH}"
   XCODE_ATTRIBUTE_SWIFT_OPTIMIZATION_LEVEL "-Onone"
+  # swift version = 6
+  XCODE_ATTRIBUTE_SWIFT_VERSION "6.0"
 )
+
+
 set(FWADAEMON_LAUNCHD_PLIST "${CMAKE_SOURCE_DIR}/FWA-Control/FWADaemon.plist")
 target_sources(FWA-Control PRIVATE "${FWADAEMON_LAUNCHD_PLIST}")
 set_source_files_properties(
@@ -233,7 +311,7 @@ add_custom_command(TARGET FWA-Control POST_BUILD
   COMMENT "Embedding helper tools and resources into FWA-Control.app"
 )
 target_link_libraries(FWA-Control PRIVATE
-  Logging FWA Shared
+  Logging FWA Shared SwiftCollections
   "-framework SwiftUI"
   "-framework Cocoa"
   "-framework Foundation"
@@ -243,6 +321,12 @@ target_link_libraries(FWA-Control PRIVATE
   "-framework AVFoundation"
 )
 add_dependencies(FWA-Control Logging FWADaemon FWADriver FWA Shared)
+# --- Relax Swift 6 concurrency checks ---
+target_compile_options(FWA-Control PRIVATE
+  $<$<COMPILE_LANGUAGE:Swift>:-Xfrontend -strict-concurrency=targeted>
+  # OR to disable completely:
+  # $<$<COMPILE_LANGUAGE:Swift>:-Xfrontend -disable-strict-concurrency-complete>
+)
 
 # --- Documentation and testing (unchanged) ---
 find_package(Doxygen)
@@ -386,10 +470,19 @@ include/xpc/FWADaemon/MixedAudioBuffer.h
 # --- Source Groups for Swift Application ---
 source_group("Source Files\\C_API" FILES src/fwa_capi.cpp)
 source_group("Header Files\\C_API" FILES include/fwa_capi.h)
-source_group("Swift Application" FILES ${SWIFT_APP_SOURCES})
-# Group Swift Application Models files explicitly
-source_group("Swift Application\\Models" FILES
-FWA-Control/Models/DomainModels.swift
-FWA-Control/Models/Enums.swift
-FWA-Control/Models/JsonDecodables.swift
+
+# Source Groups for Swift app - use the explicit lists we defined earlier
+source_group("Swift Application\\Models" FILES ${SWIFT_MODEL_SOURCES})
+source_group("Swift Application\\Views" FILES ${SWIFT_VIEW_SOURCES})
+source_group("Swift Application\\ViewModels" FILES ${SWIFT_VIEWMODEL_SOURCES})
+source_group("Swift Application\\Services" FILES ${SWIFT_SERVICE_SOURCES})
+source_group("Swift Application\\App" FILES ${SWIFT_APP_CONFIG_SOURCES})
+source_group("Swift Application\\Logging" FILES ${SWIFT_LOGGING_SOURCES})
+
+# Add resource files (non-Swift files) to appropriate groups
+source_group("Swift Application\\Resources" FILES 
+  FWA-Control/Info.plist
+  FWA-Control/FWA_Control.entitlements
+  FWA-Control/FWControl.entitlements
+  FWA-Control/FWADaemon.plist
 )

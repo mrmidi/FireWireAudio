@@ -1,327 +1,401 @@
-import Foundation
-import Combine
-import Logging
-import FWADaemonXPC
-import SwiftUI // Needed for @MainActor, ObservableObject
+//
+//  XPCManager.swift
+//  FWA-Control
+//
 
-// Helper for safe array access
-extension Collection {
-    subscript(safe index: Index) -> Element? {
-        return indices.contains(index) ? self[index] : nil
-    }
+import Foundation
+import FWADaemonXPC
+import Logging
+
+// MARK: - Public model types
+
+public struct DeviceStatus: Sendable {
+    public let guid: UInt64
+    public let isConnected: Bool
+    public let isInitialized: Bool
+    public let name: String?
+    public let vendor: String?
 }
 
-@MainActor
-class XPCManager: ObservableObject {
-    // --- Published State ---
-    @Published var isConnected: Bool = false
+/// Immutable, thread-safe wrapper for heterogeneous dictionaries returned by the daemon.
+public struct InfoDictionary: @unchecked Sendable {
+    public let raw: [AnyHashable: Any]
+    public init(_ raw: [AnyHashable: Any]) { self.raw = raw }
+}
 
-    // --- Combine Subjects for Notifications ---
-    let deviceStatusUpdate = PassthroughSubject<(guid: UInt64, isConnected: Bool, isInitialized: Bool, name: String?, vendor: String?), Never>()
-    let deviceConfigUpdate = PassthroughSubject<(guid: UInt64, configInfo: [AnyHashable: Any]), Never>()
-    let logMessageReceived = PassthroughSubject<(sender: String, level: Logger.Level, message: String), Never>()
-    let driverConnectionStatus = PassthroughSubject<Bool, Never>() // New subject for driver status
+public struct DeviceConfig: @unchecked Sendable {
+    public let guid: UInt64
+    public let info: InfoDictionary
+}
 
-    // --- Private Properties ---
-    private var xpcConnection: NSXPCConnection?
-    private var notificationListener: NSXPCListener?
-    private var notificationDelegate: XPCNotificationHandler?
+// MARK: - Helper for streams
+
+private struct Continuations: @unchecked Sendable {
+    let deviceStatus: AsyncStream<DeviceStatus>.Continuation
+    let deviceConfig: AsyncStream<DeviceConfig>.Continuation
+    let driverStatus: AsyncStream<Bool>.Continuation
+}
+
+// MARK: - Wrapper to make XPC reply closures Sendable
+
+private struct ReplyWrapper: @unchecked Sendable {
+    let closure: (Bool) -> Void
+    init(_ closure: @escaping (Bool) -> Void) { self.closure = closure }
+    func call(_ v: Bool) { closure(v) }
+}
+
+// MARK: - XPCManager actor
+
+public final actor XPCManager {
+    // Logger
+//    private let logger = AppLoggers.xpcManager
+    
+    // Public streams
+    public let deviceStatusStream: AsyncStream<DeviceStatus>
+    public let deviceConfigStream: AsyncStream<DeviceConfig>
+    public let driverStatusStream: AsyncStream<Bool>
+
+    // Private
     private let logger = AppLoggers.xpcManager
+    private let cont: Continuations
+
+    private var xpcConnection: NSXPCConnection?
+    private var listener: NSXPCListener?
+
     private let daemonServiceName = "net.mrmidi.FWADaemon"
     private let clientID = "GUI-\(UUID().uuidString)"
-    weak var deviceManager: DeviceManager? // For hardware callbacks
-    private weak var hardwareInterface: HardwareInterface?
+    fileprivate let engineService: EngineService
 
-    // Method to assign the hardware interface dependency
-    func assignHardwareInterface(_ interface: HardwareInterface) {
-        self.hardwareInterface = interface
-        if let handler = self.notificationDelegate {
-            handler.assignHardwareInterface(interface)
-        }
+    // MARK: — Init / Deinit
+
+    internal init(engineService: EngineService) {
+        self.engineService = engineService
+        var ds: AsyncStream<DeviceStatus>.Continuation!
+        deviceStatusStream = AsyncStream { ds = $0 }
+
+        var dc: AsyncStream<DeviceConfig>.Continuation!
+        deviceConfigStream = AsyncStream { dc = $0 }
+
+        var dr: AsyncStream<Bool>.Continuation!
+        driverStatusStream = AsyncStream { dr = $0 }
+
+        cont = Continuations(deviceStatus: ds,
+                             deviceConfig: dc,
+                             driverStatus: dr)
     }
 
-    // MARK: - Connection Management
-    func connect(reason: String? = nil) { // <-- Add optional reason parameter
-        guard xpcConnection == nil else {
-            logger.info("🔌 XPC connection already exists or pending. Reason for call: \(reason ?? "N/A")")
-            return
-        }
-        let logReason = reason ?? "Manual or initial connection"
-        logger.info("🔌 Attempting XPC connection to \(daemonServiceName)... (\(logReason))")
+    deinit {
+        // cleanup is handled by explicit disconnect(); do not touch actor state here
+    }
 
-        // 1. Setup listener for callbacks (Daemon -> GUI)
-        self.notificationDelegate = XPCNotificationHandler(xpcManager: self)
+    // MARK: — Connection Management
+
+    public func connect() async -> Bool {
+        guard xpcConnection == nil else { return true }
+
+        // 1) listener for callbacks
+        let handler = XPCNotificationHandler(manager: self)
         let listener = NSXPCListener.anonymous()
-        listener.delegate = self.notificationDelegate // Delegate now conforms
-        self.notificationListener = listener
+        listener.delegate = handler
         listener.resume()
+        self.listener = listener
 
-        let listenerEndpoint = listener.endpoint // Not optional
+        // 2) open XPC connection
+        let conn = NSXPCConnection(machServiceName: daemonServiceName, options: [])
+        conn.remoteObjectInterface = NSXPCInterface(with: FWADaemonControlProtocol.self)
 
-        // 2. Create connection (GUI -> Daemon)
-        let connection = NSXPCConnection(machServiceName: daemonServiceName, options: [])
-        connection.remoteObjectInterface = NSXPCInterface(with: FWADaemonControlProtocol.self)
-        connection.interruptionHandler = { [weak self] in self?.handleDisconnect("interrupted") }
-        connection.invalidationHandler = { [weak self] in self?.handleDisconnect("invalidated") }
-        self.xpcConnection = connection
-        connection.resume()
+        // @Sendable interruption/invalidation handlers
+        conn.interruptionHandler = ({
+            [weak self] in
+            Task { await self?.handleDisconnect(reason: "interrupted") }
+        } as @Sendable () -> Void)
 
-        // 3. Register with Daemon
-        guard let proxy = getProxy() else {
-            logger.error("🚫 Failed to get proxy during connect.")
-            handleDisconnect("proxy failure")
-            return
+        conn.invalidationHandler = ({
+            [weak self] in
+            Task { await self?.handleDisconnect(reason: "invalidated") }
+        } as @Sendable () -> Void)
+
+        conn.resume()
+        xpcConnection = conn
+
+        // 3) register client
+        return await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
+            let proxyError: @Sendable (Error) -> Void = { [weak self] _ in
+                Task { await self?.handleDisconnect(reason: "proxy error") }
+            }
+
+            guard let proxy = conn
+                .remoteObjectProxyWithErrorHandler(proxyError)
+                as? FWADaemonControlProtocol
+            else {
+                cc.resume(returning: false)
+                return
+            }
+
+            proxy.registerClient(clientID,
+                                 clientNotificationEndpoint: listener.endpoint)
+            { success, _ in cc.resume(returning: success) }
         }
-        proxy.registerClient(self.clientID, clientNotificationEndpoint: listenerEndpoint) { [weak self] success, daemonInfo in
-            guard let self = self else { return }
-            if success {
-                self.logger.info("✅ Registered with daemon successfully (\(logReason)). Info: \(daemonInfo ?? [:])") // <-- Include reason in success log
-                Task { @MainActor in self.isConnected = true }
-                // After successful registration, query initial driver status
-                self.getInitialDriverStatus()
-            } else {
-                self.logger.error("❌ Failed to register with daemon (\(logReason)).") // <-- Include reason in failure log
-                Task { @MainActor in self.handleDisconnect("registration failed") }
+    }
+
+    public func disconnect() async {
+        await handleDisconnect(reason: "manual disconnect")
+    }
+
+    private func handleDisconnect(reason: String) async {
+        logger.warning("XPC closed: \(reason)")
+        xpcConnection?.invalidate()
+        listener?.invalidate()
+        xpcConnection = nil
+        listener = nil
+    }
+
+    // MARK: — Queries
+
+    public func getConnectedGUIDs() async -> [UInt64]? {
+        guard let proxy = validProxy() else { return nil }
+        return await withCheckedContinuation { (cc: CheckedContinuation<[UInt64]?, Never>) in
+            proxy.getConnectedDeviceGUIDs { @Sendable raw in
+                cc.resume(returning: raw?.compactMap { $0.uint64Value })
             }
         }
     }
 
-    func disconnect() {
-        logger.info("🔌 Disconnecting XPC connection...")
-        handleDisconnect("manual disconnect")
-    }
-
-    private func handleDisconnect(_ reason: String) {
-        logger.warning("🔌 XPC Connection \(reason). Cleaning up.")
-        guard isConnected else { return }
-        self.isConnected = false
-        self.xpcConnection?.invalidate()
-        self.xpcConnection = nil
-        self.notificationListener?.invalidate()
-        self.notificationListener = nil
-        self.notificationDelegate = nil
-    }
-
-    // Helper to get the proxy safely
-    private func getProxy() -> FWADaemonControlProtocol? {
-        guard let connection = self.xpcConnection else {
-            logger.error("🚫 Attempted to get proxy, but XPC connection is nil.")
-            Task { @MainActor in handleDisconnect("proxy request on nil connection") }
-            return nil
-        }
-        return connection.remoteObjectProxyWithErrorHandler { [weak self] error in
-            self?.logger.error("🚫 XPC communication error: \(error.localizedDescription)")
-            Task { @MainActor in self?.handleDisconnect("proxy error") }
-        } as? FWADaemonControlProtocol
-    }
-
-    // Fetch initial driver connection status after connecting to daemon
-    private func getInitialDriverStatus() {
-        guard let proxy = getProxy() else { return }
-        logger.info("🔌 Querying initial driver connection status...")
-        proxy.getIsDriverConnected { [weak self] isDriverConnected in
-            self?.logger.info("🔌 Received initial driver status: \(isDriverConnected)")
-            Task { @MainActor in
-                self?.driverConnectionStatus.send(isDriverConnected)
+    public func getDeviceStatus(guid: UInt64) async -> InfoDictionary? {
+        guard let proxy = validProxy() else { return nil }
+        return await withCheckedContinuation { (cc: CheckedContinuation<InfoDictionary?, Never>) in
+            proxy.getDeviceConnectionStatus(guid) { @Sendable info in
+                cc.resume(returning: info.map(InfoDictionary.init))
             }
         }
     }
 
-    // MARK: - Methods Called by DeviceManager (Requests to Daemon)
-    func getConnectedGUIDs(completion: @escaping ([UInt64]?) -> Void) {
-        guard let proxy = getProxy() else { completion(nil); return }
-        proxy.getConnectedDeviceGUIDs { guids in
-            completion(guids?.compactMap { $0.uint64Value })
+    public func getDeviceConfig(guid: UInt64) async -> InfoDictionary? {
+        guard let proxy = validProxy() else { return nil }
+        return await withCheckedContinuation { (cc: CheckedContinuation<InfoDictionary?, Never>) in
+            proxy.getDeviceConfiguration(guid) { @Sendable info in
+                cc.resume(returning: info.map(InfoDictionary.init))
+            }
         }
     }
 
-    func getDeviceStatus(guid: UInt64, completion: @escaping ([AnyHashable: Any]?) -> Void) {
-        guard let proxy = getProxy() else { completion(nil); return }
-        proxy.getDeviceConnectionStatus(guid) { statusInfo in
-            completion(statusInfo)
+    public func requestSetSampleRate(guid: UInt64, rate: Double) async -> Bool {
+        guard let proxy = validProxy() else { return false }
+        return await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
+            proxy.requestSetNominalSampleRate(guid, rate: rate) { @Sendable ok in
+                cc.resume(returning: ok)
+            }
         }
     }
 
-    func getDeviceConfig(guid: UInt64, completion: @escaping ([AnyHashable: Any]?) -> Void) {
-        guard let proxy = getProxy() else { completion(nil); return }
-        proxy.getDeviceConfiguration(guid) { configInfo in
-            completion(configInfo)
+    public func requestStartIO(guid: UInt64) async -> Bool {
+        guard let proxy = validProxy() else { return false }
+        return await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
+            proxy.requestStartIO(guid) { @Sendable ok in
+                cc.resume(returning: ok)
+            }
         }
     }
 
-    func requestSetSampleRate(guid: UInt64, rate: Double, completion: @escaping (Bool) -> Void) {
-        guard let proxy = getProxy() else { completion(false); return }
-        proxy.requestSetNominalSampleRate(guid, rate: rate) { success in
-            completion(success)
-        }
-    }
-
-    func requestStartIO(guid: UInt64, completion: @escaping (Bool) -> Void) {
-        guard let proxy = getProxy() else { completion(false); return }
-        proxy.requestStartIO(guid) { success in
-            completion(success)
-        }
-    }
-
-    func requestStopIO(guid: UInt64) {
-        guard let proxy = getProxy() else { return }
+    public func requestStopIO(guid: UInt64) async {
+        guard let proxy = validProxy() else { return }
         proxy.requestStopIO(guid)
     }
 
-    // MARK: - Methods Called by Logging System (Forwarding to Daemon)
-    func forwardLogMessageToDaemon(level: Logger.Level, message: String) {
-        // Not implemented: GUI logs locally
-    }
-
-    // MARK: - Methods Called by XPCNotificationHandler (Callbacks from Daemon)
-    func daemonDidUpdateStatus(guid: UInt64, isConnected: Bool, isInitialized: Bool, name: String?, vendor: String?) {
-        logger.debug("XPCManager received daemonDidUpdateStatus: GUID 0x\(String(format: "%llX", guid)) Conn:\(isConnected) Init:\(isInitialized)")
-        deviceStatusUpdate.send((guid: guid, isConnected: isConnected, isInitialized: isInitialized, name: name, vendor: vendor))
-    }
-
-    func daemonDidUpdateConfig(guid: UInt64, configInfo: [AnyHashable : Any]) {
-        logger.debug("XPCManager received daemonDidUpdateConfig: GUID 0x\(String(format: "%llX", guid))")
-        deviceConfigUpdate.send((guid: guid, configInfo: configInfo))
-    }
-
-    func daemonDidSendLog(sender: String, level: Int32, message: String) {
-        // Use bounds check and direct access instead of safe subscript + optional chaining
-        let mappedLevel: Logger.Level
-        if level >= 0 && level < Logger.Level.allCases.count {
-            mappedLevel = Logger.Level.allCases[Int(level)]
-        } else {
-            logger.warning("Received log message with invalid level: \(level)")
-            mappedLevel = .debug
+    private func validProxy() -> FWADaemonControlProtocol? {
+        guard let conn = xpcConnection else { return nil }
+        let err: @Sendable (Error) -> Void = { [weak self] _ in
+            Task { await self?.handleDisconnect(reason: "proxy error") }
         }
-        logger.trace("XPCManager received log from \(sender): \(message)")
-        logMessageReceived.send((sender: sender, level: mappedLevel, message: message))
+        return conn
+            .remoteObjectProxyWithErrorHandler(err)
+            as? FWADaemonControlProtocol
     }
 
-    // Called by XPCNotificationHandler when driver status changes
-    func daemonDidUpdateDriverConnectionStatus(isConnected: Bool) {
-        logger.info("🔌 Driver connection status changed: \(isConnected)")
-        driverConnectionStatus.send(isConnected)
+    // MARK: — Event dispatchers
+
+    fileprivate func dispatchStatus(_ status: DeviceStatus) {
+        cont.deviceStatus.yield(status)
     }
 
-    func handleSetSampleRateReply(guid: UInt64, success: Bool) {
-        logger.info("Daemon relayed GUI reply for SetSampleRate GUID 0x\(String(format: "%llX", guid)): Success=\(success)")
-        // For logging/state tracking if needed
+    fileprivate func dispatchConfig(_ config: DeviceConfig) {
+        cont.deviceConfig.yield(config)
+    }
+
+    fileprivate func dispatchDriverStatus(_ ok: Bool) {
+        cont.driverStatus.yield(ok)
     }
 }
 
-// MARK: - XPC Notification Handler Delegate
-private class XPCNotificationHandler: NSObject, FWAClientNotificationProtocol, NSXPCListenerDelegate {
-    weak var xpcManager: XPCManager?
-    weak var hardwareInterface: HardwareInterface?
-    private let logger = AppLoggers.xpcHandler
+// MARK: - XPCNotificationHandler
 
-    init(xpcManager: XPCManager) {
-        self.xpcManager = xpcManager
+private final class XPCNotificationHandler: NSObject,
+                                           NSXPCListenerDelegate,
+                                           FWAClientNotificationProtocol,
+                                           @unchecked Sendable
+{
+    private let logger = AppLoggers.xpcManager
+    private unowned let manager: XPCManager
+    init(manager: XPCManager) {
+        self.manager = manager
         super.init()
     }
 
-    // Method to assign the hardware interface dependency
-    func assignHardwareInterface(_ interface: HardwareInterface) {
-        self.hardwareInterface = interface
-    }
-
-    // MARK: - NSXPCListenerDelegate
-    func listener(_ listener: NSXPCListener, shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
-        logger.info("XPCNotificationHandler listener accepting connection from Daemon...")
-        newConnection.remoteObjectInterface = NSXPCInterface(with: FWADaemonControlProtocol.self)
-        newConnection.exportedInterface = NSXPCInterface(with: FWAClientNotificationProtocol.self)
-        newConnection.exportedObject = self
-        newConnection.interruptionHandler = { [weak self] in
-            self?.logger.warning("Daemon connection to our listener interrupted.")
-        }
-        newConnection.invalidationHandler = { [weak self] in
-            self?.logger.warning("Daemon connection to our listener invalidated.")
-        }
-        newConnection.resume()
-        logger.info("Daemon connection to our listener resumed.")
-        return true
-    }
-
-    // MARK: - FWAClientNotificationProtocol Implementation
-    func daemonDidUpdateDeviceConnectionStatus(_ guid: UInt64, isConnected: Bool, isInitialized: Bool, deviceName: String?, vendorName: String?) {
-        logger.debug("[Callback] daemonDidUpdateDeviceConnectionStatus: GUID 0x\(String(format: "%llX", guid))")
-        Task { @MainActor in
-            self.xpcManager?.daemonDidUpdateStatus(guid: guid, isConnected: isConnected, isInitialized: isInitialized, name: deviceName, vendor: vendorName)
+    func daemonDidUpdateDeviceConnectionStatus(_ guid: UInt64,
+                                               isConnected: Bool,
+                                               isInitialized: Bool,
+                                               deviceName: String?,
+                                               vendorName: String?)
+    {
+        let status = DeviceStatus(
+            guid: guid,
+            isConnected: isConnected,
+            isInitialized: isInitialized,
+            name: deviceName,
+            vendor: vendorName
+        )
+        let mgr = manager
+        Task.detached { [mgr, status] in
+            await mgr.dispatchStatus(status)
         }
     }
 
-    func daemonDidUpdateDeviceConfiguration(_ guid: UInt64, configInfo: [AnyHashable : Any]) {
-        logger.debug("[Callback] daemonDidUpdateDeviceConfiguration: GUID 0x\(String(format: "%llX", guid))")
-        Task { @MainActor in
-            self.xpcManager?.daemonDidUpdateConfig(guid: guid, configInfo: configInfo)
+    func daemonDidUpdateDeviceConfiguration(_ guid: UInt64,
+                                            configInfo: [AnyHashable: Any])
+    {
+        let config = DeviceConfig(
+            guid: guid,
+            info: InfoDictionary(configInfo)
+        )
+        let mgr = manager
+        Task.detached { [mgr, config] in
+            await mgr.dispatchConfig(config)
         }
     }
 
-    // Renamed to match Swift import convention
-    func didReceiveLogMessage(from senderID: String, level: Int32, message: String) {
-        Task { @MainActor in
-            self.xpcManager?.daemonDidSendLog(sender: senderID, level: level, message: message)
+    func didReceiveLogMessage(from senderID: String,
+                              level: Int32,
+                              message: String)
+    {
+        logger.critical("****** XPCNotificationHandler::didReceiveLogMessage CALLED! Sender: \(senderID), Level: \(level) ******")
+
+        // Map the integer level to swift-log Level
+        let mappedLevel: Logger.Level = Logger.Level.allCases.indices.contains(Int(level))
+            ? Logger.Level.allCases[Int(level)]
+            : .debug // Default to debug if level is out of range
+
+        // Create a UILogEntry
+        // Note: We don't have file/function/line info from the daemon via XPC
+        let entry = UILogEntry(
+            level: mappedLevel,
+            message: .init(stringLiteral: message), // Create Logger.Message
+            metadata: nil, // No metadata forwarded via XPC currently
+            source: senderID, // Use the senderID from XPC as the source
+            file: "#XPC#",     // Placeholder
+            function: "#\(senderID)#", // Placeholder indicating source
+            line: 0           // Placeholder
+        )
+
+        logger.trace("Received log from XPC (\(senderID), \(mappedLevel)): \(message)")
+
+        logger.debug("Broadcasting UILogEntry from XPC: \(entry.id)") // <-- ADD DEBUG LOG
+        Task.detached {
+            await LogBroadcaster.shared.broadcast(entry: entry)
         }
     }
 
-    func driverConnectionStatusDidChange(_ isConnected: Bool) {
-        logger.debug("[Callback] driverConnectionStatusDidChange: \(isConnected)")
-        Task { @MainActor in
-            self.xpcManager?.daemonDidUpdateDriverConnectionStatus(isConnected: isConnected)
+    func performSetNominalSampleRate(_ guid: UInt64,
+                                     rate: Double,
+                                     withReply reply: @escaping (Bool) -> Void)
+    {
+        let safe = ReplyWrapper(reply)
+        let mgr = manager
+        Task.detached {
+            let ok = await mgr.engineService
+                        .setSampleRate(guid: guid, rate: rate)
+            safe.call(ok)
         }
     }
 
-    // --- Control Requests FORWARDED to GUI Client ---
-    func performSetNominalSampleRate(_ guid: UInt64, rate: Double, withReply reply: @escaping (Bool) -> Void) {
-        logger.info("[Callback] performSetNominalSampleRate: GUID 0x\(String(format: "%llX", guid)), Rate: \(rate)")
-        guard let hardwareInterface = self.hardwareInterface else { reply(false); return }
-        Task {
-            let success = await hardwareInterface.performHardwareSampleRateSet(guid: guid, rate: rate)
-            reply(success)
+    func performSetClockSource(_ guid: UInt64,
+                               clockSourceID: UInt32,
+                               withReply reply: @escaping (Bool) -> Void)
+    {
+        let safe = ReplyWrapper(reply)
+        let mgr = manager
+        Task.detached {
+            let ok = await mgr.engineService
+                        .setClockSource(guid: guid, sourceID: clockSourceID)
+            safe.call(ok)
         }
     }
 
-    func performSetClockSource(_ guid: UInt64, clockSourceID: UInt32, withReply reply: @escaping (Bool) -> Void) {
-        logger.info("[Callback] performSetClockSource: GUID 0x\(String(format: "%llX", guid)), ID: \(clockSourceID)")
-        guard let hardwareInterface = self.hardwareInterface else { reply(false); return }
-        Task {
-            let success = await hardwareInterface.performHardwareClockSourceSet(guid: guid, sourceID: clockSourceID)
-            reply(success)
+    func performSetMasterVolumeScalar(_ guid: UInt64,
+                                      scope: UInt32,
+                                      element: UInt32,
+                                      scalarValue: Float,
+                                      withReply reply: @escaping (Bool) -> Void)
+    {
+        let safe = ReplyWrapper(reply)
+        let mgr = manager
+        Task.detached {
+            let ok = await mgr.engineService
+                        .setVolume(
+                            guid: guid,
+                            scope: scope,
+                            element: element,
+                            value: scalarValue
+                        )
+            safe.call(ok)
         }
     }
 
-    func performSetMasterVolumeScalar(_ guid: UInt64, scope: UInt32, element: UInt32, scalarValue: Float, withReply reply: @escaping (Bool) -> Void) {
-        logger.info("[Callback] performSetMasterVolumeScalar: GUID 0x\(String(format: "%llX", guid)) Val: \(scalarValue)")
-        guard let hardwareInterface = self.hardwareInterface else { reply(false); return }
-        Task {
-            let success = await hardwareInterface.performHardwareVolumeSet(guid: guid, scope: scope, element: element, value: scalarValue)
-            reply(success)
+    func performSetMasterMute(_ guid: UInt64,
+                              scope: UInt32,
+                              element: UInt32,
+                              muteState: Bool,
+                              withReply reply: @escaping (Bool) -> Void)
+    {
+        let safe = ReplyWrapper(reply)
+        let mgr = manager
+        Task.detached {
+            let ok = await mgr.engineService
+                        .setMute(
+                            guid: guid,
+                            scope: scope,
+                            element: element,
+                            state: muteState
+                        )
+            safe.call(ok)
         }
     }
 
-    func performSetMasterMute(_ guid: UInt64, scope: UInt32, element: UInt32, muteState: Bool, withReply reply: @escaping (Bool) -> Void) {
-        logger.info("[Callback] performSetMasterMute: GUID 0x\(String(format: "%llX", guid)) State: \(muteState)")
-        guard let hardwareInterface = self.hardwareInterface else { reply(false); return }
-        Task {
-            let success = await hardwareInterface.performHardwareMuteSet(guid: guid, scope: scope, element: element, state: muteState)
-            reply(success)
-        }
-    }
-
-    func performStartIO(_ guid: UInt64, withReply reply: @escaping (Bool) -> Void) {
-        logger.info("[Callback] performStartIO: GUID 0x\(String(format: "%llX", guid))")
-        guard let hardwareInterface = self.hardwareInterface else { reply(false); return }
-        Task {
-            let success = await hardwareInterface.performHardwareStartIO(guid: guid)
-            reply(success)
+    func performStartIO(_ guid: UInt64,
+                        withReply reply: @escaping (Bool) -> Void)
+    {
+        let safe = ReplyWrapper(reply)
+        let mgr = manager
+        Task.detached {
+            let ok = await mgr.engineService
+                        .startIO(guid: guid)
+            safe.call(ok)
         }
     }
 
     func performStopIO(_ guid: UInt64) {
-        logger.info("[Callback] performStopIO: GUID 0x\(String(format: "%llX", guid))")
-        guard let hardwareInterface = self.hardwareInterface else { return }
-        Task {
-            await hardwareInterface.performHardwareStopIO(guid: guid)
+        let mgr = manager
+        Task.detached {
+            await mgr.engineService
+                .stopIO(guid: guid)
+        }
+    }
+
+    func driverConnectionStatusDidChange(_ isConnected: Bool) {
+        logger.info("Received driverConnectionStatusDidChange: \(isConnected)")
+        let mgr = manager // Capture manager reference
+        // Call the manager's dispatcher asynchronously
+        Task.detached { [mgr] in // Use Task.detached for fire-and-forget into the actor
+            await mgr.dispatchDriverStatus(isConnected)
         }
     }
 }

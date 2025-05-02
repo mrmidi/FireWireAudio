@@ -21,7 +21,8 @@ extension Logger.Level {
 
 
 struct LogConsoleView: View {
-    @EnvironmentObject var manager: DeviceManager
+    @EnvironmentObject var uiManager: UIManager
+    private var logStore: LogStore? { uiManager.logStore }
     private let logger = AppLoggers.app
     @State private var selectedMinLevel: Logger.Level = .info
     @State private var searchText: String = ""
@@ -29,8 +30,8 @@ struct LogConsoleView: View {
     @State private var showExportSheet = false
     @State private var logExportContent: String = ""
 
-    var filteredLogs: [UILogEntry] {
-        manager.uiLogEntries.filterBy { entry in
+    var filteredLogs: Deque<UILogEntry> {
+        (logStore?.uiLogEntries ?? []).filter { entry in
             let levelMatch = entry.level >= selectedMinLevel
             let searchMatch = searchText.isEmpty
                           || entry.displayMessage.localizedCaseInsensitiveContains(searchText)
@@ -62,7 +63,7 @@ struct LogConsoleView: View {
         }
         .fileExporter(
              isPresented: $showExportSheet,
-             document: LogDocument(content: logExportContent),
+             document: LogDocument(content: logStore?.exportLogs(filtered: Array(filteredLogs)) ?? ""),
              contentType: .plainText,
              defaultFilename: "fwa-control-log-\(formattedTimestamp()).txt"
          ) { result in
@@ -103,7 +104,7 @@ struct LogConsoleView: View {
 
             Button {
                 logger.info("Export Logs button clicked. Preparing content...")
-                logExportContent = manager.exportLogs(filtered: filteredLogs)
+                logExportContent = logStore?.exportLogs(filtered: filteredLogs) ?? ""
                 if logExportContent.isEmpty {
                     logger.warning("No log entries to export.")
                 } else {
@@ -117,12 +118,12 @@ struct LogConsoleView: View {
 
             Button(role: .destructive) {
                 logger.info("Clear Logs button clicked.")
-                manager.clearLogs()
+                logStore?.clearLogs()
             } label: {
                 Label("Clear", systemImage: "trash")
             }
             .help("Clear all log entries")
-            .disabled(manager.uiLogEntries.isEmpty)
+            .disabled(logStore?.uiLogEntries.isEmpty ?? true)
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
@@ -196,34 +197,26 @@ struct LogDocument: FileDocument {
     }
 }
 
-private extension Sequence {
-    /// A non-ambiguous version of `filter(_:)` that always uses the
-    /// classic `(Element) -> Bool` overload.
-    func filterBy(_ isIncluded: (Element) -> Bool) -> [Element] {
-        filter(isIncluded)
-    }
-}
-
 // MARK: - Preview
 struct LogConsoleView_Previews: PreviewProvider {
     static var previews: some View {
-        // Create a preview manager and manually add some UILogEntry items
-        let previewManager = DeviceManager()
-        previewManager.uiLogEntries = [
-            UILogEntry(level: .info, message: "Engine Starting...", metadata: nil, source: "Manager", file: #file, function: #function, line: #line),
-            UILogEntry(level: .debug, message: "Callback registered.", metadata: nil, source: "Manager", file: #file, function: #function, line: #line),
-            UILogEntry(level: .warning, message: "Device X reported low voltage.", metadata: nil, source: "C_API", file: #file, function: #function, line: #line),
-            UILogEntry(level: .trace, message: "Polling device Y status.", metadata: nil, source: "Manager", file: #file, function: #function, line: #line),
-            UILogEntry(level: .error, message: "Failed to decode response from device Z.", metadata: nil, source: "Manager", file: #file, function: #function, line: #line),
-            UILogEntry(level: .critical, message: "C API Engine crashed unexpectedly!", metadata: nil, source: "C_API", file: #file, function: #function, line: #line),
+        // 1. Create LogStore and add dummy data
+        let previewLogStore = LogStore()
+        previewLogStore.uiLogEntries = [
+            UILogEntry(level: .info, message: "Engine Starting...", metadata: nil, source: "Preview", file: #file, function: #function, line: #line),
+            UILogEntry(level: .debug, message: "Callback registered.", metadata: nil, source: "Preview", file: #file, function: #function, line: #line),
+            UILogEntry(level: .warning, message: "Device X reported low voltage.", metadata: nil, source: "Preview", file: #file, function: #function, line: #line),
+            UILogEntry(level: .info, message: "Initialization complete.", metadata: nil, source: "App", file: #file, function: #function, line: #line),
         ]
-        for i in 1...20 {
-             previewManager.uiLogEntries.append(UILogEntry(level: .trace, message: "Background task \(i) completed.", metadata: nil, source: "Manager", file: #file, function: #function, line: #line))
-        }
-         previewManager.uiLogEntries.append(UILogEntry(level: .info, message: "Initialization complete.", metadata: nil, source: "App", file: #file, function: #function, line: #line))
-
+        // 2. Create UIManager, injecting the LogStore (and nil for others)
+        let previewUIManager = UIManager(
+            engineService: nil,
+            systemServicesManager: nil,
+            logStore: previewLogStore
+        )
+        // 3. Provide UIManager to the view
         return LogConsoleView()
-            .environmentObject(previewManager)
+            .environmentObject(previewUIManager)
             .frame(height: 400)
     }
 }

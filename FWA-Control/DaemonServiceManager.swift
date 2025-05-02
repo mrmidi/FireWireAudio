@@ -1,7 +1,7 @@
 // === FWA-Control/DaemonServiceManager.swift ===
 
 import Foundation
-import ServiceManagement
+@preconcurrency import ServiceManagement // <-- ADD @preconcurrency HERE
 import Combine // Needed for @Published and Timer
 import Logging
 import AppKit // For NSApplication.isActive and Timer RunLoop mode
@@ -18,8 +18,6 @@ class DaemonServiceManager: ObservableObject {
     private let logger = Logger(label: "net.mrmidi.fwa-control.DaemonServiceManager")
     private let serviceIdentifier = "net.mrmidi.FWADaemon" // Define service name once
     private let plistName = "FWADaemon.plist"           // Define plist name once
-    private var statusCheckTimer: Timer?
-    private var wasInBackground: Bool = false // Track app background state
     private var xpcIsConnected: Bool = false // Track XPC connection state locally
 
     // Helper for SMAppService
@@ -29,7 +27,6 @@ class DaemonServiceManager: ObservableObject {
 
     init() {
         logger.info("DaemonServiceManager initialized.")
-        setupAppLifecycleObserver()
         // Initial check
         checkStatus(isInitialCheck: true)
     }
@@ -44,39 +41,39 @@ class DaemonServiceManager: ObservableObject {
          }
     }
 
-    /// Checks the daemon status and updates published properties.
-    /// Also determines if the connection timer needs to run.
+    /// Checks the daemon status, updates published properties, and signals if XPC connection is needed.
     func checkStatus(isInitialCheck: Bool = false) {
-        let currentSMStatus = daemonService.status
+        let currentSMStatus = daemonService.status // Check synchronously
         logger.trace("Checking daemon SMAppService status: \(currentSMStatus)")
 
-        // Update internal state only if changed or it's the initial check
-        if currentSMStatus != self.status || isInitialCheck {
+        var statusChanged = false
+        var promptChanged = false
+
+        // Update internal state only if changed
+        if currentSMStatus != self.status {
             logger.info("Daemon SMAppService status changed: \(currentSMStatus) (was \(self.status))")
             self.status = currentSMStatus
-            // Update the simplified UI prompt flag
-            let shouldPrompt = (currentSMStatus == .requiresApproval || (currentSMStatus == .notRegistered && !isInitialCheck)) // Prompt if needs approval, or if not registered *after* initial launch
-            if shouldPrompt != self.requiresUserAction {
-                 logger.info("Daemon requiresUserAction state changing to: \(shouldPrompt)")
-                 self.requiresUserAction = shouldPrompt
-            }
+            statusChanged = true
         }
 
-        // --- Connection / Timer Logic ---
-        if currentSMStatus == .enabled {
-            if !self.xpcIsConnected {
-                logger.info("Daemon is enabled, XPC not connected. Signaling connection needed...")
-                // Signal DeviceManager via publisher that it should attempt connection
-                connectionNeededPublisher.send()
-            }
-            // If enabled (and XPC is connected or connection attempt will be signaled), stop polling.
-            stopStatusTimer()
-        } else {
-            // If not enabled, make sure the timer is running to check again later.
-            startStatusTimer()
+        // Update the simplified UI prompt flag based on the *new* status
+        let shouldPrompt = (currentSMStatus == .requiresApproval || (currentSMStatus == .notRegistered && !isInitialCheck))
+        if shouldPrompt != self.requiresUserAction {
+             logger.info("Daemon requiresUserAction state changing to: \(shouldPrompt)")
+             self.requiresUserAction = shouldPrompt
+             promptChanged = true
         }
+
+        // --- Connection Logic ---
+        // If the daemon is enabled but XPC isn't connected yet, signal that a connection attempt is needed.
+        if currentSMStatus == .enabled && !self.xpcIsConnected {
+            logger.info("Daemon is enabled, XPC not connected. Signaling connection needed...")
+            connectionNeededPublisher.send()
+        }
+
+        // --- REMOVE Timer Logic ---
+        // No calls to start/stopStatusTimer needed
     }
-
 
     func registerDaemon() async -> Bool {
         logger.info("Attempting to register daemon service (\(plistName))...")
@@ -108,52 +105,6 @@ class DaemonServiceManager: ObservableObject {
              checkStatus() // Update status
              return false
          }
-    }
-
-
-    private func startStatusTimer() {
-        guard statusCheckTimer == nil else { return } // Already running
-        // Only start timer if daemon isn't enabled and XPC isn't connected
-        guard status != .enabled || !xpcIsConnected else {
-             logger.debug("Timer start requested but status is '\(status)' and XPC is \(xpcIsConnected ? "connected" : "disconnected"). Timer not needed.")
-             return
-        }
-
-        logger.info("Starting daemon status check timer (interval: 5s).")
-        statusCheckTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            // Timer runs on main thread, ensure self is valid and perform check
-            guard let self = self else { return }
-            // Only check if the app is active to avoid unnecessary work
-            if NSApplication.shared.isActive {
-                self.checkStatus()
-            } else if !self.wasInBackground { // Log inactivity only once per background transition
-                self.logger.trace("App inactive, skipping periodic daemon status check.")
-            }
-        }
-        // Add to common modes to run during UI tracking
-        RunLoop.current.add(statusCheckTimer!, forMode: RunLoopMode.commonModes)
-    }
-
-    private func stopStatusTimer() {
-        statusCheckTimer?.invalidate()
-        statusCheckTimer = nil
-    }
-
-    private func setupAppLifecycleObserver() {
-        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            guard let self = self else { return }
-            self.logger.debug("App became active.")
-            self.wasInBackground = false
-            // Trigger an immediate check upon activation if timer *would* be running or status unknown
-            if self.statusCheckTimer != nil || self.status != .enabled {
-                self.logger.info("App activated, performing immediate daemon status check.")
-                self.checkStatus()
-            }
-        }
-        NotificationCenter.default.addObserver(forName: NSApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.logger.debug("App resigning active.")
-            self?.wasInBackground = true
-        }
     }
 
     deinit {

@@ -19,13 +19,20 @@ public:
     GuiCallbackSink& operator=(const GuiCallbackSink&) = delete;
 protected:
     void sink_it_(const spdlog::details::log_msg &msg) override {
-        // Use the stored daemon pointer (do not call sharedService)
-        FWADaemon *daemon = daemon_instance_;
-        if (!daemon) {
-            fprintf(stderr, "[GuiCallbackSink] Error: FWADaemon instance pointer is nil!\n");
+        // Create a strong reference from the weak one within the method scope
+        FWADaemon *strongDaemon = daemon_instance_;
+        if (!strongDaemon) { // Now this check is fully safe
+            // Optionally log to stderr ONLY if daemon is gone, avoid infinite loop
+            static bool warned = false;
+            if (!warned) {
+                fprintf(stderr, "[GuiCallbackSink] Warning: FWADaemon instance weak pointer is nil. Logs cannot be forwarded.\n");
+                warned = true;
+            }
             return;
         }
-        if (![daemon hasActiveGuiClients]) {
+
+        // Use strongDaemon for the rest of the method
+        if (![strongDaemon hasActiveGuiClients]) {
             return;
         }
         spdlog::memory_buf_t formatted_buf;
@@ -50,7 +57,7 @@ protected:
                                                             length:formatted_buf.size()
                                                           encoding:NSUTF8StringEncoding];
             if (logMessage) {
-                [daemon forwardLogMessageToClients:@"FWADaemon" level:xpcLevel message:logMessage];
+                [strongDaemon forwardLogMessageToClients:@"FWADaemon" level:xpcLevel message:logMessage];
             } else {
                 fprintf(stderr, "[GuiCallbackSink] Failed to create NSString from log buffer (encoding issue?).\n");
             }
@@ -58,7 +65,7 @@ protected:
     }
     void flush_() override {}
 private:
-    __unsafe_unretained FWADaemon* daemon_instance_; // Weak reference
+    __weak FWADaemon* daemon_instance_; // Weak reference
 };
 
 using gui_callback_sink_mt = GuiCallbackSink<std::mutex>;

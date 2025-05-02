@@ -1,0 +1,21 @@
+# ninja log v6
+1	101	1746190849308088418	catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-mkdir	97af7da07d4722f
+1	101	1746190849308088418	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/catch2-subbuild/catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-mkdir	97af7da07d4722f
+102	5869	1746190855077551780	catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-download	c70ffdde3b31a14
+102	5869	1746190855077551780	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/catch2-subbuild/catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-download	c70ffdde3b31a14
+5870	6113	1746190855080678114	catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-update	ac40824497dbb130
+5870	6113	1746190855080678114	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/catch2-subbuild/catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-update	ac40824497dbb130
+6113	6166	1746190855374777847	catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-patch	b527b6888721fc2
+6113	6166	1746190855374777847	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/catch2-subbuild/catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-patch	b527b6888721fc2
+6166	6212	1746190855421227107	catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-configure	9e53255b4df1066d
+6166	6212	1746190855421227107	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/catch2-subbuild/catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-configure	9e53255b4df1066d
+6212	6249	1746190855458384366	catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-build	9bed401b9ad2b27e
+6212	6249	1746190855458384366	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/catch2-subbuild/catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-build	9bed401b9ad2b27e
+6249	6288	1746190855497899823	catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-install	aeb6dc782b3d7d43
+6249	6288	1746190855497899823	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/catch2-subbuild/catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-install	aeb6dc782b3d7d43
+6288	6325	1746190855535019748	catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-test	b2a9f0ed007d394b
+6288	6325	1746190855535019748	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/catch2-subbuild/catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-test	b2a9f0ed007d394b
+6325	6377	1746190855586861582	CMakeFiles/catch2-populate-complete	ebfa21e2a7b2827f
+6325	6377	1746190855586861582	catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-done	ebfa21e2a7b2827f
+6325	6377	1746190855586861582	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/catch2-subbuild/CMakeFiles/catch2-populate-complete	ebfa21e2a7b2827f
+6325	6377	1746190855586861582	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/catch2-subbuild/catch2-populate-prefix/src/catch2-populate-stamp/catch2-populate-done	ebfa21e2a7b2827f

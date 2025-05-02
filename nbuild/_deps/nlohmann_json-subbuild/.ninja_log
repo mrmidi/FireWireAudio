@@ -1,0 +1,21 @@
+# ninja log v6
+1	71	1746190826053667681	nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-mkdir	a8e4385d062a1366
+1	71	1746190826053667681	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/nlohmann_json-subbuild/nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-mkdir	a8e4385d062a1366
+72	19708	1746190845691504182	nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-download	c355f187f9727d46
+72	19708	1746190845691504182	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/nlohmann_json-subbuild/nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-download	c355f187f9727d46
+19709	19967	1746190845694086384	nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-update	def5f73a100ddaba
+19709	19967	1746190845694086384	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/nlohmann_json-subbuild/nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-update	def5f73a100ddaba
+19967	20046	1746190846024421904	nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-patch	8dfa6e8e0c886437
+19967	20046	1746190846024421904	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/nlohmann_json-subbuild/nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-patch	8dfa6e8e0c886437
+20046	20221	1746190846203801442	nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-configure	a5a518330531eece
+20046	20221	1746190846203801442	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/nlohmann_json-subbuild/nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-configure	a5a518330531eece
+20222	20347	1746190846330275881	nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-build	bca115eadd626f68
+20222	20347	1746190846330275881	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/nlohmann_json-subbuild/nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-build	bca115eadd626f68
+20347	20407	1746190846389988198	nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-install	1fa54a51d4c373c9
+20347	20407	1746190846389988198	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/nlohmann_json-subbuild/nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-install	1fa54a51d4c373c9
+20407	20565	1746190846547715481	nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-test	b1573e011d42d11f
+20407	20565	1746190846547715481	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/nlohmann_json-subbuild/nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-test	b1573e011d42d11f
+20565	20797	1746190846780313872	CMakeFiles/nlohmann_json-populate-complete	d9350eb51cce3547
+20565	20797	1746190846780313872	nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-done	d9350eb51cce3547
+20565	20797	1746190846780313872	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/nlohmann_json-subbuild/CMakeFiles/nlohmann_json-populate-complete	d9350eb51cce3547
+20565	20797	1746190846780313872	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/nlohmann_json-subbuild/nlohmann_json-populate-prefix/src/nlohmann_json-populate-stamp/nlohmann_json-populate-done	d9350eb51cce3547

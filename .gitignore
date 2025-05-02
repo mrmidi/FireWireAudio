@@ -1,5 +1,6 @@
 # Ignore build directories
 build/
+nbuild/
 cmake/
 build-*/
 cmake-build-*/

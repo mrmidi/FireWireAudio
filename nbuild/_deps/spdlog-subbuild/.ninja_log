@@ -1,0 +1,21 @@
+# ninja log v6
+0	52	1746190820698023149	spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-mkdir	7ccab7168fc3d963
+0	52	1746190820698023149	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-mkdir	7ccab7168fc3d963
+52	3121	1746190823765866127	spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-download	d4c8d88a16ea5fb4
+52	3121	1746190823765866127	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-download	d4c8d88a16ea5fb4
+3121	3265	1746190823768232492	spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-update	c50e945f34ca24d6
+3121	3265	1746190823768232492	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-update	c50e945f34ca24d6
+3265	3314	1746190823960181036	spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-patch	abb48ef530acff32
+3265	3314	1746190823960181036	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-patch	abb48ef530acff32
+3314	3386	1746190824031161715	spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-configure	ee816e60e555102a
+3314	3386	1746190824031161715	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-configure	ee816e60e555102a
+3386	3477	1746190824120088390	spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-build	999e3fcad3156496
+3386	3477	1746190824120088390	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-build	999e3fcad3156496
+3478	3530	1746190824175490148	spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-install	4eec26c4909947
+3478	3530	1746190824175490148	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-install	4eec26c4909947
+3530	3589	1746190824234936462	spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-test	91c598c4178dc8a4
+3530	3589	1746190824234936462	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-test	91c598c4178dc8a4
+3589	3660	1746190824305549220	CMakeFiles/spdlog-populate-complete	1f069fd1117043f9
+3589	3660	1746190824305549220	spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-done	1f069fd1117043f9
+3589	3660	1746190824305549220	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/spdlog-subbuild/CMakeFiles/spdlog-populate-complete	1f069fd1117043f9
+3589	3660	1746190824305549220	/Users/mrmidi/DEV/firewire-audio-daemon/nbuild/_deps/spdlog-subbuild/spdlog-populate-prefix/src/spdlog-populate-stamp/spdlog-populate-done	1f069fd1117043f9

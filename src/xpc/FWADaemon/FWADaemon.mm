@@ -20,6 +20,9 @@
 // +++ ADDED: Define the shared memory name +++
 static const char* kSharedMemoryName = "/fwa_daemon_shm_v1";
 
+static const void * const kInternalQueueKey = &kInternalQueueKey;
+static void * const kInternalQueueContext = (void *)&kInternalQueueContext; // Or just NULL if you prefer
+
 // Simple class to hold client info (Keep this definition)
 @interface ClientInfo : NSObject
 @property (nonatomic, copy) NSString *clientID;
@@ -62,6 +65,13 @@ static const char* kSharedMemoryName = "/fwa_daemon_shm_v1";
         // +++ Phase 3 spdlog Initialization (OsLog + GUI Sinks) +++
         try {
             // Create the sinks (thread-safe)
+            self.internalQueue = dispatch_queue_create("net.mrmidi.FWADaemon.internalQueue", DISPATCH_QUEUE_SERIAL);
+            // +++ ADD THIS LINE +++
+            dispatch_queue_set_specific(self.internalQueue, kInternalQueueKey, kInternalQueueContext, NULL);
+            // ++++++++++++++++++++++
+            self.connectedClients = [NSMutableDictionary dictionary];
+            _driverIsConnected = NO;
+            self.sharedMemoryName = @(kSharedMemoryName);
             auto os_sink = std::make_shared<os_log_sink_mt>(OS_LOG_DEFAULT);
             auto gui_sink = std::make_shared<gui_callback_sink_mt>(self);
             #ifdef DEBUG
@@ -151,16 +161,23 @@ static const char* kSharedMemoryName = "/fwa_daemon_shm_v1";
 //     return [self.mutableClients copy];
 // }
 
-// REMOVE OBSOLETE METHODS like sendAudioBuffer, getStreamFormat, handshake, registerClientWithEndpoint
-
 // Helper for safe queue access
 - (void)performOnInternalQueueSync:(dispatch_block_t)block {
     // Ensure queue exists before using it
-    if (self.internalQueue) {
-        dispatch_sync(self.internalQueue, block);
-    } else {
-        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] Internal queue is nil in performOnInternalQueueSync!");
+    if (!self.internalQueue) {
+         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] Internal queue is nil in performOnInternalQueueSync!");
+         return; // Or handle error differently
     }
+
+    // +++ ADDED CHECK +++
+    if (dispatch_get_specific(kInternalQueueKey) == kInternalQueueContext) {
+        // Already running on the internal queue, execute block directly
+        block();
+    } else {
+        // Not running on internal queue, dispatch synchronously
+        dispatch_sync(self.internalQueue, block);
+    }
+    // +++++++++++++++++++++
 }
 - (void)performOnInternalQueueAsync:(dispatch_block_t)block {
      if (self.internalQueue) {

@@ -1,22 +1,22 @@
 import SwiftUI
 
 struct StatusBarView: View {
-    @EnvironmentObject var manager: DeviceManager
+    @EnvironmentObject var uiManager: UIManager
 
     var body: some View {
         HStack(spacing: 12) {
             Spacer()
             DeviceStatusIndicatorView(
                 statusTypeLabel: "Daemon",
-                systemImageName: manager.isDaemonConnected ? "bolt.fill" : "bolt.slash.fill",
-                isConnected: manager.isDaemonConnected,
-                helpText: manager.isDaemonConnected ? "Daemon connection active" : "Daemon connection inactive"
+                systemImageName: uiManager.isDaemonConnected ? "bolt.fill" : "bolt.slash.fill",
+                isConnected: uiManager.isDaemonConnected,
+                helpText: uiManager.isDaemonConnected ? "Daemon connection active" : "Daemon connection inactive"
             )
             DeviceStatusIndicatorView(
                 statusTypeLabel: "Driver",
-                systemImageName: manager.isDriverConnected ? "puzzlepiece.extension.fill" : "puzzlepiece.extension",
-                isConnected: manager.isDriverConnected,
-                helpText: manager.isDriverConnected ? "Driver connection active" : "Driver connection inactive or driver not installed"
+                systemImageName: uiManager.isDriverConnected ? "puzzlepiece.extension.fill" : "puzzlepiece.extension",
+                isConnected: uiManager.isDriverConnected,
+                helpText: uiManager.isDriverConnected ? "Driver connection active" : "Driver connection inactive or driver not installed"
             )
         }
         .padding(.horizontal)
@@ -26,29 +26,56 @@ struct StatusBarView: View {
 }
 
 struct StatusBarView_Previews: PreviewProvider {
-  static let connectedManager: DeviceManager = {
-    let m = DeviceManager()
-    m.isDaemonConnected = true
-    m.isDriverConnected = true
-    return m
-  }()
 
-  static let disconnectedManager: DeviceManager = {
-    let m = DeviceManager()
-    m.isDaemonConnected = false
-    m.isDriverConnected = false
-    return m
-  }()
-
-  static var previews: some View {
-    VStack(spacing: 12) {
-      StatusBarView()
-        .environmentObject(connectedManager)
-      Divider()
-      StatusBarView()
-        .environmentObject(disconnectedManager)
+    @MainActor
+    static func createPreviewUIManager() -> UIManager {
+        // 1. Attempt to create EngineService (failable init)
+        guard let engine = EngineService() else {
+            print("PREVIEW WARNING: EngineService() failed in StatusBarView preview.")
+            return UIManager(engineService: nil, systemServicesManager: nil, logStore: nil)
+        }
+        // 2. Create @MainActor dependencies
+        let permManager = PermissionManager()
+        let daemonManager = DaemonServiceManager()
+        // 3. Create SystemServicesManager with all dependencies
+        let systemServices = SystemServicesManager(
+            engineService: engine,
+            permissionManager: permManager,
+            daemonServiceManager: daemonManager
+        )
+        // 4. Create LogStore
+        let logStore = LogStore()
+        // 5. Create UIManager with fully initialized services
+        return UIManager(
+            engineService: engine,
+            systemServicesManager: systemServices,
+            logStore: logStore
+        )
     }
-    .padding()
-    .frame(width: 200)
-  }
+
+    static let connectedManager: UIManager = {
+        let m = createPreviewUIManager()
+        m.isDaemonConnected = true
+        m.isDriverConnected = true
+        return m
+    }()
+
+    static let disconnectedManager: UIManager = {
+        let m = createPreviewUIManager()
+        m.isDaemonConnected = false
+        m.isDriverConnected = false
+        return m
+    }()
+
+    static var previews: some View {
+        VStack(spacing: 12) {
+            StatusBarView()
+                .environmentObject(connectedManager)
+            Divider()
+            StatusBarView()
+                .environmentObject(disconnectedManager)
+        }
+        .padding()
+        .frame(width: 200)
+    }
 }

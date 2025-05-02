@@ -1,14 +1,14 @@
 import SwiftUI
 
 struct AVCTabView: View {
-  @EnvironmentObject var manager: DeviceManager
+  @EnvironmentObject var uiManager: UIManager
   @State private var guid: UInt64?
   @State private var hexCommand: String = ""
   @State private var responseHex: String = ""
   @State private var errorMessage: String?
 
   var sortedDevices: [DeviceInfo] {
-    manager.devices.values.sorted { $0.deviceName < $1.deviceName }
+    uiManager.devices.values.sorted { $0.deviceName < $1.deviceName }
   }
 
   var body: some View {
@@ -27,7 +27,9 @@ struct AVCTabView: View {
         TextField("Hex-bytes (e.g. 10 20 FF…)", text: $hexCommand)
           .textFieldStyle(.roundedBorder)
         Button("Send") {
-          sendAVC()
+          Task {
+              await sendAVC()
+          }
         }
         .disabled(guid == nil || hexCommand.isEmpty)
       }
@@ -53,24 +55,28 @@ struct AVCTabView: View {
     .padding()
   }
 
-  private func sendAVC() {
+  private func sendAVC() async {
     errorMessage = nil
     responseHex = ""
     guard let guid = guid else { return }
 
-    // Convert hex string → Data
     let bytes = hexCommand
       .split(whereSeparator: \.isWhitespace)
       .compactMap { UInt8($0, radix:16) }
-    guard bytes.count * 3 >= hexCommand.count / 2 else {
-      errorMessage = "Invalid hex format"
-      return
-    }
 
-    if let resp = manager.sendCommand(guid: guid, command: Data(bytes)) {
+    guard !bytes.isEmpty, bytes.count * 2 >= hexCommand.filter({ !$0.isWhitespace }).count else {
+        errorMessage = "Invalid hex format or empty command"
+        return
+    }
+    let commandData = Data(bytes)
+
+    if let resp = await uiManager.sendAVCCommand(guid: guid, command: commandData) {
       responseHex = resp.map { String(format: "%02X", $0) }.joined(separator: " ")
+      if responseHex.isEmpty {
+          errorMessage = "Command sent successfully, no response data returned."
+      }
     } else {
-      errorMessage = "No response or send failed"
+      errorMessage = "No response or send failed (check logs)"
     }
   }
 }

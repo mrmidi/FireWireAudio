@@ -15,15 +15,17 @@ enum OverviewSection: String, CaseIterable, Identifiable {
 }
 
 struct OverviewView: View {
-    @EnvironmentObject var manager: DeviceManager
+    @EnvironmentObject var uiManager: UIManager // Correct EnvironmentObject
     @State private var selectedGuid: UInt64?
     
     private var devices: [DeviceInfo] {
-        manager.devices.values.sorted { $0.deviceName < $1.deviceName }
+        // --- FIX: Use uiManager ---
+        uiManager.devices.values.sorted { $0.deviceName < $1.deviceName }
     }
     private var device: DeviceInfo? {
         guard let g = selectedGuid else { return nil }
-        return manager.devices[g]
+        // --- FIX: Use uiManager ---
+        return uiManager.devices[g]
     }
     
     var body: some View {
@@ -134,25 +136,25 @@ struct OverviewView: View {
 }
 
 // MARK: - Preview
-struct OverviewView_Previews: PreviewProvider {
-    static var previews: some View {
-        let previewManager = DeviceManager()
-        let dummyDevice = DeviceInfo(
-            guid: 0xABCDEF0123456789,
-            deviceName: "Preview Device",
-            vendorName: "Preview Vendor",
-            isConnected: true,
-            numIsoInPlugs: 2, isoInputPlugs: [
-                AudioPlugInfo(subunitAddress: 0xFF, plugNumber: 0, direction: .input, usage: .isochronous, plugName: "Iso In 1"),
-                AudioPlugInfo(subunitAddress: 0xFF, plugNumber: 1, direction: .input, usage: .isochronous, plugName: "Iso In 2")
-            ],
-            audioSubunit: AudioSubunitInfo(audioDestPlugCount: 1, audioDestPlugs: [AudioPlugInfo(subunitAddress: 0x08, plugNumber: 0, direction: .input, usage: .audioSubunit, plugName: "Audio Dest 1")])
-        )
-        previewManager.devices[dummyDevice.guid] = dummyDevice
-        previewManager.isRunning = true
-
-        return OverviewView()
-            .environmentObject(previewManager)
-            .frame(width: 600, height: 700)
-    }
-}
+//struct OverviewView_Previews: PreviewProvider {
+//    static var previews: some View {
+//        let previewManager = UIManager()
+//        let dummyDevice = DeviceInfo(
+//            guid: 0xABCDEF0123456789,
+//            deviceName: "Preview Device",
+//            vendorName: "Preview Vendor",
+//            isConnected: true,
+//            numIsoInPlugs: 2, isoInputPlugs: [
+//                AudioPlugInfo(subunitAddress: 0xFF, plugNumber: 0, direction: .input, usage: .isochronous, plugName: "Iso In 1"),
+//                AudioPlugInfo(subunitAddress: 0xFF, plugNumber: 1, direction: .input, usage: .isochronous, plugName: "Iso In 2")
+//            ],
+//            audioSubunit: AudioSubunitInfo(audioDestPlugCount: 1, audioDestPlugs: [AudioPlugInfo(subunitAddress: 0x08, plugNumber: 0, direction: .input, usage: .audioSubunit, plugName: "Audio Dest 1")])
+//        )
+//        previewManager.devices[dummyDevice.guid] = dummyDevice
+//        previewManager.isRunning = true
+//
+//        return OverviewView()
+//            .environmentObject(previewManager)
+//            .frame(width: 600, height: 700)
+//    }
+//}

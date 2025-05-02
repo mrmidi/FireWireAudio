@@ -1,4 +1,6 @@
 // === FWA-Control/DeviceManager.swift ===
+// DEPRECATED - Logic is being migrated to UIManager, EngineService, SystemServicesManager, LogStore
+// ... (keep existing code for reference during migration) ...
 // CORRECTED VERSION
 //
 //  DeviceManager.swift
