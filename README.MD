@@ -89,7 +89,32 @@ The primary goal is to restore  FireWire audio functionality on modern macOS ver
 
 ## Contributing
 
-Contributions are highly encouraged!  If you're interested, please submit issues and pull requests to help improve and develop the project further.
+Contributions are highly encouraged! If you're interested, please submit issues and pull requests to help improve and develop the project further.
+
+### Code Formatting
+
+This project uses clang-format for consistent code formatting. A `.clang-format` file is provided in the root directory that defines the project's coding style.
+
+#### Editor Integration
+
+**VSCode**
+1. The project's `.vscode/settings.json` is already configured to use clang-format
+2. Use the extension of your choice (c/c++ extension or clang-format extension) to format your code on save
+**Xcode**
+1. Install [ClangFormat-Xcode](https://github.com/mapbox/XcodeClangFormat)
+2. Configure it to use the project's `.clang-format` file
+
+#### Pre-commit Hook
+
+A Git pre-commit hook is included that automatically formats your code before committing. The hook:
+- Runs clang-format on all staged C/C++/Objective-C files
+- Re-stages the formatted files
+- Allows you to bypass the hook with `git commit --no-verify` if needed
+
+To enable the hook, make sure it's executable:
+```sh
+chmod +x .git/hooks/pre-commit
+```
 
 ## License
 
