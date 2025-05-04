@@ -1,5 +1,6 @@
 ---
 # Based on the provided example code style
+# Required clang-format version: 16.0.0
 BasedOnStyle: LLVM
 UseTab: Never
 IndentWidth: 4

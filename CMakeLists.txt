@@ -67,6 +67,9 @@ append_flag(SANITIZER_LINK_FLAGS "-fsanitize=thread")
 endif()
 # --- End Sanitizer Variable Setup ---
 
+# --- Code Formatting ---
+include(cmake/ClangFormat.cmake)
+
 # --- Dependencies using FetchContent ---
 include(FetchContent)
 FetchContent_Declare(spdlog GIT_REPOSITORY https://github.com/gabime/spdlog.git GIT_TAG v1.15.2)

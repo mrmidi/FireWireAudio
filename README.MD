@@ -95,6 +95,37 @@ Contributions are highly encouraged! If you're interested, please submit issues 
 
 This project uses clang-format for consistent code formatting. A `.clang-format` file is provided in the root directory that defines the project's coding style.
 
+#### Required Version
+
+This project requires clang-format version 16.0.0 or later. A script is provided to install the correct version:
+
+```sh
+# Check if the correct version is installed
+./tools/install-clang-format.sh --check-only
+
+# Install the correct version if needed
+./tools/install-clang-format.sh
+```
+
+The script will detect your operating system and install clang-format using the appropriate package manager (Homebrew for macOS, apt/dnf/pacman for Linux).
+
+#### CMake Integration
+
+The project includes CMake targets for code formatting:
+
+```sh
+# Format all source files
+cmake --build build --target format
+
+# Check if all source files are formatted correctly
+cmake --build build --target format-check
+
+# Install the required clang-format version
+cmake --build build --target install-clang-format
+```
+
+These targets are available after configuring the project with CMake.
+
 #### Editor Integration
 
 **VSCode**
