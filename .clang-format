@@ -13,8 +13,9 @@ AllowShortLoopsOnASingleLine: false
 AllowAllArgumentsOnNextLine: false
 AllowAllParametersOfDeclarationOnNextLine: false
 IndentWrappedFunctionNames: false
-FunctionDefinitionParameterNewline: AfterAll
-UseDeclarationNameForReturnType: All
+# Removed unsupported options:
+# FunctionDefinitionParameterNewline: AfterAll
+# UseDeclarationNameForReturnType: All
 ContinuationIndentWidth: 4
 
 # Pointer/reference alignment
