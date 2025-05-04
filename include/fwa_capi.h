@@ -63,6 +63,22 @@ IOReturn FWAEngine_SendCommand(FWAEngineRef engine,
 
 IOReturn FWAEngine_SetLogLevel(FWAEngineRef engine, FWALogLevel level);
 
+/**
+ * @brief Starts the isochronous audio streams (Input/Output) for a specific device.
+ * @param engine The engine reference.
+ * @param guid The GUID of the device to start streams for.
+ * @return IOReturn status code.
+ */
+IOReturn FWAEngine_StartStreamsForDevice(FWAEngineRef engine, uint64_t guid);
+
+/**
+ * @brief Stops the isochronous audio streams for a specific device.
+ * @param engine The engine reference.
+ * @param guid The GUID of the device to stop streams for.
+ * @return IOReturn status code.
+ */
+IOReturn FWAEngine_StopStreamsForDevice(FWAEngineRef engine, uint64_t guid);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

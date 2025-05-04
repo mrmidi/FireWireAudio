@@ -5,6 +5,9 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -stdlib=libc++")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -stdlib=libc++")
 set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -stdlib=libc++")
 
+# Enable ARC for Objective-C++
+set(CMAKE_OBJCXX_FLAGS "${CMAKE_OBJCXX_FLAGS} -fobjc-arc")
+
 # --- Policies ---
 cmake_policy(SET CMP0114 NEW)
 cmake_policy(SET CMP0175 NEW)
@@ -14,11 +17,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment ve
 
 option(BUILD_X86_64_TARGETS "Also build separate x86_64 targets" OFF)
 
-## --- Deployment target and architectures ---
-set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment version")
-
 # Optionally force all targets to x86_64 only
-option(BUILD_X86_64_TARGETS "Build all targets for x86_64 only (default: arm64)" OFF)
 if(BUILD_X86_64_TARGETS)
   message(STATUS "⚙️  Forcing build architecture to x86_64")
   set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "" FORCE)
@@ -93,17 +92,20 @@ set(JSON_BuildTests OFF CACHE BOOL "Disable nlohmann_json tests")
 FetchContent_Declare(catch2        GIT_REPOSITORY https://github.com/catchorg/Catch2.git      GIT_TAG v3.8.0)
 set(CATCH2_BUILD_TESTS OFF CACHE BOOL "Disable Catch2 tests")
 FetchContent_Declare(libASPL       GIT_REPOSITORY https://github.com/mrmidi/libASPL.git         GIT_TAG main)
-# Swift Collections
-FetchContent_Declare(swift_collections
-    GIT_REPOSITORY https://github.com/apple/swift-collections.git GIT_TAG main)
 
-# Swift-Log (now unconditional)
+# Swift Collections (Fetch sources only)
+FetchContent_Declare(swift_collections
+    GIT_REPOSITORY https://github.com/apple/swift-collections.git
+    GIT_TAG GIT_TAG release/1.2
+)
+
+# Swift-Log (Fetch sources only)
 FetchContent_Declare(swift_log
     GIT_REPOSITORY https://github.com/apple/swift-log.git
     GIT_TAG        1.5.4
 )
 
-# Pull them all in
+# Pull them all in (Downloads sources)
 set(FETCHCONTENT_FULLY_DISCONNECTED OFF)
 FetchContent_MakeAvailable(
   spdlog
@@ -113,6 +115,8 @@ FetchContent_MakeAvailable(
   swift_log
   swift_collections
 )
+
+# --- Manual build of Swift Dependencies ---
 
 # Manual build of swift-log sources
 FetchContent_GetProperties(swift_log)
@@ -126,6 +130,29 @@ set_target_properties(Logging PROPERTIES FOLDER "Dependencies/Swift")
 source_group("Dependencies/Swift/Logging" FILES ${SWIFT_LOG_SOURCES})
 message(STATUS "Configured manual swift-log target 'Logging'")
 
+# Manual build of swift-collections sources
+FetchContent_GetProperties(swift_collections)
+if(NOT swift_collections_POPULATED)
+  message(FATAL_ERROR "swift-collections source directory was not populated.")
+endif()
+# Find all Swift source files within the downloaded dependency sources.
+file(GLOB_RECURSE SWIFT_COLLECTIONS_SOURCES
+  "${swift_collections_SOURCE_DIR}/Sources/*.swift"
+  "${swift_collections_SOURCE_DIR}/Sources/**/*.swift"
+)
+# Create the manual library target. Use a unique name.
+add_library(SwiftCollectionsManual STATIC
+  ${SWIFT_COLLECTIONS_SOURCES}
+)
+# Apply necessary compile definitions FOR THE MANUAL TARGET:
+target_compile_definitions(SwiftCollectionsManual PUBLIC
+  SWIFT_PACKAGE
+  COLLECTIONS_SINGLE_MODULE
+)
+# Optional: Organize the manual target in IDEs
+set_target_properties(SwiftCollectionsManual PROPERTIES FOLDER "Dependencies/Swift")
+source_group(TREE "${swift_collections_SOURCE_DIR}/Sources" PREFIX "Dependencies/Swift/swift-collections" FILES ${SWIFT_COLLECTIONS_SOURCES})
+message(STATUS "Configured manual swift-collections target 'SwiftCollectionsManual'")
 
 
 # --- Shared library for common code ---
@@ -144,7 +171,6 @@ add_subdirectory(src/FWA/XPC)
 add_subdirectory(src/Isoch)
 add_subdirectory(src/FWA)
 add_subdirectory(src/driver)
-add_subdirectory(FWA-Control)
 
 # --- XPC Service bundle ---
 set(XPC_SERVICE_NAME "FWADaemon")
@@ -168,6 +194,8 @@ set_target_properties(${XPC_SERVICE_NAME} PROPERTIES
   MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
   MACOSX_BUNDLE_GUI_IDENTIFIER      "net.mrmidi.FWADaemon"
   XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "net.mrmidi.FWADaemon"
+  XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
+  XCODE_ATTRIBUTE_CLANG_ENABLE_OBJCXX_ARC YES
 )
 target_include_directories(${XPC_SERVICE_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include/shared/xpc
@@ -278,12 +306,10 @@ set_target_properties(FWA-Control PROPERTIES
   XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_SOURCE_DIR}/FWA-Control/FWA_Control.entitlements"
   XCODE_ATTRIBUTE_SWIFT_OBJC_INTEROP_MODE "objc"
   XCODE_ATTRIBUTE_SWIFT_INCLUDE_PATHS
-    "${CMAKE_CURRENT_BINARY_DIR}/include;${CMAKE_SOURCE_DIR}/include;${CMAKE_SOURCE_DIR}/include/shared;${CMAKE_SOURCE_DIR}/include/shared/xpc;${FWA_CAPI_MODULEMAP_PATH}"
+    "${CMAKE_CURRENT_BINARY_DIR}/include;${CMAKE_SOURCE_DIR}/include;${CMAKE_SOURCE_DIR}/include/shared;${CMAKE_SOURCE_DIR}/include/shared/xpc"
   XCODE_ATTRIBUTE_SWIFT_OPTIMIZATION_LEVEL "-Onone"
-  # swift version = 6
   XCODE_ATTRIBUTE_SWIFT_VERSION "6.0"
 )
-
 
 set(FWADAEMON_LAUNCHD_PLIST "${CMAKE_SOURCE_DIR}/FWA-Control/FWADaemon.plist")
 target_sources(FWA-Control PRIVATE "${FWADAEMON_LAUNCHD_PLIST}")
@@ -311,7 +337,10 @@ add_custom_command(TARGET FWA-Control POST_BUILD
   COMMENT "Embedding helper tools and resources into FWA-Control.app"
 )
 target_link_libraries(FWA-Control PRIVATE
-  Logging FWA Shared SwiftCollections
+  Logging
+  SwiftCollectionsManual
+  FWA
+  Shared
   "-framework SwiftUI"
   "-framework Cocoa"
   "-framework Foundation"
@@ -320,12 +349,10 @@ target_link_libraries(FWA-Control PRIVATE
   "-framework CoreAudio"
   "-framework AVFoundation"
 )
-add_dependencies(FWA-Control Logging FWADaemon FWADriver FWA Shared)
+add_dependencies(FWA-Control Logging SwiftCollectionsManual FWADaemon FWADriver FWA Shared)
 # --- Relax Swift 6 concurrency checks ---
 target_compile_options(FWA-Control PRIVATE
   $<$<COMPILE_LANGUAGE:Swift>:-Xfrontend -strict-concurrency=targeted>
-  # OR to disable completely:
-  # $<$<COMPILE_LANGUAGE:Swift>:-Xfrontend -disable-strict-concurrency-complete>
 )
 
 # --- Documentation and testing (unchanged) ---

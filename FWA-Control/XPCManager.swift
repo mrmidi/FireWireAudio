@@ -119,23 +119,33 @@ public final actor XPCManager {
         xpcConnection = conn
 
         // 3) register client
-        return await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
-            let proxyError: @Sendable (Error) -> Void = { [weak self] _ in
-                Task { await self?.handleDisconnect(reason: "proxy error") }
+        let success = await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
+            let proxyError: @Sendable (Error) -> Void = { [weak self] err in
+                Task { await self?.handleDisconnect(reason: "proxy error: \(err)") }
+                cc.resume(returning: false) // Ensure continuation is always resumed
             }
 
             guard let proxy = conn
                 .remoteObjectProxyWithErrorHandler(proxyError)
-                as? FWADaemonControlProtocol
-            else {
+                    as? FWADaemonControlProtocol else {
                 cc.resume(returning: false)
                 return
             }
 
             proxy.registerClient(clientID,
-                                 clientNotificationEndpoint: listener.endpoint)
-            { success, _ in cc.resume(returning: success) }
+                                 clientNotificationEndpoint: listener.endpoint) {
+                success, _ in cc.resume(returning: success)
+            }
         }
+        // Seed initial driver status stream if registration succeeded
+        if success {
+            Task { [self] in
+                if let isUp = await getDriverConnected() {
+                    cont.driverStatus.yield(isUp)
+                }
+            }
+        }
+        return success
     }
 
     public func disconnect() async {
@@ -225,6 +235,16 @@ public final actor XPCManager {
     fileprivate func dispatchDriverStatus(_ ok: Bool) {
         cont.driverStatus.yield(ok)
     }
+
+    /// Manually query the daemon for current driver connection state
+    public func getDriverConnected() async -> Bool? {
+        guard let proxy = validProxy() else { return nil }
+        return await withCheckedContinuation { (cc: CheckedContinuation<Bool?, Never>) in
+            proxy.getIsDriverConnected { isConnected in
+                cc.resume(returning: isConnected)
+            }
+        }
+    }
 }
 
 // MARK: - XPCNotificationHandler
@@ -234,6 +254,29 @@ private final class XPCNotificationHandler: NSObject,
                                            FWAClientNotificationProtocol,
                                            @unchecked Sendable
 {
+    /// Retain callback connections so they aren’t deallocated immediately
+    private var callbackConnections = [NSXPCConnection]()
+    
+    // MARK: NSXPCListenerDelegate
+    /// Accept the connection that the daemon establishes back to the GUI and
+    /// expose ourselves (`self`) under the FWAClientNotificationProtocol.
+    func listener(_ listener: NSXPCListener,
+                  shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
+        newConnection.exportedInterface =
+            NSXPCInterface(with: FWAClientNotificationProtocol.self)
+        newConnection.exportedObject = self
+        // Keep a strong reference so this connection stays alive
+        callbackConnections.append(newConnection)
+        // When the connection invalidates, remove it from our list
+        newConnection.invalidationHandler = { [weak self, weak newConnection] in
+            guard let self = self, let conn = newConnection else { return }
+            if let idx = self.callbackConnections.firstIndex(of: conn) {
+                self.callbackConnections.remove(at: idx)
+            }
+        }
+        newConnection.resume()
+        return true
+    }
     private let logger = AppLoggers.xpcManager
     private unowned let manager: XPCManager
     init(manager: XPCManager) {
@@ -397,5 +440,10 @@ private final class XPCNotificationHandler: NSObject,
         Task.detached { [mgr] in // Use Task.detached for fire-and-forget into the actor
             await mgr.dispatchDriverStatus(isConnected)
         }
+    }
+    // MARK: ‑ Hand‑shake ping
+    func daemonHandshake(_ reply: @escaping (Bool) -> Void) {
+        logger.info("Handshake ping received from daemon ✔︎")
+        reply(true)                       // tell daemon that the callback works
     }
 }

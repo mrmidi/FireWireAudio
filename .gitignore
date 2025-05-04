@@ -10,6 +10,7 @@ lib/
 xbuild/
 ubuild/
 extern/
+FWA-Control/.build/
 
 # Xcode
 *.xcodeproj/

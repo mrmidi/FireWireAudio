@@ -210,6 +210,20 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
     newClientInfo.clientID = clientID;
     newClientInfo.connection = clientConnection; // This connection is for calling the CLIENT
 
+
+    // Notify GUI that driver is connected
+    if (self.driverIsConnected) {
+        id<FWAClientNotificationProtocol> guiProxy = newClientInfo.remoteProxy;
+        @try {
+            [guiProxy driverConnectionStatusDidChange:self.driverIsConnected];
+            SPDLOG_INFO("Notified GUI '{}' of driverConnected=YES on registration.", [clientID UTF8String]);
+        } @catch (NSException *ex) {
+            os_log_error(OS_LOG_DEFAULT,
+                "[FWADaemon] Failed to notify GUI '%{public}@' on register: %{public}@",
+                clientID, ex);
+        }
+    }
+
     // Error handler for the connection TO the client
     newClientInfo.remoteProxy = [clientConnection remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
         const char* clientID_cstr = [clientID UTF8String];
@@ -253,6 +267,28 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
         self.connectedClients[clientID] = newClientInfo;
         SPDLOG_INFO("Client '{}' successfully registered.", [clientID UTF8String]);
     }];
+    // Immediately notify GUI of current driverConnected state if already connected
+    if (self.driverIsConnected) {
+        id<FWAClientNotificationProtocol> guiProxy = newClientInfo.remoteProxy;
+        @try {
+            [guiProxy driverConnectionStatusDidChange:self.driverIsConnected];
+            SPDLOG_INFO("Notified GUI '{}' of driverConnected=YES on registration.", [clientID UTF8String]);
+        } @catch (NSException *ex) {
+            os_log_error(OS_LOG_DEFAULT,
+                         "[FWADaemon] Failed to notify GUI '%{public}s' on register: %{public}@",
+                         [clientID UTF8String], ex);
+        }
+    }
+
+    // Perform a quick handshake: ping the GUI and log the reply
+    id<FWAClientNotificationProtocol> guiProxy = [clientConnection remoteObjectProxy];
+    [guiProxy daemonHandshake:^(BOOL ok) {
+            if (ok) {
+                SPDLOG_INFO("Handshake with GUI client '{}' succeeded.", [clientID UTF8String]);
+            } else {
+                SPDLOG_ERROR("Handshake with GUI client '{}' failed.", [clientID UTF8String]);
+            }
+    }];
 
     // Prepare reply info
     NSDictionary *daemonInfo = @{ @"daemonVersion": @"0.1.0-stub" };
@@ -260,15 +296,15 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
 }
 
 - (void)unregisterClient:(NSString *)clientID {
-     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received unregisterClient request from '%{public}@'", clientID);
+     SPDLOG_INFO("Received unregisterClient request from '{}'", [clientID UTF8String]);
      [self performOnInternalQueueSync:^{ // Use sync to ensure removal is processed promptly
          ClientInfo *info = self.connectedClients[clientID];
          if (info) {
-             os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Invalidating connection and removing client '%{public}@'.", clientID);
+             SPDLOG_INFO("Invalidating connection and removing client '{}'", [clientID UTF8String]);
              [info.connection invalidate]; // Explicitly invalidate
              [self.connectedClients removeObjectForKey:clientID];
          } else {
-             os_log_info(OS_LOG_DEFAULT, "[FWADaemon] WARNING: unregisterClient called for unknown clientID '%{public}@'.", clientID);
+             SPDLOG_INFO("WARNING: unregisterClient called for unknown clientID '{}'", [clientID UTF8String]);
          }
      }];
 }
@@ -280,43 +316,45 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
                           deviceName:(NSString *)deviceName
                           vendorName:(NSString *)vendorName
 {
-     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received updateDeviceConnectionStatus for GUID 0x%llx: connected=%d, initialized=%d, name='%{public}@', vendor='%{public}@'",
-          guid, isConnected, isInitialized, deviceName, vendorName);
+    SPDLOG_INFO("Received updateDeviceConnectionStatus for GUID 0x%llx: connected=%d, initialized=%d, name='%s', vendor='%s'",
+        guid, isConnected, isInitialized,
+        [deviceName UTF8String] ?: "<nil>", [vendorName UTF8String] ?: "<nil>");
     // TODO: Cache state and broadcast to Driver client
 }
 
 - (void)updateDeviceConfiguration:(uint64_t)guid configInfo:(NSDictionary *)configInfo {
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received updateDeviceConfiguration for GUID 0x%llx: %{public}@", guid, configInfo);
+    SPDLOG_INFO("Received updateDeviceConfiguration for GUID 0x%llx: %s",
+        guid, [[configInfo description] UTF8String] ?: "<nil>");
      // TODO: Cache state and broadcast to Driver client
 }
 
 - (void)getDeviceConnectionStatus:(uint64_t)guid withReply:(void (^)(NSDictionary * _Nullable statusInfo))reply {
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received getDeviceConnectionStatus request for GUID 0x%llx", guid);
+    SPDLOG_INFO("Received getDeviceConnectionStatus request for GUID 0x%llx", guid);
     // TODO: Read from cache
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] STUB: Replying nil to getDeviceConnectionStatus for GUID 0x%llx.", guid);
+    SPDLOG_INFO("STUB: Replying nil to getDeviceConnectionStatus for GUID 0x%llx.", guid);
     if (reply) reply(nil);
 }
 
 - (void)getDeviceConfiguration:(uint64_t)guid withReply:(void (^)(NSDictionary * _Nullable configInfo))reply {
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received getDeviceConfiguration request for GUID 0x%llx", guid);
+    SPDLOG_INFO("Received getDeviceConfiguration request for GUID 0x%llx", guid);
     // TODO: Read from cache
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] STUB: Replying nil to getDeviceConfiguration for GUID 0x%llx.", guid);
+    SPDLOG_INFO("STUB: Replying nil to getDeviceConfiguration for GUID 0x%llx.", guid);
     if (reply) reply(nil);
 }
 
 - (void)getConnectedDeviceGUIDsWithReply:(void (^)(NSArray<NSNumber *> * _Nullable guids))reply {
-     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received getConnectedDeviceGUIDs request");
+    SPDLOG_INFO("Received getConnectedDeviceGUIDs request");
      // TODO: Read GUIDs from cached status
-     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] STUB: Replying empty array to getConnectedDeviceGUIDs.");
+    SPDLOG_INFO("STUB: Replying empty array to getConnectedDeviceGUIDs.");
      if (reply) reply(@[]);
 }
 
 // --- Driver Presence ---
 - (void)setDriverPresenceStatus:(BOOL)isPresent {
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Received setDriverPresenceStatus: %{public}d", isPresent);
+    SPDLOG_INFO("Received setDriverPresenceStatus: {}", isPresent);
     [self performOnInternalQueueAsync:^{
         if (self.driverIsConnected != isPresent) {
-            os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Driver connection status changed to %{public}d. Broadcasting...", isPresent);
+            SPDLOG_INFO("Driver connection status changed to {}. Broadcasting...", isPresent);
             self.driverIsConnected = isPresent;
             [self broadcastDriverConnectionStatus:isPresent];
         } else {
@@ -336,7 +374,7 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
 }
 
 - (void)broadcastDriverConnectionStatus:(BOOL)isConnected {
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Broadcasting driverConnectionStatusDidChange: %{public}d", isConnected);
+    SPDLOG_INFO("Broadcasting driverConnectionStatusDidChange: {}", isConnected);
     for (ClientInfo *info in self.connectedClients.allValues) {
         if ([info.clientID hasPrefix:@"GUI"]) {
             id<FWAClientNotificationProtocol> guiProxy = info.remoteProxy;
@@ -385,11 +423,11 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
 }
 
 - (void)requestSetClockSource:(uint64_t)guid clockSourceID:(uint32_t)clockSourceID withReply:(void (^)(BOOL success))reply {
-     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Forwarding requestSetClockSource for GUID 0x%llx to ID %u", guid, clockSourceID);
+    SPDLOG_INFO("Forwarding requestSetClockSource for GUID 0x%llx to ID %u", guid, clockSourceID);
     id<FWAClientNotificationProtocol> guiProxy = [self getGUIProxyForGUID:guid];
     if (guiProxy) {
         [guiProxy performSetClockSource:guid clockSourceID:clockSourceID withReply:^(BOOL guiSuccess) {
-             os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Relaying reply (%d) for requestSetClockSource GUID 0x%llx", guiSuccess, guid);
+            SPDLOG_INFO("Relaying reply (%d) for requestSetClockSource GUID 0x%llx", guiSuccess, guid);
             if (reply) reply(guiSuccess);
         }];
     } else {
@@ -399,11 +437,11 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
 }
 
 - (void)requestSetMasterVolumeScalar:(uint64_t)guid scope:(uint32_t)scope element:(uint32_t)element scalarValue:(float)scalarValue withReply:(void (^)(BOOL success))reply {
-     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Forwarding requestSetMasterVolumeScalar for GUID 0x%llx (Scope %u, Elem %u) to %.3f", guid, scope, element, scalarValue);
+    SPDLOG_INFO("Forwarding requestSetMasterVolumeScalar for GUID 0x%llx (Scope %u, Elem %u) to %.3f", guid, scope, element, scalarValue);
      id<FWAClientNotificationProtocol> guiProxy = [self getGUIProxyForGUID:guid];
     if (guiProxy) {
         [guiProxy performSetMasterVolumeScalar:guid scope:scope element:element scalarValue:scalarValue withReply:^(BOOL guiSuccess) {
-             os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Relaying reply (%d) for requestSetMasterVolumeScalar GUID 0x%llx", guiSuccess, guid);
+            SPDLOG_INFO("Relaying reply (%d) for requestSetMasterVolumeScalar GUID 0x%llx", guiSuccess, guid);
             if (reply) reply(guiSuccess);
         }];
     } else {
@@ -413,11 +451,11 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
 }
 
 - (void)requestSetMasterMute:(uint64_t)guid scope:(uint32_t)scope element:(uint32_t)element muteState:(BOOL)muteState withReply:(void (^)(BOOL success))reply {
-     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Forwarding requestSetMasterMute for GUID 0x%llx (Scope %u, Elem %u) to %d", guid, scope, element, muteState);
+    SPDLOG_INFO("Forwarding requestSetMasterMute for GUID 0x%llx (Scope %u, Elem %u) to %d", guid, scope, element, muteState);
      id<FWAClientNotificationProtocol> guiProxy = [self getGUIProxyForGUID:guid];
     if (guiProxy) {
         [guiProxy performSetMasterMute:guid scope:scope element:element muteState:muteState withReply:^(BOOL guiSuccess) {
-             os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Relaying reply (%d) for requestSetMasterMute GUID 0x%llx", guiSuccess, guid);
+            SPDLOG_INFO("Relaying reply (%d) for requestSetMasterMute GUID 0x%llx", guiSuccess, guid);
             if (reply) reply(guiSuccess);
         }];
     } else {
@@ -454,12 +492,12 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
 // --- Logging (Driver -> Daemon -> GUI) ---
 - (void)forwardLogMessageFromDriver:(int32_t)level message:(NSString *)message {
      // os_log_debug(OS_LOG_DEFAULT, "[FWADaemon] Received log from Driver (Level %d): %{public}@", level, message); // Use debug level?
-     __block NSArray<ClientInfo *> *guiClients = [NSMutableArray array];
+     __block NSMutableArray<ClientInfo *> *guiClients = [NSMutableArray array];
      // Find GUI clients safely
      [self performOnInternalQueueSync:^{
          for (ClientInfo *info in self.connectedClients.allValues) {
              if ([info.clientID hasPrefix:@"GUI"]) {
-                 [(NSMutableArray*)guiClients addObject:info]; // Cast needed inside block sometimes
+                 [(NSMutableArray*)guiClients addObject:info];
              }
          }
      }];
@@ -467,17 +505,21 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
      // Forward to all found GUI clients
      if ([guiClients count] > 0) {
         // os_log_debug(OS_LOG_DEFAULT, "[FWADaemon] Forwarding driver log to %lu GUI client(s)", (unsigned long)[guiClients count]);
-         for (ClientInfo *info in guiClients) {
-             id<FWAClientNotificationProtocol> guiProxy = info.remoteProxy;
-             if (guiProxy) {
-                 @try {
-                    [guiProxy didReceiveLogMessageFrom:@"FWADriver" level:level message:message];
-                 } @catch (NSException *exception) {
-                    os_log_error(OS_LOG_DEFAULT, "[FWADaemon] Exception forwarding log to GUI client '%{public}@': %{public}@", info.clientID, exception);
-                    // Consider removing this client if forwarding fails repeatedly
-                 }
-             }
-         }
+        dispatch_async(self.internalQueue, ^{
+            for (ClientInfo *info in guiClients) {
+                id<FWAClientNotificationProtocol> guiProxy = info.remoteProxy;
+                if (guiProxy) {
+                    @try {
+                        [guiProxy didReceiveLogMessageFrom:@"FWADriver" level:level message:message];
+                    } @catch (NSException *exception) {
+                        os_log_error(OS_LOG_DEFAULT, "[FWADaemon] Exception forwarding log to GUI client '%{public}@': %{public}@", info.clientID, exception);
+                        // Consider removing this client if forwarding fails repeatedly
+                    }
+                } else {
+                    os_log_debug(OS_LOG_DEFAULT, "Skip log to GUI '%{public}@': proxy/connection invalid.", info.clientID);
+                }
+            }
+        });
      } else {
           // os_log_debug(OS_LOG_DEFAULT, "[FWADaemon] No GUI client connected to forward driver log.");
      }
@@ -545,36 +587,28 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
         // IMPORTANT: Ensure self.internalQueue is valid before dispatching
         dispatch_queue_t queue = self.internalQueue;
         if (!queue) {
-            SPDLOG_ERROR("Cannot forward log message, internal queue is nil!");
+            os_log_error(OS_LOG_DEFAULT, "Cannot forward log message, internal queue is nil!");
             return;
         }
         dispatch_async(queue, ^{ // Perform XPC calls asynchronously
             for (ClientInfo *info in guiClients) {
                 id<FWAClientNotificationProtocol> guiProxy = info.remoteProxy;
-                // Perform extra check for proxy validity inside async block
                 if (guiProxy && info.connection) {
                     @try {
-                        // Use the actual senderID now
                         [guiProxy didReceiveLogMessageFrom:senderID level:level message:message];
                     } @catch (NSException *exception) {
-                        // Use spdlog for logging daemon errors now
-                        // CONVERT NSString* arguments to const char* using UTF8String
                         const char* senderID_cstr = [senderID UTF8String];
                         const char* clientID_cstr = [info.clientID UTF8String];
                         const char* exception_cstr = [[exception description] UTF8String];
-
-                        // Use the C-string pointers in the spdlog call
                         SPDLOG_ERROR("Exception forwarding log ({}) to GUI client '{}': {}",
-                                     senderID_cstr ? senderID_cstr : "<nil_sender>",        // Use ternary for safety
-                                     clientID_cstr ? clientID_cstr : "<nil_client_id>",     // Use ternary for safety
-                                     exception_cstr ? exception_cstr : "<nil_exception>"); // Use ternary for safety
-                        // Maybe invalidate this client connection if exceptions persist?
-                        // Consider adding logic here to remove the client if sending fails repeatedly.
+                                     senderID_cstr ? senderID_cstr : "<nil_sender>",
+                                     clientID_cstr ? clientID_cstr : "<nil_client_id>",
+                                     exception_cstr ? exception_cstr : "<nil_exception>");
                     } @finally {
                         // ARC handles proxy release
                     }
                 } else {
-                    SPDLOG_WARN("Skipping log forward to client '{}': Proxy or connection invalid.", [info.clientID UTF8String]);
+                    os_log_debug(OS_LOG_DEFAULT, "Skip log to GUI '%{public}@': proxy/connection invalid.", info.clientID);
                 }
             }
         });

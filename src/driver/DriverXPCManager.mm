@@ -37,7 +37,7 @@ bool DriverXPCManager::connect() {
              return false;
         }
         xpcConnection_.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(FWADaemonControlProtocol)];
-        __weak DriverXPCManager* weakSelf = this;
+        DriverXPCManager* weakSelf = this;
         xpcConnection_.interruptionHandler = ^{
             os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: Daemon connection interrupted.", LogPrefix);
             if (weakSelf) {
@@ -46,14 +46,14 @@ bool DriverXPCManager::connect() {
         };
         xpcConnection_.invalidationHandler = ^{
             os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: Daemon connection invalidated.", LogPrefix);
-             if (weakSelf) {
+            if (weakSelf) {
                 weakSelf->handleDaemonDisconnect("invalidated");
             }
         };
         [xpcConnection_ resume];
         daemonProxy_ = [xpcConnection_ remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
             os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: XPC proxy error: %{public}@", LogPrefix, error);
-             if (weakSelf) {
+            if (weakSelf) {
                 weakSelf->handleDaemonDisconnect("proxy error");
             }
         }];
@@ -115,7 +115,7 @@ void DriverXPCManager::setPresenceStatus(bool isPresent) {
     }
     os_log_info(OS_LOG_DEFAULT, "%sDriverXPCManager: Setting driver presence status to %d via XPC.", LogPrefix, isPresent);
     @try {
-        id<FWADaemonControlProtocol> proxy = (id<FWADaemonControlProtocol>)daemonProxy_;
+        id<FWADaemonControlProtocol> proxy = daemonProxy_;
         [proxy setDriverPresenceStatus:isPresent];
     } @catch (NSException *exception) {
         os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: Exception calling setDriverPresenceStatus: %{public}@ - %{public}@", LogPrefix, exception.name, exception.reason);
@@ -135,7 +135,7 @@ std::string DriverXPCManager::getSharedMemoryName() {
     __block NSString* receivedName = nil;
     __block bool success = false;
     os_log_debug(OS_LOG_DEFAULT, "%sRequesting shared memory name from daemon...", LogPrefix);
-    id<FWADaemonControlProtocol> proxy = (id<FWADaemonControlProtocol>)daemonProxy_;
+    id<FWADaemonControlProtocol> proxy = daemonProxy_;
     if (!proxy) {
         os_log_error(OS_LOG_DEFAULT, "%sDaemon proxy is nil, cannot call getSharedMemoryName.", LogPrefix);
         dispatch_semaphore_signal(sema);

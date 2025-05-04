@@ -3,6 +3,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import Logging
+import SwiftCollectionsManual // For Deque
 
 extension Logger.Level {
     /// A numeric rank so we can compare severity.
@@ -30,7 +31,7 @@ struct LogConsoleView: View {
     @State private var showExportSheet = false
     @State private var logExportContent: String = ""
 
-    var filteredLogs: Deque<UILogEntry> {
+    var filteredLogs: [UILogEntry] {
         (logStore?.uiLogEntries ?? []).filter { entry in
             let levelMatch = entry.level >= selectedMinLevel
             let searchMatch = searchText.isEmpty
@@ -63,7 +64,7 @@ struct LogConsoleView: View {
         }
         .fileExporter(
              isPresented: $showExportSheet,
-             document: LogDocument(content: logStore?.exportLogs(filtered: Array(filteredLogs)) ?? ""),
+             document: LogDocument(content: logStore?.exportLogs(filtered: filteredLogs) ?? ""),
              contentType: .plainText,
              defaultFilename: "fwa-control-log-\(formattedTimestamp()).txt"
          ) { result in
@@ -200,21 +201,25 @@ struct LogDocument: FileDocument {
 // MARK: - Preview
 struct LogConsoleView_Previews: PreviewProvider {
     static var previews: some View {
-        // 1. Create LogStore and add dummy data
-        let previewLogStore = LogStore()
-        previewLogStore.uiLogEntries = [
+        var previewLogStore = LogStore() // Change to var so it can be passed as inout
+        var entries = Deque<UILogEntry>()
+        entries.append(contentsOf: [
             UILogEntry(level: .info, message: "Engine Starting...", metadata: nil, source: "Preview", file: #file, function: #function, line: #line),
             UILogEntry(level: .debug, message: "Callback registered.", metadata: nil, source: "Preview", file: #file, function: #function, line: #line),
             UILogEntry(level: .warning, message: "Device X reported low voltage.", metadata: nil, source: "Preview", file: #file, function: #function, line: #line),
             UILogEntry(level: .info, message: "Initialization complete.", metadata: nil, source: "App", file: #file, function: #function, line: #line),
-        ]
-        // 2. Create UIManager, injecting the LogStore (and nil for others)
+        ])
+        withUnsafeMutablePointer(to: &previewLogStore) { ptr in
+            let opaque = UnsafeMutableRawPointer(ptr)
+            let offset = MemoryLayout.offset(of: \LogStore.uiLogEntries) ?? 0
+            let entriesPtr = opaque.advanced(by: offset).assumingMemoryBound(to: Deque<UILogEntry>.self)
+            entriesPtr.pointee = entries
+        }
         let previewUIManager = UIManager(
             engineService: nil,
             systemServicesManager: nil,
             logStore: previewLogStore
         )
-        // 3. Provide UIManager to the view
         return LogConsoleView()
             .environmentObject(previewUIManager)
             .frame(height: 400)

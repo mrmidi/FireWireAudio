@@ -34,8 +34,13 @@ private:
     ~DriverXPCManager();
     DriverXPCManager(const DriverXPCManager&) = delete;
     DriverXPCManager& operator=(const DriverXPCManager&) = delete;
+#ifdef __OBJC__
     NSXPCConnection* xpcConnection_ = nullptr;
-    void* daemonProxy_ = nullptr; // Use void* for C++ compatibility
+    id<FWADaemonControlProtocol> daemonProxy_;
+#else
+    void* xpcConnection_ = nullptr;
+    void* daemonProxy_ = nullptr;
+#endif
     std::atomic<bool> isConnected_{false};
     const std::string daemonServiceName_ = "net.mrmidi.FWADaemon";
     const std::string clientID_ = "FWADriverASPL";

@@ -9,6 +9,7 @@
 #include <spdlog/spdlog.h> // For logging
 #include "FWA/JsonHelpers.hpp"
 #include <nlohmann/json.hpp>
+
 using json = nlohmann::json;
 using namespace FWA::JsonHelpers;
 

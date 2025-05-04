@@ -9,6 +9,7 @@
 #include <CoreFoundation/CFNumber.h> // For CFNumber*
 #include <memory> // Required for std::make_shared
 #include <format>
+#include "Isoch/IsoStreamHandler.hpp" // Ensure this is included
 
 namespace FWA {
 
@@ -28,7 +29,8 @@ AudioDevice::AudioDevice(std::uint64_t guid,
       notificationPort_(nullptr),
       interestNotification_(0),
       deviceInterface(nullptr),
-      avcInterface_(nullptr)
+      avcInterface_(nullptr),
+      isoStreamHandler_(nullptr) // Initialize to nullptr
 {
     spdlog::info("AudioDevice::AudioDevice - Creating device with GUID: 0x{:x}", guid);
 
@@ -40,6 +42,12 @@ AudioDevice::AudioDevice(std::uint64_t guid,
 
 AudioDevice::~AudioDevice()
 {
+    stopStreams(); // Ensure streams are stopped before destruction
+    {
+        std::lock_guard<std::mutex> lock(streamHandlerMutex_);
+        isoStreamHandler_.reset();
+    }
+
     if (interestNotification_) {
         IOObjectRelease(interestNotification_);
         interestNotification_ = 0;
@@ -546,6 +554,82 @@ std::expected<void, IOKitError> AudioDevice::defaultConfigureMusicPlugs() {
      if (!check) return check;
 
      return checkDestPlugConfigureControlSubcommandResponse(result.value(), "DefaultConfigureMusicPlugs(0x40/04)");
+}
+
+std::expected<void, IOKitError> AudioDevice::startStreams() {
+    spdlog::info("AudioDevice::startStreams called for GUID 0x{:x}", guid_);
+    std::lock_guard<std::mutex> lock(streamHandlerMutex_); // Protect handler creation/access
+
+    // --- Pre-checks ---
+    if (!commandInterface_) {
+         spdlog::error("AudioDevice::startStreams: CommandInterface not initialized for GUID 0x{:x}", guid_);
+         return std::unexpected(IOKitError::NotReady);
+    }
+     if (!deviceInterface) {
+         spdlog::error("AudioDevice::startStreams: deviceInterface (IOFireWireLibDeviceRef) not initialized for GUID 0x{:x}", guid_);
+         return std::unexpected(IOKitError::NotReady);
+     }
+      if (!deviceController_) {
+         spdlog::error("AudioDevice::startStreams: deviceController_ is null for GUID 0x{:x}", guid_);
+         return std::unexpected(IOKitError::NotReady);
+     }
+
+    // --- Create Handler if needed ---
+    if (!isoStreamHandler_) {
+        spdlog::info("AudioDevice::startStreams: Creating IsoStreamHandler for GUID 0x{:x}", guid_);
+        try {
+            auto logger_to_use = spdlog::get("fwa_global") ? spdlog::get("fwa_global") : spdlog::default_logger();
+            isoStreamHandler_ = std::make_shared<IsoStreamHandler>(
+                shared_from_this(),
+                logger_to_use,
+                commandInterface_,
+                deviceInterface
+            );
+            spdlog::info("AudioDevice::startStreams: IsoStreamHandler created successfully.");
+        } catch (const std::bad_weak_ptr& e) {
+             spdlog::critical("AudioDevice::startStreams: Failed to create IsoStreamHandler (bad_weak_ptr). Was AudioDevice created via std::make_shared? Exception: {}", e.what());
+             return std::unexpected(IOKitError(kIOReturnInternalError));
+        } catch (const std::exception& e) {
+            spdlog::critical("AudioDevice::startStreams: Failed to create IsoStreamHandler for GUID 0x{:x}: {}", guid_, e.what());
+            isoStreamHandler_.reset();
+            return std::unexpected(IOKitError::InternalError);
+        } catch (...) {
+             spdlog::critical("AudioDevice::startStreams: Unknown exception creating IsoStreamHandler for GUID 0x{:x}", guid_);
+             isoStreamHandler_.reset();
+             return std::unexpected(IOKitError::InternalError);
+        }
+    } else {
+        spdlog::info("AudioDevice::startStreams: IsoStreamHandler already exists for GUID 0x{:x}", guid_);
+    }
+
+    // --- Start the streams via the handler ---
+    spdlog::debug("AudioDevice::startStreams: Calling handler->start()...");
+    auto startResult = isoStreamHandler_->start();
+    if (!startResult) {
+         spdlog::error("AudioDevice::startStreams: handler->start() failed for GUID 0x{:x}: 0x{:x}", guid_, static_cast<int>(startResult.error()));
+    } else {
+         spdlog::info("AudioDevice::startStreams: handler->start() succeeded for GUID 0x{:x}.", guid_);
+    }
+    return startResult;
+}
+
+std::expected<void, IOKitError> AudioDevice::stopStreams() {
+    spdlog::info("AudioDevice::stopStreams called for GUID 0x{:x}", guid_);
+    std::shared_ptr<IsoStreamHandler> handler;
+    {
+        std::lock_guard<std::mutex> lock(streamHandlerMutex_);
+        handler = isoStreamHandler_;
+    }
+
+    if (handler) {
+        spdlog::debug("AudioDevice::stopStreams: Calling handler->stop()...");
+        handler->stop();
+        spdlog::info("AudioDevice::stopStreams: handler->stop() called for GUID 0x{:x}", guid_);
+        return {};
+    } else {
+        spdlog::warn("AudioDevice::stopStreams: No active IsoStreamHandler to stop for GUID 0x{:x}", guid_);
+        return {};
+    }
 }
 
 } // namespace FWA

@@ -10,12 +10,15 @@
 #include "FWA/DeviceInfo.hpp"
 #include <IOKit/avc/IOFireWireAVCLib.h>
 #include "FWA/AudioStreamFormat.hpp"
+#include <mutex> 
+
 
 // Forward declarations
 namespace FWA {
     class CommandInterface;
     class DeviceParser;
     class DeviceController; // Added forward declaration
+    class IsoStreamHandler; // <<< FORWARD DECLARE IsoStreamHandler
 }
 
 namespace FWA {
@@ -213,6 +216,18 @@ public:
      */
     std::expected<void, IOKitError> defaultConfigureMusicPlugs();
 
+    /**
+     * @brief Start all isochronous streams for this device.
+     * @return Success or error status
+     */
+    std::expected<void, IOKitError> startStreams();
+
+    /**
+     * @brief Stop all isochronous streams for this device.
+     * @return Success or error status
+     */
+    std::expected<void, IOKitError> stopStreams();
+
 private:
     std::uint64_t guid_;
     std::string deviceName_;
@@ -244,6 +259,11 @@ private:
 
     // Command interface.
     std::shared_ptr<CommandInterface> commandInterface_;
+
+    // --- NEW Stream Handler Member ---
+    std::shared_ptr<IsoStreamHandler> isoStreamHandler_; // Use forward declared type
+    std::mutex streamHandlerMutex_;
+    // --- END Stream Handler Member ---
 
     // Internal helper.
     /**

@@ -13,7 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol FWAClientNotificationProtocol <NSObject>
 
 @required // Methods clients should generally implement
-
+- (void)daemonHandshake:(void(^)(BOOL ok))reply;
 - (void)daemonDidUpdateDeviceConnectionStatus:(uint64_t)guid
                                 isConnected:(BOOL)isConnected
                               isInitialized:(BOOL)isInitialized

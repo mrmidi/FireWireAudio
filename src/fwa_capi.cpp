@@ -117,6 +117,38 @@ IOReturn safe_execute_device(FWADeviceRef device_ref, Func&& func) {
     }
 }
 
+// Helper for device-by-guid safe execution
+template <typename Func>
+IOReturn safe_execute_device_by_guid(FWAEngineRef engine, uint64_t guid, Func&& func) {
+    if (!engine || !engine->controller) {
+        return kIOReturnBadArgument;
+    }
+    try {
+        auto device_expected = engine->controller->getDeviceByGuid(guid);
+        if (!device_expected) {
+            if(engine->logger) engine->logger->warn("Device with GUID 0x{:x} not found.", guid);
+            return kIOReturnNotFound;
+        }
+        std::shared_ptr<FWA::AudioDevice> device_sptr = device_expected.value();
+        auto result = func(device_sptr);
+        if (result) {
+            return kIOReturnSuccess;
+        } else {
+            return static_cast<IOReturn>(result.error());
+        }
+    } catch (const std::bad_alloc&) {
+        return kIOReturnNoMemory;
+    } catch (const std::exception& e) {
+        if(engine->logger) engine->logger->critical("C++ Exception in C API (Device GUID 0x{:x}): {}", guid, e.what());
+        else std::cerr << "C++ Exception in C API (Device): " << e.what() << std::endl;
+        return kIOReturnInternalError;
+    } catch (...) {
+        if(engine->logger) engine->logger->critical("Unknown C++ Exception in C API (Device GUID 0x{:x})", guid);
+        else std::cerr << "Unknown C++ Exception in C API (Device)" << std::endl;
+        return kIOReturnInternalError;
+    }
+}
+
 std::shared_ptr<spdlog::logger> get_global_logger() {
     auto logger = spdlog::get("fwa_global");
     if (!logger) {
@@ -521,6 +553,25 @@ IOReturn FWAEngine_SendCommand(FWAEngineRef engine,
         if(logger) logger->critical("FWAEngine_SendCommand: Unknown C++ Exception for GUID 0x{:x}", guid);
         return kIOReturnInternalError;
     }
+}
+
+IOReturn FWAEngine_StartStreamsForDevice(FWAEngineRef engine, uint64_t guid) {
+    // Use the existing safe execution helper
+    return safe_execute_device_by_guid(engine, guid,
+        [&](std::shared_ptr<FWA::AudioDevice>& device_sptr) -> std::expected<void, FWA::IOKitError> {
+        // Call the C++ method (currently a stub)
+        if(engine && engine->logger) engine->logger->info("C API: Calling device->startStreams() for GUID 0x{:x}", guid);
+        return device_sptr->startStreams();
+    });
+}
+
+IOReturn FWAEngine_StopStreamsForDevice(FWAEngineRef engine, uint64_t guid) {
+    // Use the existing safe execution helper
+    return safe_execute_device_by_guid(engine, guid,
+        [&](std::shared_ptr<FWA::AudioDevice>& device_sptr) -> std::expected<void, FWA::IOKitError> {
+         if(engine && engine->logger) engine->logger->info("C API: Calling device->stopStreams() for GUID 0x{:x}", guid);
+        return device_sptr->stopStreams();
+    });
 }
 
 static spdlog::level::level_enum toSpd(FWALogLevel lvl) {

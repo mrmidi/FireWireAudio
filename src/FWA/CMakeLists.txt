@@ -1,6 +1,7 @@
 # FWA Core Library
 add_library(FWA STATIC
     AudioDevice.cpp
+    # AudioDeviceStream.cpp
     AudioStreamFormat.cpp
     CommandInterface.cpp
     DescriptorAccessor.cpp

@@ -3,14 +3,12 @@ import Foundation
 import Combine
 import SwiftUI // For AppStorage
 import Logging
-import Collections // <--- IMPORT
+import SwiftCollectionsManual // For Deque
 
 @MainActor
 final class LogStore: ObservableObject {
 
-    // --- CHANGE TYPE TO Deque ---
-    @Published var uiLogEntries: Deque<UILogEntry> = []
-    // --------------------------
+    @Published private(set) var uiLogEntries = Deque<UILogEntry>()
 
     @AppStorage("settings.logDisplayBufferSize") var logDisplayBufferSize: Int = 500 {
         didSet {
@@ -27,33 +25,35 @@ final class LogStore: ObservableObject {
     }
 
     private func subscribeToLogSource() {
-        // --- FIX: Subscribe to the broadcaster's subject ---
         LogBroadcaster.shared.subject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] entry in
-                // --- ADD THIS LINE ---
-                self?.logger.debug(">>>> LogStore received entry via Combine sink: \(entry.id) Level: \(entry.level) Source: \(entry.source)")
-                // ---------------------
-                self?.addLogEntry(entry)
+            .collect(.byTime(DispatchQueue.main, .milliseconds(50))) // 👈 group
+            .sink { [weak self] batch in
+                guard let self, !batch.isEmpty else { return }
+                self.addLogEntries(batch)                            // ⇢ one UI diff
             }
             .store(in: &cancellables)
-        // --- End FIX ---
-        logger.debug("LogStore subscribed to LogBroadcaster.")
+    }
+    
+    @MainActor
+    private func addLogEntries(_ entries: [UILogEntry]) {
+        uiLogEntries.append(contentsOf: entries)
+        if uiLogEntries.count > logDisplayBufferSize {
+            uiLogEntries.removeFirst(uiLogEntries.count - logDisplayBufferSize)
+        }
     }
 
     private func addLogEntry(_ entry: UILogEntry) {
-        // --- Use append for Deque (same as Array) ---
         uiLogEntries.append(entry)
-        // -------------------------------------------
+        if uiLogEntries.count > logDisplayBufferSize {
+            uiLogEntries.removeFirst(uiLogEntries.count - logDisplayBufferSize)
+        }
         applyBufferSize() // Trim if needed after adding
     }
 
     private func applyBufferSize() {
-        // --- Use Deque's efficient popFirst ---
-        while uiLogEntries.count > logDisplayBufferSize {
-             uiLogEntries.popFirst() // O(1) operation!
+        if uiLogEntries.count > logDisplayBufferSize {
+            uiLogEntries.removeFirst(uiLogEntries.count - logDisplayBufferSize)
         }
-        // -------------------------------------
     }
 
     // MARK: - Public Actions
@@ -62,19 +62,17 @@ final class LogStore: ObservableObject {
         logger.info("-- Log display cleared by user (via LogStore) --")
     }
 
-    // --- Export methods need to work with Deque ---
     func exportLogs() -> String {
-        exportLogs(filtered: Array(self.uiLogEntries)) // Convert Deque to Array for filtering/mapping if needed
+        exportLogs(filtered: Array(self.uiLogEntries))
     }
 
-    func exportLogs(filtered entries: [UILogEntry]) -> String { // Keep accepting Array if filter logic expects it
+    func exportLogs(filtered entries: [UILogEntry]) -> String {
         logger.info("LogStore exporting \(entries.count) log entries.")
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-        return entries.map { entry in // Map over the Array copy
+        return entries.map { entry in
             let timestampStr = dateFormatter.string(from: entry.timestamp)
             return "\(timestampStr) [\(entry.level.rawValue.uppercased())] \(entry.displayMessage)"
         }.joined(separator: "\n")
     }
-    // -------------------------------------------
 }
