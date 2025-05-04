@@ -81,3 +81,12 @@ xpc.txt
 
 # AppleHeaders folder
 AppleHeaders/
+
+# reference docs
+ref/*
+
+#deps
+_deps/*
+
+#logs
+logs/*

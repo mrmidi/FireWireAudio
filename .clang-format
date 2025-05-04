@@ -1,0 +1,62 @@
+---
+# Based on the provided example code style
+BasedOnStyle: LLVM
+UseTab: Never
+IndentWidth: 4
+TabWidth: 4
+ColumnLimit: 140
+NamespaceIndentation: None
+BreakBeforeBraces: Allman
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+IndentWrappedFunctionNames: false
+FunctionDefinitionParameterNewline: AfterAll
+UseDeclarationNameForReturnType: All
+ContinuationIndentWidth: 4
+
+# Pointer/reference alignment
+DerivePointerAlignment: false
+PointerAlignment: Right
+ReferenceAlignment: Left
+
+# Alignment settings
+AlignConsecutiveDeclarations: false
+AlignConsecutiveAssignments: false
+AlignTrailingComments: true
+AlignAfterOpenBracket: AlwaysBreak
+AlignOperands: true
+
+# Comma and operator settings
+BinPackArguments: false
+BinPackParameters: false
+BreakBeforeInheritanceComma: false
+BreakConstructorInitializersBeforeComma: false
+BreakConstructorInitializers: AfterColon
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+AllowAllConstructorInitializersOnNextLine: false
+BreakBeforeBinaryOperators: All
+ExperimentalAutoDetectBinPacking: false
+
+# Class settings
+AccessModifierOffset: -4
+
+# Comment settings
+CommentPragmas: "^ IWYU pragma:"
+
+# Whitespace settings
+KeepEmptyLinesAtTheStartOfBlocks: true
+MaxEmptyLinesToKeep: 2
+SpacesBeforeTrailingComments: 1
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpacesInAngles: false
+SpaceInEmptyParentheses: false
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeAssignmentOperators: true
+---
+
