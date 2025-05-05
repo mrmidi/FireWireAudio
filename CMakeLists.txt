@@ -167,18 +167,16 @@ target_include_directories(Shared PUBLIC
 target_link_libraries(Shared PUBLIC spdlog "-framework Foundation")
 
 # --- Subdirectories ---
-add_subdirectory(src/FWA/XPC)
 add_subdirectory(src/Isoch)
 add_subdirectory(src/FWA)
 add_subdirectory(src/driver)
+add_subdirectory(src/xpc/FWAXPC)
 
 # --- XPC Service bundle ---
 set(XPC_SERVICE_NAME "FWADaemon")
 set(XPC_SERVICE_SOURCES
   src/xpc/FWADaemon/main.m
   src/xpc/FWADaemon/FWADaemon.mm
-  src/xpc/FWADaemon/RingBufferManager.mm
-  src/xpc/FWADaemon/ShmIsochBridge.mm
 )
 add_executable(${XPC_SERVICE_NAME} MACOSX_BUNDLE ${XPC_SERVICE_SOURCES})
 set_target_properties(${XPC_SERVICE_NAME} PROPERTIES
@@ -206,6 +204,8 @@ target_link_libraries(${XPC_SERVICE_NAME} PRIVATE
   spdlog
   "-framework Foundation"
   Shared
+  FWAXPC
+  FWAIsoch
 )
 
 # Post-build copy of assets
@@ -217,7 +217,7 @@ add_custom_command(TARGET ${XPC_SERVICE_NAME} POST_BUILD
 
 # --- Standalone CLI daemon ---
 add_executable(FirewireAudioDaemon src/main.cpp)
-target_link_libraries(FirewireAudioDaemon PRIVATE FWA Shared)
+target_link_libraries(FirewireAudioDaemon PRIVATE FWA Shared FWAXPC FWAIsoch)
 if(SANITIZER_FLAGS)
   target_compile_options(FirewireAudioDaemon PRIVATE ${SANITIZER_FLAGS})
 endif()
@@ -255,6 +255,8 @@ set(SWIFT_VIEW_SOURCES
   FWA-Control/PlugListView.swift
   FWA-Control/SubunitInfoSectionView.swift
   FWA-Control/UnitInfoSectionView.swift
+  # streams view
+  FWA-Control/StreamsView.swift
 )
 
 set(SWIFT_VIEWMODEL_SOURCES
@@ -341,6 +343,7 @@ target_link_libraries(FWA-Control PRIVATE
   SwiftCollectionsManual
   FWA
   Shared
+  FWAXPC
   "-framework SwiftUI"
   "-framework Cocoa"
   "-framework Foundation"
@@ -349,7 +352,7 @@ target_link_libraries(FWA-Control PRIVATE
   "-framework CoreAudio"
   "-framework AVFoundation"
 )
-add_dependencies(FWA-Control Logging SwiftCollectionsManual FWADaemon FWADriver FWA Shared)
+add_dependencies(FWA-Control Logging SwiftCollectionsManual FWADaemon FWADriver FWA Shared FWAXPC)
 # --- Relax Swift 6 concurrency checks ---
 target_compile_options(FWA-Control PRIVATE
   $<$<COMPILE_LANGUAGE:Swift>:-Xfrontend -strict-concurrency=targeted>
@@ -479,9 +482,8 @@ include/FWA/DeviceInfo.hpp
 
 # --- Source Groups for XPC Service ---
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src/xpc PREFIX "XPC Source Files" FILES
-src/xpc/FWADaemon/main.m
+# src/xpc/FWADaemon/main.m
 src/xpc/FWADaemon/FWADaemon.mm
-src/xpc/FWADaemon/MixedAudioBuffer.m
 )
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/include/xpc PREFIX "XPC Header Files" FILES

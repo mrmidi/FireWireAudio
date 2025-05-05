@@ -21,4 +21,4 @@ add_library(FWAIsoch STATIC
     utils/RunLoopHelper.cpp
 )
 target_include_directories(FWAIsoch PUBLIC $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>)
-target_link_libraries(FWAIsoch PUBLIC spdlog::spdlog FWA_XPC nlohmann_json::nlohmann_json "-framework IOKit" "-framework CoreFoundation" "-framework Foundation")
+target_link_libraries(FWAIsoch PUBLIC spdlog::spdlog nlohmann_json::nlohmann_json "-framework IOKit" "-framework CoreFoundation" "-framework Foundation")

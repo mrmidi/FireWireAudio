@@ -1,5 +1,5 @@
 #include <spdlog/spdlog.h>
-#import "ShmIsochBridge.hpp"
+#import "xpc/FWAXPC/ShmIsochBridge.hpp"
 #include <os/log.h>
 
 static const char *kLog = "[Bridge]";

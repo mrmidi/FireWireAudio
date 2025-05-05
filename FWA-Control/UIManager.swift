@@ -97,15 +97,6 @@ final class UIManager: ObservableObject {
                 }
                 .store(in: &cancellables)
 
-            // --- FIX: Remove subscription to xpcManager.logMessageStream ---
-            // logger.info("Subscribed to XPCManager log stream.") // REMOVED
-            // let logStream = await xpcManager.logMessageStream // REMOVED
-            // for await logInfo in logStream { // REMOVED
-            //     // This path is no longer used, logs go via LogBroadcaster now // REMOVED
-            //     logger.debug("[UIManager] Received log via XPC Stream (Should not happen): \(logInfo.sender) - \(logInfo.message)") // REMOVED
-            // } // REMOVED
-            // logger.info("XPC logMessageStream finished (UIManager subscription).") // REMOVED
-            // --- End FIX ---
 
             logger.info("Subscribed to SystemServicesManager status publisher.")
         }
@@ -207,6 +198,50 @@ final class UIManager: ObservableObject {
         }
         return await system.unregisterDaemon()
     }
+
+    // --- Stream Control Actions (NEW) ---
+    func startStreams(guid: UInt64) {
+        logger.info("UIManager: Start streams requested for GUID 0x\(String(format: "%llX", guid)).")
+        guard let engineService = engineService else {
+            logger.error("Cannot start streams: EngineService is nil.")
+            return
+        }
+        guard isRunning else {
+            logger.warning("Cannot start streams: Engine is not running.")
+            // Optionally show an alert to the user
+            return
+        }
+        Task {
+            let success = await engineService.startStreams(guid: guid)
+            logger.info("UIManager: EngineService startStreams(guid: 0x\(String(format: "%llX", guid))) returned: \(success)")
+            // TODO: Update UI based on success/failure if needed (e.g., show alert)
+        }
+    }
+
+    func stopStreams(guid: UInt64) {
+        logger.info("UIManager: Stop streams requested for GUID 0x\(String(format: "%llX", guid)).")
+        guard let engineService = engineService else {
+            logger.error("Cannot stop streams: EngineService is nil.")
+            return // Exit if engineService is nil
+        }
+
+        // --- FIX: Replace guard with if for warning ---
+        if !isRunning {
+            // Don't strictly need engine to be running to attempt stop,
+            // but might prevent unnecessary calls if state tracking existed.
+            // For now, allow stop even if UI thinks engine isn't running.
+            logger.warning("Attempting to stop streams while engine state is not 'running'.")
+            // No return here - proceed with the stop attempt
+        }
+        // --- END FIX ---
+
+        Task {
+            let success = await engineService.stopStreams(guid: guid)
+            logger.info("UIManager: EngineService stopStreams(guid: 0x\(String(format: "%llX", guid))) returned: \(success)")
+            // TODO: Update UI based on success/failure if needed
+        }
+    }
+    // --- End Stream Control Actions ---
 
     // Add other methods for Install Daemon, Set Sample Rate (via SystemServicesManager -> XPC), etc.
     

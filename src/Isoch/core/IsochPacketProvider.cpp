@@ -5,6 +5,8 @@
 #include <spdlog/spdlog.h>
 // Include header with AM824 constants if needed
 #include "Isoch/core/TransmitterTypes.hpp" // Assuming constants are here
+#include "shared/SharedMemoryStructures.hpp"
+#include "xpc/FWAXPC/RingBufferManager.hpp"
 
 namespace FWA {
 namespace Isoch {

@@ -33,7 +33,6 @@ target_include_directories(FWA PUBLIC
 target_link_libraries(FWA PUBLIC
     spdlog::spdlog
     FWAIsoch
-    FWA_XPC
     nlohmann_json::nlohmann_json
     "-framework Foundation"
     "-framework IOKit"

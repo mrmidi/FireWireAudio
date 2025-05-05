@@ -8,7 +8,7 @@
 #import <fcntl.h>
 #import <unistd.h>
 #import "shared/SharedMemoryStructures.hpp"
-#import "shared/xpc/RingBufferManager.hpp"
+#import "xpc/FWAXPC/RingBufferManager.hpp"
 // +++ spdlog includes +++
 #define SPDLOG_ENABLE_HIGH_RESOLUTION_TIMER
 #include <spdlog/spdlog.h>

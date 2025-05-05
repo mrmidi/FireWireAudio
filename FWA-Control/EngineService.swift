@@ -344,4 +344,55 @@ actor EngineService {
         if !success { logger.error("Set Clock Source failed for GUID 0x\(String(format: "%llX", guid))") }
         return success
     }
+
+    // --- Stream Control (NEW) ---
+    func startStreams(guid: UInt64) async -> Bool {
+        let engine = self.fwaEngineRef
+        logger.info("EngineService: Start streams requested for GUID 0x\(String(format: "%llX", guid)).")
+        nonisolated(unsafe) let capturedEngine = engine
+        let capturedGuid = guid
+        let success: Bool = await Task.detached { @Sendable in
+            let result = FWAEngine_StartStreamsForDevice(capturedEngine, capturedGuid)
+            if result != kIOReturnSuccess {
+                // Log the error from the detached task's context
+                AppLoggers.deviceManager.error("[BG] FWAEngine_StartStreamsForDevice failed for GUID 0x\(String(format: "%llX", capturedGuid)) with error: 0x\(String(format: "%X", result))")
+                return false
+            }
+            AppLoggers.deviceManager.info("[BG] FWAEngine_StartStreamsForDevice successful for GUID 0x\(String(format: "%llX", capturedGuid)).")
+            return true
+        }.value
+
+        if success {
+            logger.info("✅ Start streams command succeeded for GUID 0x\(String(format: "%llX", guid)).")
+            // TODO: Optionally update internal device state if needed later
+        } else {
+            logger.error("❌ Start streams command failed for GUID 0x\(String(format: "%llX", guid)).")
+        }
+        return success
+    }
+
+    func stopStreams(guid: UInt64) async -> Bool {
+        let engine = self.fwaEngineRef
+        logger.info("EngineService: Stop streams requested for GUID 0x\(String(format: "%llX", guid)).")
+        nonisolated(unsafe) let capturedEngine = engine
+        let capturedGuid = guid
+        let success: Bool = await Task.detached { @Sendable in
+            let result = FWAEngine_StopStreamsForDevice(capturedEngine, capturedGuid)
+             if result != kIOReturnSuccess {
+                AppLoggers.deviceManager.error("[BG] FWAEngine_StopStreamsForDevice failed for GUID 0x\(String(format: "%llX", capturedGuid)) with error: 0x\(String(format: "%X", result))")
+                return false
+            }
+            AppLoggers.deviceManager.info("[BG] FWAEngine_StopStreamsForDevice successful for GUID 0x\(String(format: "%llX", capturedGuid)).")
+            return true
+        }.value
+
+        if success {
+            logger.info("✅ Stop streams command succeeded for GUID 0x\(String(format: "%llX", guid)).")
+             // TODO: Optionally update internal device state if needed later
+        } else {
+            logger.error("❌ Stop streams command failed for GUID 0x\(String(format: "%llX", guid)).")
+        }
+        return success
+    }
+    // --- End Stream Control ---
 } // End Actor EngineService

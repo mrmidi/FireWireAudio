@@ -1,6 +1,6 @@
 #include <spdlog/spdlog.h>
-#include "RingBufferManager.hpp" // Assuming this includes SharedMemoryStructures.hpp
-#include "ShmIsochBridge.hpp"
+#include "xpc/FWAXPC/RingBufferManager.hpp" // Updated path
+#include "xpc/FWAXPC/ShmIsochBridge.hpp" // Updated path
 #include <sys/mman.h>
 #include <unistd.h>
 #include <os/log.h>

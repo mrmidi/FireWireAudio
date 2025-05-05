@@ -57,6 +57,10 @@ struct ContentView: View {
                 .tabItem { Label("AV/C", systemImage: "terminal") }
                 .tag(3)
                 .keyboardShortcut("4", modifiers: .command)
+            StreamsView()
+                .tabItem { Label("Streams", systemImage: "waveform.path.ecg") }
+                .tag(4)
+                .keyboardShortcut("5", modifiers: .command)
         }
     }
 
@@ -86,7 +90,7 @@ struct ContentView: View {
                 .disabled(!uiManager.isRunning)
         }
         ToolbarItemGroup {
-            if selectedTab == 0 || selectedTab == 1 {
+            if selectedTab == 0 || selectedTab == 1 || selectedTab == 4 {
                 Button {
                     logger.info("User requested refresh all devices.")
                     uiManager.refreshAllDevices()

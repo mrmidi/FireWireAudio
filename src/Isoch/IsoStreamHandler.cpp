@@ -3,7 +3,6 @@
 #include <cmath>
 #include <unistd.h>
 #include <iostream>
-#include "FWA/XPC/XPCBridge.h"
 #include <spdlog/spdlog.h>
 #include <mach/mach_time.h>
 #include <mach/thread_policy.h>
@@ -16,6 +15,7 @@
 #include <chrono>  // For sleep_for & time points
 #include <ctime>   // For std::time
 #include "Isoch/interfaces/ITransmitPacketProvider.hpp" // Include for the packet provider interface
+#include "xpc/FWAXPC/ShmIsochBridge.hpp" // Updated path from shared/xpc
 
 // Define stream direction enable/disable flags
 #define RECEIVE 0  // Set to 0 to disable receiver (input stream)
@@ -63,38 +63,19 @@ IsoStreamHandler::IsoStreamHandler(std::shared_ptr<AudioDevice> device,
         m_logger->info("IsoStreamHandler: Node ID: {}", m_nodeId);
     }
 
-    // --- Initialize XPC Bridge HERE ---
-#if TRANSMIT
-    try {
-        // Initialize XPC Bridge without a specific processor
-        m_logger->info("IsoStreamHandler Constructor: Initializing XPC Bridge...");
-        XPCBridgeInitialize(nullptr); // Pass null for now, this interface needs to be updated
-        m_logger->info("IsoStreamHandler Constructor: XPC Bridge initialized.");
-
-    } catch (const std::exception& e) {
-        m_logger->error("IsoStreamHandler Constructor: Exception creating processor/XPC: {}", e.what());
-        // Handle error state
-        return;
-    } catch (...) {
-        m_logger->error("IsoStreamHandler Constructor: Unknown exception creating processor/XPC.");
-        // Handle error state
-        return;
-    }
-#else
-    // Even if transmitter is disabled, initialize XPC bridge, but pass nullptr
-    m_logger->info("IsoStreamHandler Constructor: Transmitter disabled, initializing XPC bridge with null processor.");
-    XPCBridgeInitialize(nullptr);
-#endif
-    // --- End Processor and XPC Init ---
+    // --- REMOVE Obsolete XPC Initialization ---
+    m_logger->info("IsoStreamHandler: Constructor finished (obsolete XPC init removed).");
+    // --- End Removal ---
 }
 
 IsoStreamHandler::~IsoStreamHandler() {
+    // Ensure stop is called which should handle ShmIsochBridge::stop()
     stop();
 
 #ifdef __OBJC__
     @autoreleasepool {
         if (m_xpcClient) {
-            [m_xpcClient release];
+            // [m_xpcClient release]; // ARC will handle this if it's an ARC-managed object
             m_xpcClient = nil;
         }
     }
@@ -268,21 +249,25 @@ std::expected<void, IOKitError> IsoStreamHandler::start() {
     }
     m_logger->info("IsoStreamHandler: Output stream started");
 
-    // --- Initialize XPC Bridge AFTER output stream is created ---
-    m_logger->info("IsoStreamHandler: Initializing XPC Bridge...");
-    Isoch::ITransmitPacketProvider* provider = getTransmitPacketProvider(); // Call the corrected getter
+    // --- +++ Start ShmIsochBridge AFTER output stream is started +++ ---
+    m_logger->info("IsoStreamHandler: Starting ShmIsochBridge...");
+    Isoch::ITransmitPacketProvider* provider = getTransmitPacketProvider();
     if (provider) {
-        XPCBridgeInitialize(static_cast<void*>(provider)); // Pass the provider pointer
-        m_logger->info("IsoStreamHandler: XPC Bridge initialized with Packet Provider.");
+        ShmIsochBridge::instance().start(provider); // Pass the provider pointer
+        m_logger->info("IsoStreamHandler: ShmIsochBridge started with Packet Provider.");
     } else {
-        m_logger->error("IsoStreamHandler: Failed to get Packet Provider from output stream! XPC will not work.");
-        XPCBridgeInitialize(nullptr);
+        m_logger->error("IsoStreamHandler: Failed to get Packet Provider from output stream! SHM bridge NOT started.");
+        // Decide if this is fatal? Probably should be.
+#if RECEIVE
+        if (m_inputStream) m_inputStream->stop(); m_inputStream.reset();
+#endif
+        if (m_outputStream) m_outputStream->stop(); m_outputStream.reset();
+        return std::unexpected(IOKitError::NotReady); // Indicate SHM bridge failed to start
     }
-    // ---------------------------------------------------------
+    // --- +++ End ShmIsochBridge Start +++ ---
 
 #else // TRANSMIT == 0
     m_logger->info("IsoStreamHandler: Transmitter disabled by build configuration.");
-    XPCBridgeInitialize(nullptr);
 #endif // TRANSMIT
 
 
@@ -299,7 +284,11 @@ std::expected<void, IOKitError> IsoStreamHandler::start() {
         // Stop streams if we can't start the consumer
         if (m_inputStream) m_inputStream->stop(); m_inputStream.reset();
 #if TRANSMIT
-        if (m_outputStream) m_outputStream->stop(); m_outputStream.reset();
+        if (m_outputStream) {
+            ShmIsochBridge::instance().stop(); // Stop bridge first
+            m_outputStream->stop();
+            m_outputStream.reset();
+        }
 #endif
         return std::unexpected(IOKitError::NotReady);
     }
@@ -338,6 +327,17 @@ void IsoStreamHandler::stop() {
             m_logger->info("IsoStreamHandler: Data processing thread stopped");
         }
     }
+
+    // --- +++ Stop ShmIsochBridge BEFORE stopping output stream +++ ---
+#if TRANSMIT
+    if (m_outputStream) { // Only stop bridge if transmitter was active
+         m_logger->info("IsoStreamHandler: Stopping ShmIsochBridge...");
+         ShmIsochBridge::instance().stop();
+         m_logger->info("IsoStreamHandler: ShmIsochBridge stopped.");
+    }
+#endif
+    // --- +++ End ShmIsochBridge Stop +++ ---
+
 
 #if RECEIVE
     // Stop input stream if active
@@ -463,7 +463,7 @@ void IsoStreamHandler::handleMessageImpl(uint32_t msg, uint32_t param1, uint32_t
         switch (txMsg) {
             case Isoch::TransmitterMessage::StreamStarted: m_logger->info("IsoStreamHandler: AMDTP TX Stream Started"); break;
             case Isoch::TransmitterMessage::StreamStopped: m_logger->info("IsoStreamHandler: AMDTP TX Stream Stopped"); break;
-//            case Isoch::TransmitterMessage::BufferUnderrun: m_logger->warn("IsoStreamHandler: AMDTP TX Buffer Underrun (Seg={}, Pkt={})", param1, param2); break;
+            case Isoch::TransmitterMessage::BufferUnderrun: m_logger->warn("IsoStreamHandler: AMDTP TX Buffer Underrun (Seg={}, Pkt={})", param1, param2); break;
             case Isoch::TransmitterMessage::OverrunError: m_logger->error("IsoStreamHandler: AMDTP TX DCL Overrun error occurred"); break;
             // Add cases for other transmitter messages as needed
             case Isoch::TransmitterMessage::Error: m_logger->error("IsoStreamHandler: AMDTP TX Generic Error occurred"); break;
@@ -694,5 +694,23 @@ void IsoStreamHandler::consumerLoop() {
 
     m_logger->info("IsoStreamHandler: Consumer loop finished.");
 }
+
+// Need to implement pushTransmitData if TRANSMIT is enabled
+#if TRANSMIT
+bool IsoStreamHandler::pushTransmitData(const void* buffer, size_t bufferSizeInBytes) {
+    if (m_outputStream) {
+       // Delegate to AudioDeviceStream's implementation
+       return m_outputStream->pushTransmitData(buffer, bufferSizeInBytes);
+    }
+    m_logger->warn("pushTransmitData called but output stream is not active/initialized.");
+    return false;
+}
+#else
+// Provide a stub if transmitter is disabled
+bool IsoStreamHandler::pushTransmitData(const void* buffer, size_t bufferSizeInBytes) {
+    // m_logger->trace("pushTransmitData called but transmitter is disabled.");
+    return false; // Indicate failure as transmitter isn't running
+}
+#endif // TRANSMIT
 
 } // namespace FWA

@@ -132,10 +132,25 @@ std::expected<void, IOKitError> AudioDevice::init()
     
     // create interfaces
     result = createFWDeviceInterface();
-    
+    // --- MODIFICATION START ---
     if (result != kIOReturnSuccess) {
         spdlog::error("AudioDevice::init: Failed to create FW device interface: 0x{:x}", result);
+        // Clean up resources acquired so far in init before returning error
+        if (notificationPort_) {
+            // Remove source before destroying port if it was added
+            // CFRunLoopRemoveSource(CFRunLoopGetCurrent(), IONotificationPortGetRunLoopSource(notificationPort_), kCFRunLoopDefaultMode);
+            IONotificationPortDestroy(notificationPort_);
+            notificationPort_ = nullptr;
+        }
+         if (busController_) { IOObjectRelease(busController_); busController_ = 0; }
+         if (fwDevice_) { IOObjectRelease(fwDevice_); fwDevice_ = 0; }
+         if (fwUnit_) { IOObjectRelease(fwUnit_); fwUnit_ = 0; }
+        // Return the error immediately
+        return std::unexpected(static_cast<IOKitError>(result));
     }
+    // If we reach here, deviceInterface should be non-null and potentially open.
+    spdlog::debug("AudioDevice::init: FW device interface created successfully (result = 0x{:x}).", result);
+    // --- MODIFICATION END ---
 
     // CFRunLoopAddSource(CFRunLoopGetCurrent(),
     //                    IONotificationPortGetRunLoopSource(notificationPort_),
