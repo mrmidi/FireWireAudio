@@ -510,7 +510,7 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
                 id<FWAClientNotificationProtocol> guiProxy = info.remoteProxy;
                 if (guiProxy) {
                     @try {
-                        [guiProxy didReceiveLogMessageFrom:@"FWADriver" level:level message:message];
+                        [guiProxy didReceiveLogMessageFrom:@"FWADriver" level:(FWAXPCLoglevel)level message:message];
                     } @catch (NSException *exception) {
                         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] Exception forwarding log to GUI client '%{public}@': %{public}@", info.clientID, exception);
                         // Consider removing this client if forwarding fails repeatedly
@@ -537,6 +537,104 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
     os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Replying to getSharedMemoryName with: %{public}@", name);
     if (reply) {
         reply(name);
+    }
+}
+
+// --- New FWADaemonControlProtocol Methods (Placeholder Implementations) ---
+
+- (void)registerClientAndStartEngine:(NSString *)clientID
+          clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
+                           withReply:(void (^)(BOOL success, NSError * _Nullable error))reply {
+    SPDLOG_WARN("registerClientAndStartEngine:clientNotificationEndpoint:withReply: called for client '{}' - NOT IMPLEMENTED YET", 
+                [clientID UTF8String] ?: "<nil>");
+    if (reply) {
+        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
+                                             code:1001 
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
+        reply(NO, error);
+    }
+}
+
+- (void)unregisterClientAndStopEngine:(NSString *)clientID
+                            withReply:(void (^)(BOOL success, NSError * _Nullable error))reply {
+    SPDLOG_WARN("unregisterClientAndStopEngine:withReply: called for client '{}' - NOT IMPLEMENTED YET", 
+                [clientID UTF8String] ?: "<nil>");
+    if (reply) {
+        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
+                                             code:1002 
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
+        reply(NO, error);
+    }
+}
+
+- (void)getConnectedDeviceSummariesWithReply:(void (^)(NSArray<NSDictionary *> * _Nullable deviceSummaries, NSError * _Nullable error))reply {
+    SPDLOG_WARN("getConnectedDeviceSummariesWithReply: called - NOT IMPLEMENTED YET");
+    if (reply) {
+        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
+                                             code:1003 
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
+        reply(nil, error);
+    }
+}
+
+- (void)getDetailedDeviceInfoJSONForGUID:(uint64_t)guid
+                               withReply:(void (^)(NSString * _Nullable deviceInfoJSON, NSError * _Nullable error))reply {
+    SPDLOG_WARN("getDetailedDeviceInfoJSONForGUID:withReply: called for GUID 0x{:016X} - NOT IMPLEMENTED YET", guid);
+    if (reply) {
+        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
+                                             code:1004 
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
+        reply(nil, error);
+    }
+}
+
+- (void)sendAVCCommandToDevice:(uint64_t)guid
+                       command:(NSData *)commandData
+                     withReply:(void (^)(NSData * _Nullable responseData, NSError * _Nullable error))reply {
+    SPDLOG_WARN("sendAVCCommandToDevice:command:withReply: called for GUID 0x{:016X} with {} bytes - NOT IMPLEMENTED YET", 
+                guid, commandData ? [commandData length] : 0);
+    if (reply) {
+        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
+                                             code:1005 
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
+        reply(nil, error);
+    }
+}
+
+- (void)startAudioStreamsForDevice:(uint64_t)guid
+                         withReply:(void (^)(BOOL success, NSError * _Nullable error))reply {
+    SPDLOG_WARN("startAudioStreamsForDevice:withReply: called for GUID 0x{:016X} - NOT IMPLEMENTED YET", guid);
+    if (reply) {
+        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
+                                             code:1006 
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
+        reply(NO, error);
+    }
+}
+
+- (void)stopAudioStreamsForDevice:(uint64_t)guid
+                        withReply:(void (^)(BOOL success, NSError * _Nullable error))reply {
+    SPDLOG_WARN("stopAudioStreamsForDevice:withReply: called for GUID 0x{:016X} - NOT IMPLEMENTED YET", guid);
+    if (reply) {
+        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
+                                             code:1007 
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
+        reply(NO, error);
+    }
+}
+
+- (void)setDaemonLogLevel:(FWAXPCLoglevel)level
+                withReply:(void (^)(BOOL success))reply {
+    SPDLOG_WARN("setDaemonLogLevel:withReply: called with level {} - NOT IMPLEMENTED YET", (int)level);
+    if (reply) {
+        reply(NO);
+    }
+}
+
+- (void)getDaemonLogLevelWithReply:(void (^)(FWAXPCLoglevel currentLevel))reply {
+    SPDLOG_WARN("getDaemonLogLevelWithReply: called - NOT IMPLEMENTED YET");
+    if (reply) {
+        reply(FWAXPCLoglevelInfo); // Return a default level
     }
 }
 
@@ -595,7 +693,7 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
                 id<FWAClientNotificationProtocol> guiProxy = info.remoteProxy;
                 if (guiProxy && info.connection) {
                     @try {
-                        [guiProxy didReceiveLogMessageFrom:senderID level:level message:message];
+                        [guiProxy didReceiveLogMessageFrom:senderID level:(FWAXPCLoglevel)level message:message];
                     } @catch (NSException *exception) {
                         const char* senderID_cstr = [senderID UTF8String];
                         const char* clientID_cstr = [info.clientID UTF8String];

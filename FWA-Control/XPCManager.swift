@@ -316,7 +316,59 @@ private final class XPCNotificationHandler: NSObject,
         }
     }
 
-    func didReceiveLogMessage(from senderID: String,
+    // MARK: - Required FWAClientNotificationProtocol Methods
+    
+    /// Notifies the client that a new FireWire audio device has been discovered and initialized.
+    func deviceAdded(_ deviceSummary: [String : Any]) {
+        logger.info("Device added: \(deviceSummary)")
+        // TODO: Process device addition and notify manager
+        // Example: Extract GUID, name, vendor from deviceSummary and create DeviceStatus
+        if let guid = deviceSummary["guid"] as? UInt64 {
+            let status = DeviceStatus(
+                guid: guid,
+                isConnected: true,
+                isInitialized: true,
+                name: deviceSummary["name"] as? String,
+                vendor: deviceSummary["vendor"] as? String
+            )
+            let mgr = manager
+            Task.detached { [mgr, status] in
+                await mgr.dispatchStatus(status)
+            }
+        }
+    }
+    
+    /// Notifies the client that a previously discovered device has been removed.
+    func deviceRemoved(_ guid: UInt64) {
+        logger.info("Device removed: GUID 0x\(String(format: "%llX", guid))")
+        let status = DeviceStatus(
+            guid: guid,
+            isConnected: false,
+            isInitialized: false,
+            name: nil,
+            vendor: nil
+        )
+        let mgr = manager
+        Task.detached { [mgr, status] in
+            await mgr.dispatchStatus(status)
+        }
+    }
+    
+    /// Notifies the client that detailed information or status for a device has been updated.
+    func deviceInfoUpdated(_ guid: UInt64, newInfoJSON updatedInfoJSON: String) {
+        logger.info("Device info updated for GUID 0x\(String(format: "%llX", guid))")
+        // TODO: Parse JSON and create DeviceConfig update
+        // For now, we'll just log it
+    }
+    
+    /// Notifies the client about a change in the streaming status for a device.
+    func streamStatusChanged(forDevice guid: UInt64, isStreaming: Bool, error: Error?) {
+        logger.info("Stream status changed for GUID 0x\(String(format: "%llX", guid)): streaming=\(isStreaming), error=\(String(describing: error))")
+        // TODO: Handle stream status changes
+    }
+    
+    /// Forwards a log message originating from within the daemon (FWA/Isoch C++ libraries).
+    func didReceiveLogMessage(_ senderID: String,
                               level: Int32,
                               message: String)
     {
@@ -346,17 +398,37 @@ private final class XPCNotificationHandler: NSObject,
             await LogBroadcaster.shared.broadcast(entry: entry)
         }
     }
-
-    func performSetNominalSampleRate(_ guid: UInt64,
-                                     rate: Double,
-                                     withReply reply: @escaping (Bool) -> Void)
-    {
-        let safe = ReplyWrapper(reply)
-        let mgr = manager
+    
+    /// Legacy method: Forwards a log message with FWAXPCLoglevel for daemon internal use.
+    func didReceiveLogMessage(from senderID: String, level: FWAXPCLoglevel, message: String) {
+        logger.trace("Received legacy log message from \(senderID) at level \(level): \(message)")
+        
+        // Convert FWAXPCLoglevel to Logger.Level
+        let mappedLevel: Logger.Level
+        switch level {
+        case .trace:    mappedLevel = .trace
+        case .debug:    mappedLevel = .debug
+        case .info:     mappedLevel = .info
+        case .warn:     mappedLevel = .warning
+        case .error:    mappedLevel = .error
+        case .critical: mappedLevel = .critical
+        case .off:      mappedLevel = .critical
+        @unknown default: mappedLevel = .debug
+        }
+        
+        // Create a UILogEntry
+        let entry = UILogEntry(
+            level: mappedLevel,
+            message: .init(stringLiteral: message),
+            metadata: nil,
+            source: senderID,
+            file: "#XPC#",
+            function: "#\(senderID)#",
+            line: 0
+        )
+        
         Task.detached {
-            let ok = await mgr.engineService
-                        .setSampleRate(guid: guid, rate: rate)
-            safe.call(ok)
+            await LogBroadcaster.shared.broadcast(entry: entry)
         }
     }
 
@@ -430,6 +502,19 @@ private final class XPCNotificationHandler: NSObject,
         Task.detached {
             await mgr.engineService
                 .stopIO(guid: guid)
+        }
+    }
+
+    func performSetNominalSampleRate(_ guid: UInt64,
+                                     rate: Double,
+                                     withReply reply: @escaping (Bool) -> Void)
+    {
+        let safe = ReplyWrapper(reply)
+        let mgr = manager
+        Task.detached {
+            let ok = await mgr.engineService
+                        .setSampleRate(guid: guid, rate: rate)
+            safe.call(ok)
         }
     }
 
