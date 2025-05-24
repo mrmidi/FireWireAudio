@@ -105,19 +105,19 @@ struct StreamsView_Previews: PreviewProvider {
          // --- Preview UIManager Setup ---
          let previewUIManager: UIManager = {
              // Use the existing robust preview setup logic
-             if let engine = EngineService() {
-                 let permManager = PermissionManager()
-                 let daemonManager = DaemonServiceManager()
-                 let systemServices = SystemServicesManager(
-                     engineService: engine,
-                     permissionManager: permManager,
-                     daemonServiceManager: daemonManager
-                 )
-                 let logStore = LogStore()
-                 let uiManager = UIManager(
-                     engineService: engine,
-                     systemServicesManager: systemServices,
-                     logStore: logStore
+             let engine = EngineService() // No longer failable
+             let permManager = PermissionManager()
+             let daemonManager = DaemonServiceManager()
+             let systemServices = SystemServicesManager(
+                 engineService: engine,
+                 permissionManager: permManager,
+                 daemonServiceManager: daemonManager
+             )
+             let logStore = LogStore()
+             let uiManager = UIManager(
+                 engineService: engine,
+                 systemServicesManager: systemServices,
+                 logStore: logStore
                  )
                  // Add a dummy device for selection
                  let dummyDevice = DeviceInfo(
@@ -129,9 +129,6 @@ struct StreamsView_Previews: PreviewProvider {
                  // Set engine running for preview
                  uiManager.isRunning = true
                  return uiManager
-             } else {
-                 return UIManager(engineService: nil, systemServicesManager: nil, logStore: nil)
-             }
          }()
 
          return StreamsView()

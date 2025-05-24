@@ -245,6 +245,89 @@ public final actor XPCManager {
             }
         }
     }
+
+    // MARK: — Engine Lifecycle Methods
+
+    public func registerClientAndStartEngine() async throws -> Bool {
+        guard let proxy = validProxy() else { 
+            throw NSError(domain: "XPCManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "No valid XPC proxy"])
+        }
+        return await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
+            proxy.registerClientAndStartEngine(clientID, 
+                                              clientNotificationEndpoint: listener!.endpoint) { @Sendable success, error in
+                if let error = error {
+                    self.logger.error("registerClientAndStartEngine failed: \(error)")
+                }
+                cc.resume(returning: success && error == nil)
+            }
+        }
+    }
+
+    public func unregisterClientAndStopEngine() async throws -> Bool {
+        guard let proxy = validProxy() else { 
+            throw NSError(domain: "XPCManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "No valid XPC proxy"])
+        }
+        return await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
+            proxy.unregisterClientAndStopEngine(clientID) { @Sendable success, error in
+                if let error = error {
+                    self.logger.error("unregisterClientAndStopEngine failed: \(error)")
+                }
+                cc.resume(returning: success && error == nil)
+            }
+        }
+    }
+
+    // MARK: — Device Operations
+
+    public func sendAVCCommand(guid: UInt64, command: Data) async -> Data? {
+        guard let proxy = validProxy() else { return nil }
+        return await withCheckedContinuation { (cc: CheckedContinuation<Data?, Never>) in
+            proxy.sendAVCCommand(toDevice: guid, command: command) { @Sendable responseData, error in
+                if let error = error {
+                    self.logger.error("sendAVCCommand failed: \(error)")
+                }
+                cc.resume(returning: responseData)
+            }
+        }
+    }
+
+    public func getDetailedDeviceInfoJSON(guid: UInt64) async -> String? {
+        guard let proxy = validProxy() else { return nil }
+        return await withCheckedContinuation { (cc: CheckedContinuation<String?, Never>) in
+            proxy.getDetailedDeviceInfoJSON(forGUID: guid) { @Sendable jsonString, error in
+                if let error = error {
+                    self.logger.error("getDetailedDeviceInfoJSON failed: \(error)")
+                }
+                cc.resume(returning: jsonString)
+            }
+        }
+    }
+
+    public func startAudioStreams(guid: UInt64) async -> Bool {
+        guard let proxy = validProxy() else { return false }
+        return await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
+            proxy.startAudioStreams(forDevice: guid) { @Sendable success, error in
+                if let error = error {
+                    self.logger.error("startAudioStreams failed: \(error)")
+                }
+                cc.resume(returning: success && error == nil)
+            }
+        }
+    }
+
+    public func stopAudioStreams(guid: UInt64) async -> Bool {
+        guard let proxy = validProxy() else { return false }
+        return await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
+            proxy.stopAudioStreams(forDevice: guid) { @Sendable success, error in
+                if let error = error {
+                    self.logger.error("stopAudioStreams failed: \(error)")
+                }
+                cc.resume(returning: success && error == nil)
+            }
+        }
+    }
+
+    // MARK: — Proxy Helper
 }
 
 // MARK: - XPCNotificationHandler
@@ -321,9 +404,14 @@ private final class XPCNotificationHandler: NSObject,
     /// Notifies the client that a new FireWire audio device has been discovered and initialized.
     func deviceAdded(_ deviceSummary: [String : Any]) {
         logger.info("Device added: \(deviceSummary)")
-        // TODO: Process device addition and notify manager
-        // Example: Extract GUID, name, vendor from deviceSummary and create DeviceStatus
         if let guid = deviceSummary["guid"] as? UInt64 {
+            // Notify EngineService
+            let mgr = manager
+            Task.detached { [mgr] in
+                await mgr.engineService.handleDeviceUpdate(guid: guid, added: true)
+            }
+            
+            // Also dispatch to status stream
             let status = DeviceStatus(
                 guid: guid,
                 isConnected: true,
@@ -331,7 +419,6 @@ private final class XPCNotificationHandler: NSObject,
                 name: deviceSummary["name"] as? String,
                 vendor: deviceSummary["vendor"] as? String
             )
-            let mgr = manager
             Task.detached { [mgr, status] in
                 await mgr.dispatchStatus(status)
             }
@@ -341,6 +428,14 @@ private final class XPCNotificationHandler: NSObject,
     /// Notifies the client that a previously discovered device has been removed.
     func deviceRemoved(_ guid: UInt64) {
         logger.info("Device removed: GUID 0x\(String(format: "%llX", guid))")
+        
+        // Notify EngineService
+        let mgr = manager
+        Task.detached { [mgr] in
+            await mgr.engineService.handleDeviceUpdate(guid: guid, added: false)
+        }
+        
+        // Also dispatch to status stream
         let status = DeviceStatus(
             guid: guid,
             isConnected: false,
@@ -348,7 +443,6 @@ private final class XPCNotificationHandler: NSObject,
             name: nil,
             vendor: nil
         )
-        let mgr = manager
         Task.detached { [mgr, status] in
             await mgr.dispatchStatus(status)
         }

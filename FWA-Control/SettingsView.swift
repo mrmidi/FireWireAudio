@@ -139,7 +139,7 @@ struct SettingsView: View {
 }
 
 // --- FIX: Add CustomStringConvertible extension ---
-extension SMAppService.Status: CustomStringConvertible {
+extension SMAppService.Status: @retroactive CustomStringConvertible {
     public var description: String {
         switch self {
         case .enabled: return "Enabled"
@@ -153,49 +153,49 @@ extension SMAppService.Status: CustomStringConvertible {
 // --- End extension ---
 
 // MARK: - Preview
-struct SettingsView_Previews: PreviewProvider {
-    @MainActor
-    static func createPreviewServices() -> (engine: EngineService?, system: SystemServicesManager?, log: LogStore?) {
-        guard let engine = EngineService() else {
-            print("PREVIEW ERROR: EngineService() failed in SettingsView preview.")
-            return (nil, nil, nil)
-        }
-        let permManager = PermissionManager()
-        let daemonManager = DaemonServiceManager()
-        let systemServices = SystemServicesManager(
-            engineService: engine,
-            permissionManager: permManager,
-            daemonServiceManager: daemonManager
-        )
-        let logStore = LogStore()
-        return (engine, systemServices, logStore)
-    }
+// struct SettingsView_Previews: PreviewProvider {
+//     @MainActor
+//     static func createPreviewServices() -> (engine: EngineService?, system: SystemServicesManager?, log: LogStore?) {
+//         guard let engine = EngineService() else {
+//             print("PREVIEW ERROR: EngineService() failed in SettingsView preview.")
+//             return (nil, nil, nil)
+//         }
+//         let permManager = PermissionManager()
+//         let daemonManager = DaemonServiceManager()
+//         let systemServices = SystemServicesManager(
+//             engineService: engine,
+//             permissionManager: permManager,
+//             daemonServiceManager: daemonManager
+//         )
+//         let logStore = LogStore()
+//         return (engine, systemServices, logStore)
+//     }
 
-    @MainActor
-    static func createPreviewUIManager(connected: Bool, needsApproval: Bool = false) -> UIManager {
-        let (engine, system, log) = createPreviewServices()
-        let uiManager = UIManager(engineService: engine, systemServicesManager: system, logStore: log)
-        uiManager.isDaemonConnected = connected
-        uiManager.isDriverConnected = connected
-        uiManager.daemonInstallStatus = needsApproval ? .requiresApproval : (connected ? .enabled : .notRegistered)
-        uiManager.showDaemonInstallPrompt = needsApproval
-        uiManager.showDriverInstallPrompt = !connected
-        log?.logDisplayBufferSize = 333
+//     @MainActor
+//     static func createPreviewUIManager(connected: Bool, needsApproval: Bool = false) -> UIManager {
+//         let (engine, system, log) = createPreviewServices()
+//         let uiManager = UIManager(engineService: engine, systemServicesManager: system, logStore: log)
+//         uiManager.isDaemonConnected = connected
+//         uiManager.isDriverConnected = connected
+//         uiManager.daemonInstallStatus = needsApproval ? .requiresApproval : (connected ? .enabled : .notRegistered)
+//         uiManager.showDaemonInstallPrompt = needsApproval
+//         uiManager.showDriverInstallPrompt = !connected
+//         log?.logDisplayBufferSize = 333
 
-        return uiManager
-    }
+//         return uiManager
+//     }
 
-    static var previews: some View {
-        SettingsView()
-            .environmentObject(createPreviewUIManager(connected: true))
-            .previewDisplayName("Connected State")
+//     static var previews: some View {
+//         SettingsView()
+//             .environmentObject(createPreviewUIManager(connected: true))
+//             .previewDisplayName("Connected State")
 
-        SettingsView()
-            .environmentObject(createPreviewUIManager(connected: false))
-            .previewDisplayName("Disconnected State")
+//         SettingsView()
+//             .environmentObject(createPreviewUIManager(connected: false))
+//             .previewDisplayName("Disconnected State")
 
-        SettingsView()
-             .environmentObject(createPreviewUIManager(connected: false, needsApproval: true))
-             .previewDisplayName("Needs Approval State")
-    }
-}
+//         SettingsView()
+//              .environmentObject(createPreviewUIManager(connected: false, needsApproval: true))
+//              .previewDisplayName("Needs Approval State")
+//     }
+// }

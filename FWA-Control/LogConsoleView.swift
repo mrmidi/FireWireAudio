@@ -52,7 +52,7 @@ struct LogConsoleView: View {
                         logEntryRow(entry)
                             .id(entry.id)
                     }
-                    .onChange(of: filteredLogs.count) { _ in
+                    .onChange(of: filteredLogs.count) {
                         scrollToBottomIfNeeded(proxy: proxy)
                     }
                     .onAppear {
@@ -97,10 +97,8 @@ struct LogConsoleView: View {
 
             Toggle("Auto-Scroll", isOn: $isAutoScrollEnabled)
                 .toggleStyle(.checkbox)
-                .onChange(of: isAutoScrollEnabled) { enabled in
-                    if enabled {
-                        // No-op: handled in list's onChange
-                    }
+                .onChange(of: isAutoScrollEnabled) {
+                    // No-op: handled in list's onChange
                 }
 
             Button {

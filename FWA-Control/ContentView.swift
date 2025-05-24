@@ -34,9 +34,13 @@ struct ContentView: View {
             }
         }
         .alert("FireWire Driver Missing", isPresented: $uiManager.showDriverInstallPrompt, actions: driverAlertActions, message: driverAlertMessage)
-        .onChange(of: uiManager.showDriverInstallPrompt, perform: handleDriverPromptChange)
+        .onChange(of: uiManager.showDriverInstallPrompt) { _ in
+            handleDriverPromptChange(isShowing: uiManager.showDriverInstallPrompt)
+        }
         .alert("FireWire Daemon Not Installed", isPresented: $uiManager.showDaemonInstallPrompt, actions: daemonAlertActions, message: daemonAlertMessage)
-        .onChange(of: uiManager.showDaemonInstallPrompt, perform: handleDaemonPromptChange)
+        .onChange(of: uiManager.showDaemonInstallPrompt) { _ in
+            handleDaemonPromptChange(isShowing: uiManager.showDaemonInstallPrompt)
+        }
     }
 
     @ViewBuilder private var mainTabView: some View {
@@ -165,28 +169,24 @@ struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         // --- FIX: Robust UIManager preview initialization ---
         let previewUIManager: UIManager = {
-            if let engine = EngineService() {
-                let permManager = PermissionManager()
-                let daemonManager = DaemonServiceManager()
-                let systemServices = SystemServicesManager(
-                    engineService: engine,
-                    permissionManager: permManager,
-                    daemonServiceManager: daemonManager
-                )
-                let logStore = LogStore()
-                let uiManager = UIManager(
-                    engineService: engine,
-                    systemServicesManager: systemServices,
-                    logStore: logStore
-                )
-                // Optionally set preview state:
-                // uiManager.isRunning = true
-                // uiManager.showDriverInstallPrompt = true
-                return uiManager
-            } else {
-                // Fallback: nil dependencies
-                return UIManager(engineService: nil, systemServicesManager: nil, logStore: nil)
-            }
+            let engine = EngineService() // No longer failable
+            let permManager = PermissionManager()
+            let daemonManager = DaemonServiceManager()
+            let systemServices = SystemServicesManager(
+                engineService: engine,
+                permissionManager: permManager,
+                daemonServiceManager: daemonManager
+            )
+            let logStore = LogStore()
+            let uiManager = UIManager(
+                engineService: engine,
+                systemServicesManager: systemServices,
+                logStore: logStore
+            )
+            // Optionally set preview state:
+            // uiManager.isRunning = true
+            // uiManager.showDriverInstallPrompt = true
+            return uiManager
         }()
         return ContentView()
             .environmentObject(previewUIManager)

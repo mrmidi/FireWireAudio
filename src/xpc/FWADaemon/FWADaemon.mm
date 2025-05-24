@@ -1,27 +1,21 @@
 #import "FWADaemon.h" // Import the interface declaration
 #import "shared/xpc/FWAClientNotificationProtocol.h" // Correct client protocol
-// #import "shared/xpc/FWADaemonControlProtocol.h" // Protocol imported via FWADaemon.h
 #import <Foundation/Foundation.h>
 #import <os/log.h> // Use os_log
-#import <sys/mman.h>
-#import <sys/stat.h>
-#import <fcntl.h>
-#import <unistd.h>
-#import "shared/SharedMemoryStructures.hpp"
-#import "xpc/FWAXPC/RingBufferManager.hpp"
-// +++ spdlog includes +++
-#define SPDLOG_ENABLE_HIGH_RESOLUTION_TIMER
-#include <spdlog/spdlog.h>
-#include <spdlog/pattern_formatter.h>
-// +++ custom sinks +++
-#include "OsLogSink.hpp"
-#include "GuiCallbackSink.hpp"
 
-// +++ ADDED: Define the shared memory name +++
-static const char* kSharedMemoryName = "/fwa_daemon_shm_v1";
+// --- C++ Includes ---
+#define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_TRACE // Ensure all spdlog macros are compiled
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_sinks.h> // For stderr_sink_mt
+#include "core/DaemonCore.hpp"          // Path to your DaemonCore.hpp
+#include "OsLogSink.hpp"                // Your custom sink for C++ logs to os_log
+#include "GuiCallbackSink.hpp"          // Your custom sink for C++ logs to GUI clients
+
+// --- Global/Static for C++ Core and Daemon's own logger ---
+static std::shared_ptr<spdlog::logger> s_FWADaemon_ObjC_logger; // Logger for FWADaemon.mm
 
 static const void * const kInternalQueueKey = &kInternalQueueKey;
-static void * const kInternalQueueContext = (void *)&kInternalQueueContext; // Or just NULL if you prefer
+static void * const kInternalQueueContext = (void *)&kInternalQueueContext;
 
 // Simple class to hold client info (Keep this definition)
 @interface ClientInfo : NSObject
@@ -35,13 +29,9 @@ static void * const kInternalQueueContext = (void *)&kInternalQueueContext; // O
 // Class extension for private properties
 @interface FWADaemon ()
 @property (nonatomic, strong) NSMutableDictionary<NSString *, ClientInfo *> *connectedClients;
-@property (nonatomic, assign) BOOL driverIsConnected; // New state variable
+@property (nonatomic, assign) BOOL driverIsConnected;
 @property (nonatomic, strong) dispatch_queue_t internalQueue;
-@property (nonatomic, copy) NSString *sharedMemoryName;
-// Note: mutableClients and xpcQueue seem redundant if connectedClients and internalQueue are used properly.
-// Let's remove them for now unless needed for a specific reason.
-// @property (nonatomic, strong) NSMutableArray<NSXPCConnection *> *mutableClients;
-// @property (nonatomic, strong) dispatch_queue_t xpcQueue;
+// Note: sharedMemoryName property removed - DaemonCore handles the name
 @end
 
 @implementation FWADaemon
@@ -50,111 +40,128 @@ static void * const kInternalQueueContext = (void *)&kInternalQueueContext; // O
     static FWADaemon *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sharedInstance = [[FWADaemon alloc] init]; // Use alloc/init
+        // Initialize shared logger for FWADaemon.mm messages first
+        if (!s_FWADaemon_ObjC_logger) {
+            try {
+                // This logger is for messages specifically from FWADaemon.mm itself.
+                // DaemonCore will get its own logger instance passed to it.
+                auto os_sink_for_daemon_mm = std::make_shared<os_log_sink_mt>(OS_LOG_DEFAULT);
+                s_FWADaemon_ObjC_logger = std::make_shared<spdlog::logger>("FWADaemonObjC", os_sink_for_daemon_mm);
+                s_FWADaemon_ObjC_logger->set_level(spdlog::level::trace);
+                spdlog::register_logger(s_FWADaemon_ObjC_logger); // Optional: register if accessed via spdlog::get
+                s_FWADaemon_ObjC_logger->info("FWADaemon.mm specific logger initialized.");
+            } catch (const std::exception& e) {
+                os_log_error(OS_LOG_DEFAULT, "FWADaemon.mm specific spdlog init failed: %s", e.what());
+                // Fallback to os_log directly if spdlog fails for this specific logger
+            }
+        }
+        sharedInstance = [[FWADaemon alloc] initPrivate]; // Use a private initializer
     });
     return sharedInstance;
 }
 
-- (instancetype)init {
+// Private initializer to set up C++ core
+- (instancetype)initPrivate {
     self = [super init];
     if (self) {
-        self.internalQueue = dispatch_queue_create("net.mrmidi.FWADaemon.internalQueue", DISPATCH_QUEUE_SERIAL);
-        self.connectedClients = [NSMutableDictionary dictionary];
-        _driverIsConnected = NO;
-        self.sharedMemoryName = @(kSharedMemoryName);
-        // +++ Phase 3 spdlog Initialization (OsLog + GUI Sinks) +++
-        try {
-            // Create the sinks (thread-safe)
-            self.internalQueue = dispatch_queue_create("net.mrmidi.FWADaemon.internalQueue", DISPATCH_QUEUE_SERIAL);
-            // +++ ADD THIS LINE +++
-            dispatch_queue_set_specific(self.internalQueue, kInternalQueueKey, kInternalQueueContext, NULL);
-            // ++++++++++++++++++++++
-            self.connectedClients = [NSMutableDictionary dictionary];
-            _driverIsConnected = NO;
-            self.sharedMemoryName = @(kSharedMemoryName);
-            auto os_sink = std::make_shared<os_log_sink_mt>(OS_LOG_DEFAULT);
-            auto gui_sink = std::make_shared<gui_callback_sink_mt>(self);
-            #ifdef DEBUG
-            auto stderr_sink = std::make_shared<spdlog::sinks::stderr_sink_mt>();
-            std::vector<spdlog::sink_ptr> sinks { os_sink, gui_sink, stderr_sink };
-            #else
-            std::vector<spdlog::sink_ptr> sinks { os_sink, gui_sink };
-            #endif
-
-            // Set per-sink patterns
-            os_sink->set_pattern("[%^%l%$] %v"); // Simpler for os_log
-            gui_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v"); // Detailed for GUI
-            // Optionally set pattern for stderr_sink if present
-            #ifdef DEBUG
-            stderr_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
-            #endif
-
-            // Create the logger using the sinks
-            auto logger = std::make_shared<spdlog::logger>("FWADaemon", sinks.begin(), sinks.end());
-            logger->set_level(spdlog::level::trace);        // Log everything during setup/testing
-            logger->flush_on(spdlog::level::warn);          // Flush automatically on warnings and above
-
-            // Register the logger
-            spdlog::register_logger(logger);
-            // Set as default
-            spdlog::set_default_logger(logger);
-
-            // Log initialization success via spdlog itself
-            SPDLOG_INFO("--------------------------------------------------");
-            SPDLOG_INFO("FWADaemon spdlog initialized. Sinks: os_log, GUI_XPC.");
-            SPDLOG_INFO("FWADaemon singleton and internal queue ready.");
-        } catch (const spdlog::spdlog_ex& ex) {
-            os_log_error(OS_LOG_DEFAULT, "[FWADaemon] !!! spdlog initialization failed: %{public}s", ex.what());
-        } catch (const std::exception& std_ex) {
-            os_log_error(OS_LOG_DEFAULT, "[FWADaemon] !!! std exception during spdlog initialization: %{public}s", std_ex.what());
-        } catch (...) {
-            os_log_error(OS_LOG_DEFAULT, "[FWADaemon] !!! Unknown exception during spdlog initialization.");
+        if (s_FWADaemon_ObjC_logger) {
+            s_FWADaemon_ObjC_logger->info("FWADaemon initPrivate starting...");
         }
-        // +++ END Phase 3 spdlog Initialization +++
+        _internalQueue = dispatch_queue_create("net.mrmidi.FWADaemon.internalQueue", DISPATCH_QUEUE_SERIAL);
+        dispatch_queue_set_specific(_internalQueue, kInternalQueueKey, kInternalQueueContext, NULL);
+        _connectedClients = [NSMutableDictionary dictionary];
+        _driverIsConnected = NO;
 
-        [self setupSharedMemory];
+        // --- spdlog setup for C++ libraries (FWA, Isoch) if not done by DaemonCore ---
+        // This global spdlog setup should ideally happen once.
+        // If DaemonCore is the primary user of spdlog for FWA/Isoch, it might manage its own
+        // logger instance that uses these sinks, or we set the default logger here.
+        static dispatch_once_t s_spdlog_setup_token;
+        dispatch_once(&s_spdlog_setup_token, ^{
+            try {
+                if (s_FWADaemon_ObjC_logger) {
+                    s_FWADaemon_ObjC_logger->info("Performing global spdlog setup (sinks, default logger)...");
+                }
+                auto os_sink = std::make_shared<os_log_sink_mt>(OS_LOG_DEFAULT); // For C++ libs to log to os_log
+                auto gui_sink = std::make_shared<gui_callback_sink_mt>(self); // For C++ libs to log to GUI
+                #ifdef DEBUG
+                auto stderr_sink = std::make_shared<spdlog::sinks::stderr_sink_mt>();
+                std::vector<spdlog::sink_ptr> sinks { os_sink, gui_sink, stderr_sink };
+                #else
+                std::vector<spdlog::sink_ptr> sinks { os_sink, gui_sink };
+                #endif
+
+                os_sink->set_pattern("[%^%l%$] %v");
+                gui_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
+                #ifdef DEBUG
+                stderr_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
+                #endif
+
+                auto defaultCppLogger = std::make_shared<spdlog::logger>("FWA_CPP_Libs", sinks.begin(), sinks.end());
+                defaultCppLogger->set_level(spdlog::level::trace);
+                defaultCppLogger->flush_on(spdlog::level::warn);
+                spdlog::set_default_logger(defaultCppLogger); // C++ libs using spdlog::info will use this
+                spdlog::register_logger(defaultCppLogger);
+                if (s_FWADaemon_ObjC_logger) {
+                    s_FWADaemon_ObjC_logger->info("Global spdlog default logger for C++ libs configured.");
+                }
+            } catch (const std::exception& e) {
+                if (s_FWADaemon_ObjC_logger) {
+                    s_FWADaemon_ObjC_logger->critical("Global spdlog setup failed: {}", e.what());
+                }
+            }
+        });
+        // --- End spdlog setup ---
+
+        // --- Instantiate C++ DaemonCore ---
+        // Pass the logger that DaemonCore should use (can be the default_logger, or a specific one)
+        if (s_FWADaemon_ObjC_logger) {
+            s_FWADaemon_ObjC_logger->info("Creating FWA::DaemonCore instance...");
+        }
+        _cppCore = std::make_unique<FWA::DaemonCore>(spdlog::default_logger()); // Pass the configured default logger
+
+        // --- Initialize SHM via DaemonCore ---
+        // For this minimal step, do it here. Later, it will be triggered by
+        // an XPC call like `registerClientAndStartEngine`.
+        if (s_FWADaemon_ObjC_logger) {
+            s_FWADaemon_ObjC_logger->info("Requesting DaemonCore to initialize shared memory...");
+        }
+        auto shmResult = _cppCore->initializeSharedMemory();
+        if (!shmResult) {
+            if (s_FWADaemon_ObjC_logger) {
+                s_FWADaemon_ObjC_logger->critical("DaemonCore failed to initialize shared memory: error code {}",
+                                           static_cast<int>(shmResult.error()));
+            }
+            // This is a critical failure for the daemon's primary function with the driver.
+            // Depending on requirements, might want to prevent daemon from fully starting.
+        } else {
+            if (s_FWADaemon_ObjC_logger) {
+                s_FWADaemon_ObjC_logger->info("DaemonCore shared memory initialized successfully.");
+            }
+        }
+        // The old call to [self setupSharedMemory] is removed.
+        if (s_FWADaemon_ObjC_logger) {
+            s_FWADaemon_ObjC_logger->info("FWADaemon initPrivate finished.");
+        }
     }
     return self;
 }
 
-// +++ ADDED: Shared Memory Creation Method +++
-- (BOOL)setupSharedMemory {
-    SPDLOG_INFO("Attempting to create/open shared memory segment: {}", kSharedMemoryName);
-    shm_unlink(kSharedMemoryName); // Optional: Remove any stale segment
-    int fd = shm_open(kSharedMemoryName, O_CREAT | O_EXCL | O_RDWR, 0666);
-    bool isCreator = false;
-    if (fd == -1 && errno == EEXIST) {
-        SPDLOG_INFO("SHM segment {} already exists, opening...", kSharedMemoryName);
-        fd = shm_open(kSharedMemoryName, O_RDWR, 0666);
-        isCreator = false;
-    } else if (fd != -1) {
-        SPDLOG_INFO("SHM segment {} created successfully.", kSharedMemoryName);
-        isCreator = true;
+- (void)dealloc {
+    if (s_FWADaemon_ObjC_logger) {
+        s_FWADaemon_ObjC_logger->info("FWADaemon deallocating...");
     }
-    if (fd == -1) {
-        SPDLOG_ERROR("shm_open failed for {}: {} - {}", kSharedMemoryName, errno, strerror(errno));
-        return NO;
-    }
-    off_t requiredSize = sizeof(RTShmRing::SharedRingBuffer_POD);
-    if (isCreator) {
-        if (ftruncate(fd, requiredSize) == -1) {
-            SPDLOG_ERROR("ftruncate failed for {} (fd {}): {} - {}", kSharedMemoryName, fd, errno, strerror(errno));
-            close(fd);
-            shm_unlink(kSharedMemoryName);
-            return NO;
+    if (_cppCore) {
+        // _cppCore->cleanupSharedMemory(); // Destructor of DaemonCore should handle this
+        _cppCore.reset(); // This will call ~DaemonCore()
+        if (s_FWADaemon_ObjC_logger) {
+            s_FWADaemon_ObjC_logger->info("C++ DaemonCore instance reset.");
         }
     }
-    SPDLOG_INFO("Shared memory (fd {}, creator={}). Mapping with RingBufferManager...", fd, isCreator);
-    bool mapSuccess = RingBufferManager::instance().map(fd, isCreator);
-    close(fd);
-    if (!mapSuccess) {
-        SPDLOG_ERROR("RingBufferManager failed to map shared memory {}.", kSharedMemoryName);
-        shm_unlink(kSharedMemoryName);
-        return NO;
-    }
-    SPDLOG_INFO("Shared memory '{}' successfully created/mapped.", kSharedMemoryName);
-    return YES;
+    // Other cleanup like invalidating internalQueue if it's not done automatically
 }
+
+
 
 // Remove obsolete clients getter if mutableClients is removed
 // - (NSArray<NSXPCConnection *> *)clients {
@@ -527,16 +534,37 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
 
 // --- New XPC method for shared memory name ---
 - (void)getSharedMemoryNameWithReply:(void (^)(NSString * _Nullable shmName))reply {
-    // Ensure SHM setup has likely occurred (best effort check)
-    if (!RingBufferManager::instance().isMapped()) { // Assumes RingBufferManager has an isMapped() method
-         os_log_error(OS_LOG_DEFAULT, "[FWADaemon] ERROR: getSharedMemoryName called but SHM is not mapped!");
-         if(reply) reply(nil);
-         return;
+    if (s_FWADaemon_ObjC_logger) {
+        s_FWADaemon_ObjC_logger->info("XPC: getSharedMemoryNameWithReply called.");
     }
-    NSString* name = @(kSharedMemoryName); // Convert C string constant to NSString
-    os_log_info(OS_LOG_DEFAULT, "[FWADaemon] Replying to getSharedMemoryName with: %{public}@", name);
+
+    if (!_cppCore) { // Check if C++ core exists
+        if (s_FWADaemon_ObjC_logger) {
+            s_FWADaemon_ObjC_logger->error("XPC: getSharedMemoryName called but C++ core is nil!");
+        }
+        if (reply) reply(nil);
+        return;
+    }
+    if (!_cppCore->isSharedMemoryInitialized()) {
+        if (s_FWADaemon_ObjC_logger) {
+            s_FWADaemon_ObjC_logger->error("XPC: getSharedMemoryName called but C++ core SHM not initialized!");
+        }
+        if (reply) reply(nil); // Or reply with an error
+        return;
+    }
+
+    std::string cppShmName = _cppCore->getSharedMemoryName();
+    NSString* nsShmName = nil;
+
+    if (!cppShmName.empty()) {
+        nsShmName = [NSString stringWithUTF8String:cppShmName.c_str()];
+    }
+
+    if (s_FWADaemon_ObjC_logger) {
+        s_FWADaemon_ObjC_logger->info("XPC: Replying to getSharedMemoryName with: '{}'", nsShmName ? [nsShmName UTF8String] : "<nil>");
+    }
     if (reply) {
-        reply(name);
+        reply(nsShmName);
     }
 }
 

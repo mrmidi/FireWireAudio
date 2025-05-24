@@ -19,7 +19,7 @@
 #include "Isoch/utils/RingBuffer.hpp" // Include RingBuffer header
 
 #ifdef __OBJC__
-#import "FWA/XPC/XPCReceiverClient.hpp"
+// #import "FWA/XPC/XPCReceiverClient.hpp"
 #else
 class XPCReceiverClient; // Forward declaration when compiling as pure C++
 #endif
@@ -138,9 +138,9 @@ private:
     // Interface
     IOFireWireLibDeviceRef m_interface = nullptr;
 
-#ifdef __OBJC__
-    XPCReceiverClient* m_xpcClient = nil; // XPC client for audio processing
-#endif
+// #ifdef __OBJC__
+//     XPCReceiverClient* m_xpcClient = nil; // XPC client for audio processing
+// #endif
 };
 
 } // namespace FWA

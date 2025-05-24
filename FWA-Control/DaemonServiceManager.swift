@@ -46,14 +46,10 @@ class DaemonServiceManager: ObservableObject {
         let currentSMStatus = daemonService.status // Check synchronously
         logger.trace("Checking daemon SMAppService status: \(currentSMStatus)")
 
-        var statusChanged = false
-        var promptChanged = false
-
         // Update internal state only if changed
         if currentSMStatus != self.status {
             logger.info("Daemon SMAppService status changed: \(currentSMStatus) (was \(self.status))")
             self.status = currentSMStatus
-            statusChanged = true
         }
 
         // Update the simplified UI prompt flag based on the *new* status
@@ -61,7 +57,6 @@ class DaemonServiceManager: ObservableObject {
         if shouldPrompt != self.requiresUserAction {
              logger.info("Daemon requiresUserAction state changing to: \(shouldPrompt)")
              self.requiresUserAction = shouldPrompt
-             promptChanged = true
         }
 
         // --- Connection Logic ---

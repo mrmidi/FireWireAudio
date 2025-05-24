@@ -29,11 +29,8 @@ struct StatusBarView_Previews: PreviewProvider {
 
     @MainActor
     static func createPreviewUIManager() -> UIManager {
-        // 1. Attempt to create EngineService (failable init)
-        guard let engine = EngineService() else {
-            print("PREVIEW WARNING: EngineService() failed in StatusBarView preview.")
-            return UIManager(engineService: nil, systemServicesManager: nil, logStore: nil)
-        }
+        // 1. Create EngineService (no longer failable)
+        let engine = EngineService()
         // 2. Create @MainActor dependencies
         let permManager = PermissionManager()
         let daemonManager = DaemonServiceManager()

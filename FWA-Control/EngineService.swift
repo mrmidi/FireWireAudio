@@ -2,7 +2,7 @@
 import Foundation
 import Combine
 import Logging
-import FWA_CAPI // needed for now
+// NOTE: FWA_CAPI import removed - now using XPC daemon
 
 // MARK: - AV/C Command Builder Helper (Example Structure)
 struct AVCCommandBuilder {
@@ -40,10 +40,8 @@ actor EngineService {
     @Published private(set) var devices: [UInt64: DeviceInfo] = [:]
     private(set) var deviceJsons: [UInt64: String] = [:]
 
-    // --- Core Engine Components ---
-    // --- FIX: Make non-optional let ---
-    private let fwaEngineRef: FWAEngineRef
-    private var callbackHandler: CAPICallbackHandler! // Also implicitly unwrapped
+    // --- XPC Manager for daemon communication ---
+    private weak var xpcManager: XPCManager?
 
     private let logger = AppLoggers.deviceManager
 
@@ -51,127 +49,110 @@ actor EngineService {
     var isRunningPublisher: AnyPublisher<Bool, Never> { $isRunning.eraseToAnyPublisher() }
     var devicesPublisher: AnyPublisher<[UInt64: DeviceInfo], Never> { $devices.eraseToAnyPublisher() }
 
-    // Keep init failable for engine creation failure
-    init?() {
-        logger.info("EngineService init starting...")
-        let engine = FWAEngine_Create()
-        guard let validEngine = engine else {
-            logger.critical("Failed to create FWA Engine C API instance! EngineService init failed.")
-            return nil
-        }
-        // --- FIX: Assign non-optional let ---
-        self.fwaEngineRef = validEngine // Assign after guard confirms non-nil
-        logger.info("FWA C API Engine created successfully (Ref assigned).")
-        // --- Defer handler setup ---
-        Task {
-            await self.setupCallbackHandler()
-        }
-        logger.info("EngineService init finished (Callback setup deferred).")
+    // Simplified init - no longer failable since we don't create C engine here
+    init() {
+        logger.info("EngineService init - XPC mode (no direct C API)")
     }
 
-    // --- NEW: Async setup method ---
-    private func setupCallbackHandler() async {
-        logger.info("Setting up callback handler...")
-        let handler = CAPICallbackHandler(engineService: self)
-        handler.setupCAPILoggingCallback(engine: self.fwaEngineRef)
-        self.callbackHandler = handler
-        logger.info("C API callbacks configured via CAPICallbackHandler.")
+    // Method to set XPCManager reference (called by UIManager or whoever creates both)
+    func setXPCManager(_ xpcManager: XPCManager) {
+        self.xpcManager = xpcManager
+        logger.info("XPCManager reference set in EngineService")
     }
-    // --- End NEW ---
 
-    // --- FIX: Remove cleanup from deinit ---
     deinit {
-        logger.warning("Deinitializing EngineService instance. Cleanup should happen via shutdown().")
-        // DO NOT call C API functions here that access self.fwaEngineRef
+        logger.info("EngineService deinitializing - cleanup handled via shutdown()")
     }
-    // --- End FIX ---
 
-    // --- FIX: Add explicit shutdown method ---
-    /// Call this before releasing the EngineService instance to clean up C resources.
+    /// Shutdown method - now primarily handles XPC disconnection
     public func shutdown() async {
-        logger.warning("EngineService shutdown requested.")
+        logger.info("EngineService shutdown requested.")
 
-        // Stop the engine first (runs detached C call)
+        // Stop the engine first via XPC if running
         if isRunning {
-            _ = await stop() // Call the existing stop method
+            _ = await stop()
         }
 
-        // Destroy the C engine - This is synchronous C call, safe within actor method
-        logger.info("Destroying C API Engine...")
-        FWAEngine_Destroy(self.fwaEngineRef) // Access the property safely here
-        logger.info("FWA C API Engine destroyed via shutdown().")
-        // Note: We don't nil out fwaEngineRef as it's a let constant
+        // Disconnect from XPC if we have a manager
+        if let xpcManager = self.xpcManager {
+            await xpcManager.disconnect()
+            logger.info("XPC disconnection completed.")
+        }
+        
+        logger.info("EngineService shutdown completed.")
     }
-    // --- End FIX ---
 
     func start() async -> Bool {
-        let engine = self.fwaEngineRef
-        logger.info("EngineService: Start requested.")
-        guard let handler = await getCallbackHandler() else {
-            logger.error("Engine start failed: Callback handler setup incomplete.")
+        logger.info("EngineService: Start requested (via XPC).")
+        
+        guard let xpcManager = self.xpcManager else {
+            logger.error("Engine start failed: No XPCManager available")
             return false
         }
-        guard let deviceCallback = handler.getCDeviceCallback() else {
-            logger.error("Engine start failed: Could not get C device callback pointer.")
+        
+        guard !isRunning else { 
+            logger.warning("Engine start requested, but already running.")
+            return true 
+        }
+        
+        do {
+            let success = try await xpcManager.registerClientAndStartEngine()
+            self.isRunning = success
+            if success { 
+                logger.info("✅ FWA Engine started successfully via XPC daemon.")
+            } else { 
+                logger.error("❌ Failed to start FWA Engine via XPC daemon.")
+            }
+            return success
+        } catch {
+            logger.error("❌ Engine start failed with error: \(error)")
             return false
         }
-        guard !isRunning else { logger.warning("Engine start requested, but already running."); return true }
-        let context = Unmanaged.passUnretained(handler).toOpaque()
-        nonisolated(unsafe) let capturedEngine = engine
-        let capturedDeviceCallback = deviceCallback
-        nonisolated(unsafe) let capturedContext = context
-        let success: Bool = await Task.detached { @Sendable in
-            return FWAEngine_Start(capturedEngine, capturedDeviceCallback, capturedContext) == kIOReturnSuccess
-        }.value
-        self.isRunning = success
-        if success { logger.info("✅ FWA Engine started successfully.") }
-        else { logger.error("❌ Failed to start FWA Engine.") }
-        return success
-    }
-
-    // Helper to wait for callbackHandler setup if needed
-    private func getCallbackHandler() async -> CAPICallbackHandler? {
-        while self.callbackHandler == nil {
-            await Task.yield()
-        }
-        return self.callbackHandler
     }
 
     func stop() async -> Bool {
-        let engine = self.fwaEngineRef
-        logger.info("EngineService: Stop requested.")
-        guard isRunning else { logger.warning("Engine stop requested, but not running."); return true }
-        nonisolated(unsafe) let capturedEngine = engine
-        let success: Bool = await Task.detached { @Sendable in
-            return FWAEngine_Stop(capturedEngine) == kIOReturnSuccess
-        }.value
-        self.isRunning = false
-        self.devices.removeAll()
-        self.deviceJsons.removeAll()
-        if success { logger.info("FWA Engine stopped successfully.") }
-        else { logger.error("Failed to stop FWA Engine.") }
-        return success
+        logger.info("EngineService: Stop requested (via XPC).")
+        
+        guard let xpcManager = self.xpcManager else {
+            logger.error("Engine stop failed: No XPCManager available")
+            return false
+        }
+        
+        guard isRunning else { 
+            logger.warning("Engine stop requested, but not running.")
+            return true 
+        }
+        
+        do {
+            let success = try await xpcManager.unregisterClientAndStopEngine()
+            self.isRunning = false
+            self.devices.removeAll()
+            self.deviceJsons.removeAll()
+            if success { 
+                logger.info("FWA Engine stopped successfully via XPC daemon.")
+            } else { 
+                logger.error("Failed to stop FWA Engine via XPC daemon.")
+            }
+            return success
+        } catch {
+            logger.error("Engine stop failed with error: \(error)")
+            // Still clear our state even if XPC call failed
+            self.isRunning = false
+            self.devices.removeAll()
+            self.deviceJsons.removeAll()
+            return false
+        }
     }
 
     func sendCommand(guid: UInt64, command: Data) async -> Data? {
-        let engine = self.fwaEngineRef
-        logger.trace("EngineService sendCommand() for GUID 0x\(String(format: "%llX", guid))")
-        nonisolated(unsafe) let capturedEngine = engine
-        let capturedGuid = guid
-        let capturedCommand = command
-        let responseData: Data? = await Task.detached { @Sendable () -> Data? in
-            var responseDataPtr: UnsafeMutablePointer<UInt8>? = nil
-            var responseLen: Int = 0
-            let cmdResult: IOReturn = capturedCommand.withUnsafeBytes { bufPtr -> IOReturn in
-                guard let base = bufPtr.baseAddress else { return kIOReturnBadArgument }
-                return FWAEngine_SendCommand(capturedEngine, capturedGuid, base.assumingMemoryBound(to: UInt8.self), capturedCommand.count, &responseDataPtr, &responseLen)
-            }
-            defer { if let buffer = responseDataPtr { FWADevice_FreeResponseBuffer(buffer) } }
-            guard cmdResult == kIOReturnSuccess, let buffer = responseDataPtr, responseLen > 0 else {
-                return nil
-            }
-            return Data(bytes: buffer, count: responseLen)
-        }.value
+        logger.trace("EngineService sendCommand() for GUID 0x\(String(format: "%llX", guid)) (via XPC)")
+        
+        guard let xpcManager = self.xpcManager else {
+            logger.error("SendCommand failed: No XPCManager available")
+            return nil
+        }
+        
+        let responseData = await xpcManager.sendAVCCommand(guid: guid, command: command)
         if responseData == nil {
             logger.error("SendCommand failed or returned no data for GUID 0x\(String(format: "%llX", guid))")
         } else {
@@ -180,9 +161,9 @@ actor EngineService {
         return responseData
     }
 
-    // --- Callback Handling ---
-    func handleDeviceUpdateFromC(guid: UInt64, added: Bool) {
-        logger.info("EngineService: Handling device update from C: GUID 0x\(String(format: "%llX", guid)), Added: \(added)")
+    // --- Callback Handling (called by XPCManager) ---
+    func handleDeviceUpdate(guid: UInt64, added: Bool) {
+        logger.info("EngineService: Handling device update from XPC: GUID 0x\(String(format: "%llX", guid)), Added: \(added)")
         if added {
             Task { await fetchAndAddOrUpdateDevice(guid: guid) }
         } else {
@@ -194,32 +175,33 @@ actor EngineService {
         }
     }
 
-    // --- Device Info Fetching ---
+    // --- Device Info Fetching (via XPC) ---
     func fetchAndAddOrUpdateDevice(guid: UInt64) async {
-        let engine = self.fwaEngineRef
-        logger.debug("EngineService: Fetching info for GUID: 0x\(String(format: "%llX", guid))...")
-        nonisolated(unsafe) let capturedEngine = engine
-        let capturedGuid = guid
-        let jsonStringResult: String? = await Task.detached { @Sendable () -> String? in
-            guard let cJsonString = FWAEngine_GetInfoJSON(capturedEngine, capturedGuid) else {
-                AppLoggers.deviceManager.error("[BG] FWAEngine_GetInfoJSON NULL for GUID 0x\(String(format: "%llX", capturedGuid)).")
-                return nil
+        logger.debug("EngineService: Fetching info for GUID: 0x\(String(format: "%llX", guid))... (via XPC)")
+        
+        guard let xpcManager = self.xpcManager else {
+            logger.error("Failed to fetch device info: No XPCManager available")
+            return
+        }
+        
+        guard let jsonString = await xpcManager.getDetailedDeviceInfoJSON(guid: guid) else {
+            logger.error("Failed get JSON string for GUID 0x\(String(format: "%llX", guid)) via XPC.")
+            if self.devices.removeValue(forKey: guid) != nil { 
+                logger.info("Removed device GUID 0x\(String(format: "%llX", guid)) due to fetch failure.") 
             }
-            defer { FWADevice_FreeString(cJsonString) }
-            return String(cString: cJsonString)
-        }.value
-        guard let jsonString = jsonStringResult, !jsonString.isEmpty else {
-            logger.error("Failed get JSON string for GUID 0x\(String(format: "%llX", guid)).")
-            if self.devices.removeValue(forKey: guid) != nil { logger.info("Removed device GUID 0x\(String(format: "%llX", guid)) due to fetch failure.") }
             self.deviceJsons.removeValue(forKey: guid)
             return
         }
+        
         self.deviceJsons[guid] = jsonString
         guard let jsonData = jsonString.data(using: .utf8) else {
             logger.error("Failed convert JSON string to Data for GUID 0x\(String(format: "%llX", guid)).")
-            if self.devices.removeValue(forKey: guid) != nil { logger.info("Removed device GUID 0x\(String(format: "%llX", guid)) due to data conversion fail.") }
+            if self.devices.removeValue(forKey: guid) != nil { 
+                logger.info("Removed device GUID 0x\(String(format: "%llX", guid)) due to data conversion fail.") 
+            }
             return
         }
+        
         do {
             let jsonDataWrapper = try JSONDecoder().decode(JsonDeviceData.self, from: jsonData)
             if let domainDeviceInfo = DeviceDataMapper.mapJsonToDomainDevice(jsonData: jsonDataWrapper, guidForLog: guid) {
@@ -227,11 +209,15 @@ actor EngineService {
                 logger.info("Successfully mapped/updated DeviceInfo for GUID 0x\(String(format: "%llX", domainDeviceInfo.guid)) (\(domainDeviceInfo.deviceName))")
             } else {
                 logger.error("Failed map JsonDeviceData to DeviceInfo for GUID 0x\(String(format: "%llX", guid)).")
-                if self.devices.removeValue(forKey: guid) != nil { logger.info("Removed device GUID 0x\(String(format: "%llX", guid)) due to mapping fail.") }
+                if self.devices.removeValue(forKey: guid) != nil { 
+                    logger.info("Removed device GUID 0x\(String(format: "%llX", guid)) due to mapping fail.") 
+                }
             }
         } catch {
             logger.error("JSON Decode Error GUID 0x\(String(format: "%llX", guid)): \(error)")
-            if self.devices.removeValue(forKey: guid) != nil { logger.info("Removed device GUID 0x\(String(format: "%llX", guid)) due to decode fail.") }
+            if self.devices.removeValue(forKey: guid) != nil { 
+                logger.info("Removed device GUID 0x\(String(format: "%llX", guid)) due to decode fail.") 
+            }
         }
     }
 
@@ -345,26 +331,18 @@ actor EngineService {
         return success
     }
 
-    // --- Stream Control (NEW) ---
+    // --- Stream Control (via XPC) ---
     func startStreams(guid: UInt64) async -> Bool {
-        let engine = self.fwaEngineRef
-        logger.info("EngineService: Start streams requested for GUID 0x\(String(format: "%llX", guid)).")
-        nonisolated(unsafe) let capturedEngine = engine
-        let capturedGuid = guid
-        let success: Bool = await Task.detached { @Sendable in
-            let result = FWAEngine_StartStreamsForDevice(capturedEngine, capturedGuid)
-            if result != kIOReturnSuccess {
-                // Log the error from the detached task's context
-                AppLoggers.deviceManager.error("[BG] FWAEngine_StartStreamsForDevice failed for GUID 0x\(String(format: "%llX", capturedGuid)) with error: 0x\(String(format: "%X", result))")
-                return false
-            }
-            AppLoggers.deviceManager.info("[BG] FWAEngine_StartStreamsForDevice successful for GUID 0x\(String(format: "%llX", capturedGuid)).")
-            return true
-        }.value
-
+        logger.info("EngineService: Start streams requested for GUID 0x\(String(format: "%llX", guid)) (via XPC).")
+        
+        guard let xpcManager = self.xpcManager else {
+            logger.error("Start streams failed: No XPCManager available")
+            return false
+        }
+        
+        let success = await xpcManager.startAudioStreams(guid: guid)
         if success {
             logger.info("✅ Start streams command succeeded for GUID 0x\(String(format: "%llX", guid)).")
-            // TODO: Optionally update internal device state if needed later
         } else {
             logger.error("❌ Start streams command failed for GUID 0x\(String(format: "%llX", guid)).")
         }
@@ -372,27 +350,19 @@ actor EngineService {
     }
 
     func stopStreams(guid: UInt64) async -> Bool {
-        let engine = self.fwaEngineRef
-        logger.info("EngineService: Stop streams requested for GUID 0x\(String(format: "%llX", guid)).")
-        nonisolated(unsafe) let capturedEngine = engine
-        let capturedGuid = guid
-        let success: Bool = await Task.detached { @Sendable in
-            let result = FWAEngine_StopStreamsForDevice(capturedEngine, capturedGuid)
-             if result != kIOReturnSuccess {
-                AppLoggers.deviceManager.error("[BG] FWAEngine_StopStreamsForDevice failed for GUID 0x\(String(format: "%llX", capturedGuid)) with error: 0x\(String(format: "%X", result))")
-                return false
-            }
-            AppLoggers.deviceManager.info("[BG] FWAEngine_StopStreamsForDevice successful for GUID 0x\(String(format: "%llX", capturedGuid)).")
-            return true
-        }.value
-
+        logger.info("EngineService: Stop streams requested for GUID 0x\(String(format: "%llX", guid)) (via XPC).")
+        
+        guard let xpcManager = self.xpcManager else {
+            logger.error("Stop streams failed: No XPCManager available")
+            return false
+        }
+        
+        let success = await xpcManager.stopAudioStreams(guid: guid)
         if success {
             logger.info("✅ Stop streams command succeeded for GUID 0x\(String(format: "%llX", guid)).")
-             // TODO: Optionally update internal device state if needed later
         } else {
             logger.error("❌ Stop streams command failed for GUID 0x\(String(format: "%llX", guid)).")
         }
         return success
     }
-    // --- End Stream Control ---
 } // End Actor EngineService

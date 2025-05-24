@@ -58,6 +58,12 @@ actor SystemServicesManager {
         self.permissionManager = permissionManager
         self.daemonServiceManager = daemonServiceManager
         logger.info("SystemServicesManager initializing.")
+        
+        // Set up bidirectional reference between EngineService and XPCManager
+        Task {
+            await engineService.setXPCManager(self.xpcManager)
+        }
+        
         Task {
             // Check permissions early AND update status
             _ = await checkAndRequestCameraPermission() // This now updates currentStatus
@@ -79,34 +85,34 @@ actor SystemServicesManager {
         Task { [weak self] in
             guard let self = self else { return }
             // Get the stream from the XPCManager instance
-            let stream = await self.xpcManager.driverStatusStream
+            let stream = self.xpcManager.driverStatusStream
             // Loop through updates from the stream
             for await driverIsUp in stream {
                 // Call the status update method within the actor
                 await self.updateDriverStatus(driverIsUp)
             }
             // Log when the stream finishes (optional, indicates disconnection)
-            await self.logger.info("XPC driverStatusStream finished.")
+            self.logger.info("XPC driverStatusStream finished.")
         }
         // --- END ENSURE ---
 
         // --- Keep other stream subscriptions (device status, config, log) ---
         Task { [weak self] in
             guard let self = self else { return }
-            let stream = await self.xpcManager.deviceStatusStream // Assuming this stream exists
-            for await statusUpdate in stream {
+            let stream = self.xpcManager.deviceStatusStream // Assuming this stream exists
+            for await _ in stream {
                 // Example: await self.updateDeviceStatus(statusUpdate) // Call appropriate handler
             }
-            await self.logger.info("XPC deviceStatusStream finished.")
+            self.logger.info("XPC deviceStatusStream finished.")
         }
 
         Task { [weak self] in
             guard let self = self else { return }
-            let stream = await self.xpcManager.deviceConfigStream // Assuming this stream exists
-             for await configUpdate in stream {
+            let stream = self.xpcManager.deviceConfigStream // Assuming this stream exists
+             for await _ in stream {
                 // Example: await self.updateDeviceConfig(configUpdate) // Call appropriate handler
              }
-            await self.logger.info("XPC deviceConfigStream finished.")
+            self.logger.info("XPC deviceConfigStream finished.")
         }
         // Removed logMessageStream subscription as per previous step
 

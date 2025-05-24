@@ -177,6 +177,7 @@ set(XPC_SERVICE_NAME "FWADaemon")
 set(XPC_SERVICE_SOURCES
   src/xpc/FWADaemon/main.m
   src/xpc/FWADaemon/FWADaemon.mm
+  src/xpc/FWADaemon/core/DaemonCore.cpp
 )
 add_executable(${XPC_SERVICE_NAME} MACOSX_BUNDLE ${XPC_SERVICE_SOURCES})
 set_target_properties(${XPC_SERVICE_NAME} PROPERTIES
@@ -206,6 +207,7 @@ target_link_libraries(${XPC_SERVICE_NAME} PRIVATE
   Shared
   FWAXPC
   FWAIsoch
+  FWA
 )
 
 # Post-build copy of assets
