@@ -68,15 +68,26 @@ actor EngineService {
     public func shutdown() async {
         logger.info("EngineService shutdown requested.")
 
-        // Stop the engine first via XPC if running
+        // Stop the engine and disconnect via XPC in one consolidated call
         if isRunning {
-            _ = await stop()
-        }
-
-        // Disconnect from XPC if we have a manager
-        if let xpcManager = self.xpcManager {
+            if let xpcManager = self.xpcManager {
+                do {
+                    _ = try await xpcManager.disconnectAndStopEngine()
+                    logger.info("Engine stopped and XPC disconnected successfully.")
+                } catch {
+                    logger.error("Error during shutdown: \(error)")
+                    // Still perform local cleanup
+                    await xpcManager.disconnect()
+                }
+            }
+            // Update local state
+            self.isRunning = false
+            self.devices.removeAll()
+            self.deviceJsons.removeAll()
+        } else if let xpcManager = self.xpcManager {
+            // Just disconnect if engine wasn't running
             await xpcManager.disconnect()
-            logger.info("XPC disconnection completed.")
+            logger.info("XPC disconnection completed (engine was not running).")
         }
         
         logger.info("EngineService shutdown completed.")
@@ -96,12 +107,13 @@ actor EngineService {
         }
         
         do {
-            let success = try await xpcManager.registerClientAndStartEngine()
+            // Use the new consolidated connection + engine start method
+            let success = try await xpcManager.connectAndInitializeDaemonEngine()
             self.isRunning = success
             if success { 
-                logger.info("✅ FWA Engine started successfully via XPC daemon.")
+                logger.info("✅ FWA Engine connected and started successfully via XPC daemon.")
             } else { 
-                logger.error("❌ Failed to start FWA Engine via XPC daemon.")
+                logger.error("❌ Failed to connect and start FWA Engine via XPC daemon.")
             }
             return success
         } catch {
@@ -124,14 +136,15 @@ actor EngineService {
         }
         
         do {
-            let success = try await xpcManager.unregisterClientAndStopEngine()
+            // Use the new consolidated disconnect + engine stop method
+            let success = try await xpcManager.disconnectAndStopEngine()
             self.isRunning = false
             self.devices.removeAll()
             self.deviceJsons.removeAll()
             if success { 
-                logger.info("FWA Engine stopped successfully via XPC daemon.")
+                logger.info("FWA Engine disconnected and stopped successfully via XPC daemon.")
             } else { 
-                logger.error("Failed to stop FWA Engine via XPC daemon.")
+                logger.error("Failed to disconnect and stop FWA Engine via XPC daemon.")
             }
             return success
         } catch {

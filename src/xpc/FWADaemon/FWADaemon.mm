@@ -12,6 +12,11 @@
 #include "GuiCallbackSink.hpp"          // Your custom sink for C++ logs to GUI clients
 #include "shared/xpc/FWAXPCCommonTypes.h"  // For FWAXPCLoglevel
 
+// Error domain constants
+NSString * const FWADaemonErrorDomain = @"FWADaemonErrorDomain";
+NSString * const FWADaemonCoreErrorDomain = @"FWADaemonCoreErrorDomain";
+NSString * const FWADaemonCppErrorDomain = @"FWADaemonCppErrorDomain";
+
 // Helper to convert DaemonCoreError to NSError
 static NSError* errorFromDaemonCoreError(FWA::DaemonCoreError daemonError, NSString* descriptionPrefix) {
     NSString *desc = [NSString stringWithFormat:@"%@: DaemonCore error code %d",
@@ -247,11 +252,14 @@ static void * const kInternalQueueContext = (void *)&kInternalQueueContext;
 #pragma mark - FWADaemonControlProtocol Implementation
 
 // --- Registration & Lifecycle ---
+
+// DEPRECATED: Use registerClientAndStartEngine instead
 - (void)registerClient:(NSString *)clientID
 clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
            withReply:(void (^)(BOOL success, NSDictionary * _Nullable daemonInfo))reply
 {
-    SPDLOG_INFO("Received registerClient request from '{}'", [clientID UTF8String] ?: "<nil_client_id>");
+    SPDLOG_WARN("DEPRECATED: registerClient called from '{}' - use registerClientAndStartEngine instead", [clientID UTF8String] ?: "<nil_client_id>");
+    
     if (!clientID || [clientID length] == 0 || !clientNotificationEndpoint) {
         SPDLOG_ERROR("Registration failed - invalid clientID or endpoint for '{}'.", [clientID UTF8String] ?: "<nil_client_id>");
         if (reply) reply(NO, nil);
@@ -626,79 +634,155 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
 
     if (!_cppCore) {
         SPDLOG_CRITICAL("C++ DaemonCore is not initialized!");
-        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonError" code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]);
+        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonErrorDomain" code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]);
         return;
     }
 
-    // 1. Register the client (reusing existing logic, slightly adapted)
-    if (!clientID || [clientID length] == 0 || !clientNotificationEndpoint) {
-        SPDLOG_ERROR("Registration failed - invalid clientID or endpoint for '{}'.", [clientID UTF8String] ?: "<nil_client_id>");
-        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonError" code:1001 userInfo:@{NSLocalizedDescriptionKey:@"Invalid client ID or endpoint"}]);
+    // 1. Validate input parameters
+    if (!clientID || [clientID length] == 0) {
+        SPDLOG_ERROR("Registration failed - invalid clientID");
+        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonErrorDomain" code:1001 userInfo:@{NSLocalizedDescriptionKey:@"Invalid client ID"}]);
+        return;
+    }
+    
+    if (!clientNotificationEndpoint) {
+        SPDLOG_ERROR("Registration failed - missing client notification endpoint for '{}'", [clientID UTF8String]);
+        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonErrorDomain" code:1002 userInfo:@{NSLocalizedDescriptionKey:@"Missing client notification endpoint"}]);
         return;
     }
 
+    // 2. Setup client connection with comprehensive error handling
     NSXPCConnection *clientConnection = [[NSXPCConnection alloc] initWithListenerEndpoint:clientNotificationEndpoint];
+    if (!clientConnection) {
+        SPDLOG_ERROR("Failed to create XPC connection for client '{}'", [clientID UTF8String]);
+        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonErrorDomain" code:1003 userInfo:@{NSLocalizedDescriptionKey:@"Failed to create XPC connection"}]);
+        return;
+    }
+
     clientConnection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(FWAClientNotificationProtocol)];
 
+    // Create client info with enhanced error handling
     ClientInfo *newClientInfo = [[ClientInfo alloc] init];
     newClientInfo.clientID = clientID;
     newClientInfo.connection = clientConnection;
+
+    // Enhanced error handler with cleanup and daemon state management
     newClientInfo.remoteProxy = [clientConnection remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-        // Error handler
         const char* clientID_cstr = [clientID UTF8String];
         const char* error_cstr = [[error description] UTF8String];
         SPDLOG_ERROR("XPC error calling remote proxy for client '{}': {}",
                      clientID_cstr ? clientID_cstr : "<nil_id>",
                      error_cstr ? error_cstr : "<nil_error>");
+        
         [self performOnInternalQueueAsync:^{
-             ClientInfo *info = self.connectedClients[clientID];
-             if (info && info.connection == clientConnection) {
-                 [self.connectedClients removeObjectForKey:clientID];
-             }
-         }];
+            ClientInfo *info = self.connectedClients[clientID];
+            if (info && info.connection == clientConnection) {
+                [self.connectedClients removeObjectForKey:clientID];
+                SPDLOG_INFO("Removed client '{}' due to XPC proxy error", clientID_cstr ? clientID_cstr : "<nil_id>");
+                
+                // If this was the last client, consider stopping the engine
+                if (self.connectedClients.count == 0) {
+                    SPDLOG_INFO("Last client disconnected due to error, stopping engine");
+                    self->_cppCore->stopAndCleanupService();
+                }
+            }
+        }];
     }];
+
+    // Enhanced invalidation handler
     clientConnection.invalidationHandler = ^{
-        // Invalidation handler
         const char* clientID_cstr = [clientID UTF8String];
-        SPDLOG_INFO("Client connection invalidated for '{}'. Removing from registry.", clientID_cstr ? clientID_cstr : "<nil_id>");
+        SPDLOG_INFO("Client connection invalidated for '{}'. Cleaning up...", clientID_cstr ? clientID_cstr : "<nil_id>");
+        
         [self performOnInternalQueueAsync:^{
-            [self.connectedClients removeObjectForKey:clientID];
+            ClientInfo *info = self.connectedClients[clientID];
+            if (info && info.connection == clientConnection) {
+                [self.connectedClients removeObjectForKey:clientID];
+                SPDLOG_INFO("Removed client '{}' from registry due to invalidation", clientID_cstr ? clientID_cstr : "<nil_id>");
+                
+                // If this was the last client, stop the engine
+                if (self.connectedClients.count == 0) {
+                    SPDLOG_INFO("Last client disconnected, stopping engine");
+                    self->_cppCore->stopAndCleanupService();
+                }
+            }
         }];
     };
+
     [clientConnection resume];
 
+    // 3. Register client with thread-safe replacement of existing clients
+    __block BOOL hadExistingClient = NO;
     [self performOnInternalQueueSync:^{
         ClientInfo* existingClient = self.connectedClients[clientID];
         if (existingClient) {
             SPDLOG_WARN("Client ID '{}' already registered. Invalidating old connection.", [clientID UTF8String]);
             [existingClient.connection invalidate];
+            hadExistingClient = YES;
         }
         self.connectedClients[clientID] = newClientInfo;
+        SPDLOG_INFO("Client '{}' successfully registered. Total clients: {}", [clientID UTF8String], self.connectedClients.count);
     }];
 
-    // 2. Start the C++ Engine (if not already started by another client)
-    //    This needs careful state management if multiple clients can trigger it.
-    //    For now, let's assume it's okay to call initializeAndStartService multiple times or it's idempotent.
+    // 4. Start the C++ Engine (idempotent - safe to call multiple times)
+    SPDLOG_INFO("Starting C++ engine service for client '{}'...", [clientID UTF8String]);
     std::expected<void, FWA::DaemonCoreError> engineStartResult = _cppCore->initializeAndStartService();
     if (!engineStartResult) {
-        SPDLOG_ERROR("Failed to start C++ service: {}", static_cast<int>(engineStartResult.error()));
-        // Clean up newly registered client if engine start fails? Or let it stay for notifications?
-        // For now, let client stay but report failure.
-        NSError *error = [NSError errorWithDomain:@"FWADaemonCppErrorDomain" 
-                                             code:static_cast<NSInteger>(engineStartResult.error()) 
-                                         userInfo:@{NSLocalizedDescriptionKey: @"Failed to start service"}];
+        SPDLOG_ERROR("Failed to start C++ service for client '{}': {}", [clientID UTF8String], static_cast<int>(engineStartResult.error()));
+        
+        // Clean up the newly registered client on engine start failure
+        [self performOnInternalQueueAsync:^{
+            [self.connectedClients removeObjectForKey:clientID];
+            [clientConnection invalidate];
+        }];
+        
+        NSError *error = errorFromDaemonCoreError(engineStartResult.error(), @"Failed to start daemon engine");
         if (reply) reply(NO, error);
         return;
     }
 
-    SPDLOG_INFO("Client '{}' registered and C++ engine started/confirmed running.", [clientID UTF8String]);
-    if (reply) reply(YES, nil);
+    // 5. Perform comprehensive handshake with client
+    SPDLOG_INFO("Performing handshake with client '{}'...", [clientID UTF8String]);
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        id<FWAClientNotificationProtocol> remoteProxy = newClientInfo.remoteProxy;
+        
+        [remoteProxy daemonHandshake:^(BOOL handshakeSuccess) {
+            if (handshakeSuccess) {
+                SPDLOG_INFO("✅ Handshake with client '{}' succeeded", [clientID UTF8String]);
+                
+                // Send current daemon state to the new client
+                dispatch_async(self.internalQueue, ^{
+                    @try {
+                        // Send current driver connection status
+                        if (self.driverIsConnected) {
+                            [remoteProxy driverConnectionStatusDidChange:self.driverIsConnected];
+                            SPDLOG_INFO("Sent current driver status (connected) to client '{}'", [clientID UTF8String]);
+                        }
+                        
+                        // TODO: Send current device summaries when available
+                        // [remoteProxy deviceListDidUpdate:currentDeviceSummaries];
+                        
+                    } @catch (NSException *ex) {
+                        SPDLOG_ERROR("Exception sending initial state to client '{}': {}", 
+                                   [clientID UTF8String], [[ex description] UTF8String]);
+                    }
+                });
+                
+            } else {
+                SPDLOG_ERROR("❌ Handshake with client '{}' failed", [clientID UTF8String]);
+                
+                // Consider removing the client if handshake fails
+                [self performOnInternalQueueAsync:^{
+                    [self.connectedClients removeObjectForKey:clientID];
+                    [clientConnection invalidate];
+                }];
+            }
+        }];
+    });
 
-    // Optionally, send current state to the new client
-    if (self.driverIsConnected) {
-        [newClientInfo.remoteProxy driverConnectionStatusDidChange:self.driverIsConnected];
-    }
-    // TODO: Send current device list summary to the new client
+    // 6. Reply with success - engine is started and client is registered
+    SPDLOG_INFO("✅ Client '{}' registered and C++ engine started successfully", [clientID UTF8String]);
+    if (reply) reply(YES, nil);
 }
 
 - (void)unregisterClientAndStopEngine:(NSString *)clientID
@@ -707,48 +791,68 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
 
     if (!_cppCore) {
         SPDLOG_CRITICAL("C++ DaemonCore is not initialized!");
-        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonError" code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]);
+        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonErrorDomain" code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]);
         return;
     }
 
-    // 1. Unregister the client
+    if (!clientID || [clientID length] == 0) {
+        SPDLOG_ERROR("Unregistration failed - invalid clientID");
+        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonErrorDomain" code:1001 userInfo:@{NSLocalizedDescriptionKey:@"Invalid client ID"}]);
+        return;
+    }
+
+    // 1. Unregister the client with proper validation and cleanup
     __block BOOL clientWasRegistered = NO;
+    __block NSUInteger remainingClientCount = 0;
+    
     [self performOnInternalQueueSync:^{
         ClientInfo *info = self.connectedClients[clientID];
         if (info) {
             clientWasRegistered = YES;
-            [info.connection invalidate];
+            
+            // Properly invalidate the connection
+            @try {
+                [info.connection invalidate];
+            } @catch (NSException *ex) {
+                SPDLOG_WARN("Exception invalidating connection for client '{}': {}", 
+                           [clientID UTF8String], [[ex description] UTF8String]);
+            }
+            
             [self.connectedClients removeObjectForKey:clientID];
-            SPDLOG_INFO("Client '{}' unregistered.", [clientID UTF8String]);
+            remainingClientCount = self.connectedClients.count;
+            SPDLOG_INFO("Client '{}' unregistered successfully. Remaining clients: {}", 
+                       [clientID UTF8String], remainingClientCount);
         } else {
-            SPDLOG_WARN("Attempted to unregister unknown client '{}'.", [clientID UTF8String]);
+            SPDLOG_WARN("Attempted to unregister unknown client '{}'", [clientID UTF8String]);
         }
     }];
 
-    // 2. Stop the C++ Engine (conditionally, e.g., if no other clients remain)
-    //    This needs careful logic: only stop if this was the *last* "engine-controlling" client.
-    //    For simplicity now, let's assume unregistering *any* client implies engine stop,
-    //    or that stopEngine is idempotent / reference counted internally in DaemonCore.
-    __block BOOL shouldStopEngine = YES; // Simplistic: always try to stop.
-                                 // Better: check if self.connectedClients is empty.
-    [self performOnInternalQueueSync:^{ // Check on queue
-        if (self.connectedClients.count == 0) {
-            shouldStopEngine = YES;
-        } else {
-            // Check if any other client is an "engine controller" type
-            // For now, assume any client keeps engine alive.
-            shouldStopEngine = NO; // Don't stop if other clients exist
-            SPDLOG_INFO("Other clients still connected, engine will not be stopped by unregistering '{}'.", [clientID UTF8String]);
-        }
-    }];
-
-
-    if (shouldStopEngine) {
-        SPDLOG_INFO("Attempting to stop C++ service as client '{}' unregisters and no other clients (or last controlling client).", [clientID UTF8String]);
-        _cppCore->stopAndCleanupService();
-        SPDLOG_INFO("C++ service stopped successfully.");
+    if (!clientWasRegistered) {
+        // Still return success if client wasn't registered (idempotent operation)
+        SPDLOG_INFO("Client '{}' was not registered, treating unregister as success", [clientID UTF8String]);
+        if (reply) reply(YES, nil);
+        return;
     }
 
+    // 2. Conditionally stop the C++ Engine based on client management policy
+    BOOL shouldStopEngine = (remainingClientCount == 0);
+    
+    if (shouldStopEngine) {
+        SPDLOG_INFO("No clients remaining after unregistering '{}', stopping C++ engine", [clientID UTF8String]);
+        
+        @try {
+            _cppCore->stopAndCleanupService();
+            SPDLOG_INFO("✅ C++ engine stopped successfully after last client '{}' unregistered", [clientID UTF8String]);
+        } @catch (...) {
+            SPDLOG_ERROR("❌ Exception occurred while stopping C++ engine after client '{}' unregistered", [clientID UTF8String]);
+            // Continue anyway since client is unregistered
+        }
+    } else {
+        SPDLOG_INFO("Engine kept running: {} other clients still connected after unregistering '{}'", 
+                   remainingClientCount, [clientID UTF8String]);
+    }
+
+    // 3. Reply with success
     if (reply) reply(YES, nil);
 }
 

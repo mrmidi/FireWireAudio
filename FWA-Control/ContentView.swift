@@ -34,12 +34,12 @@ struct ContentView: View {
             }
         }
         .alert("FireWire Driver Missing", isPresented: $uiManager.showDriverInstallPrompt, actions: driverAlertActions, message: driverAlertMessage)
-        .onChange(of: uiManager.showDriverInstallPrompt) { _ in
-            handleDriverPromptChange(isShowing: uiManager.showDriverInstallPrompt)
+        .onChange(of: uiManager.showDriverInstallPrompt) { isShowing, _ in
+            handleDriverPromptChange(isShowing: isShowing)
         }
         .alert("FireWire Daemon Not Installed", isPresented: $uiManager.showDaemonInstallPrompt, actions: daemonAlertActions, message: daemonAlertMessage)
-        .onChange(of: uiManager.showDaemonInstallPrompt) { _ in
-            handleDaemonPromptChange(isShowing: uiManager.showDaemonInstallPrompt)
+        .onChange(of: uiManager.showDaemonInstallPrompt) { isShowing, _ in
+            handleDaemonPromptChange(isShowing: isShowing)
         }
     }
 

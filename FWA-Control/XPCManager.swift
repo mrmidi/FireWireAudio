@@ -47,6 +47,23 @@ private struct ReplyWrapper: @unchecked Sendable {
 // MARK: - XPCManager actor
 
 public final actor XPCManager {
+    /// Get current driver connection state from daemon
+    public func getIsDriverConnected() async -> Bool? {
+        guard let proxy = validProxy() else {
+            logger.warning("getIsDriverConnected: No valid proxy to daemon.")
+            return nil
+        }
+        return await withCheckedContinuation { (cc: CheckedContinuation<Bool?, Never>) in
+            proxy.getIsDriverConnected { isConnected in
+                cc.resume(returning: isConnected)
+            }
+        }
+    }
+
+    /// Legacy method name for backward compatibility
+    public func getDriverConnected() async -> Bool? {
+        return await getIsDriverConnected()
+    }
     // Logger
 //    private let logger = AppLoggers.xpcManager
     
@@ -90,74 +107,124 @@ public final actor XPCManager {
 
     // MARK: — Connection Management
 
-    public func connect() async -> Bool {
-        guard xpcConnection == nil else { return true }
+    /// Primary method for connecting to daemon and starting the engine
+    public func connectAndInitializeDaemonEngine() async throws -> Bool {
+        // Check if already connected
+        if xpcConnection != nil {
+            logger.info("connectAndInitializeDaemonEngine: Already connected.")
+            return true
+        }
 
-        // 1) listener for callbacks
+        logger.info("connectAndInitializeDaemonEngine: Establishing new connection and starting engine...")
+
+        // 1. Create listener for callbacks FROM the daemon
         let handler = XPCNotificationHandler(manager: self)
-        let listener = NSXPCListener.anonymous()
-        listener.delegate = handler
-        listener.resume()
-        self.listener = listener
+        let localListener = NSXPCListener.anonymous()
+        localListener.delegate = handler
+        localListener.resume()
+        self.listener = localListener
 
-        // 2) open XPC connection
-        let conn = NSXPCConnection(machServiceName: daemonServiceName, options: [])
-        conn.remoteObjectInterface = NSXPCInterface(with: FWADaemonControlProtocol.self)
+        // 2. Create XPC connection TO the daemon
+        let daemonConnection = NSXPCConnection(machServiceName: daemonServiceName, options: [])
+        daemonConnection.remoteObjectInterface = NSXPCInterface(with: FWADaemonControlProtocol.self)
 
-        // @Sendable interruption/invalidation handlers
-        conn.interruptionHandler = ({
-            [weak self] in
-            Task { await self?.handleDisconnect(reason: "interrupted") }
+        daemonConnection.interruptionHandler = ({ [weak self] in
+            Task { await self?.handleDisconnect(reason: "Daemon connection interrupted", invalidateManually: false) }
         } as @Sendable () -> Void)
-
-        conn.invalidationHandler = ({
-            [weak self] in
-            Task { await self?.handleDisconnect(reason: "invalidated") }
+        
+        daemonConnection.invalidationHandler = ({ [weak self] in
+            Task { await self?.handleDisconnect(reason: "Daemon connection invalidated", invalidateManually: false) }
         } as @Sendable () -> Void)
+        daemonConnection.resume()
+        self.xpcConnection = daemonConnection
 
-        conn.resume()
-        xpcConnection = conn
+        // 3. Call the consolidated XPC method on the daemon
 
-        // 3) register client
-        let success = await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
-            let proxyError: @Sendable (Error) -> Void = { [weak self] err in
-                Task { await self?.handleDisconnect(reason: "proxy error: \(err)") }
-                cc.resume(returning: false) // Ensure continuation is always resumed
-            }
-
-            guard let proxy = conn
-                .remoteObjectProxyWithErrorHandler(proxyError)
-                    as? FWADaemonControlProtocol else {
-                cc.resume(returning: false)
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
+            guard let proxy = daemonConnection.remoteObjectProxyWithErrorHandler({ @Sendable [weak self] error in
+                // XPC PROXY ERROR HANDLER (NOT on actor executor)
+                Task { @MainActor in
+                    await self?.handleProxyErrorForContinuation(error: error, specificContinuation: continuation)
+                }
+            }) as? FWADaemonControlProtocol else {
+                let initError = NSError(domain: "XPCManagerErrorDomain", code: 101, userInfo: [NSLocalizedDescriptionKey: "Failed to get remote proxy for daemon."])
+                self.logger.error("\(initError.localizedDescription)")
+                continuation.resume(throwing: initError)
                 return
             }
 
-            proxy.registerClient(clientID,
-                                 clientNotificationEndpoint: listener.endpoint) {
-                success, _ in cc.resume(returning: success)
-            }
-        }
-        // Seed initial driver status stream if registration succeeded
-        if success {
-            Task { [self] in
-                if let isUp = await getDriverConnected() {
-                    cont.driverStatus.yield(isUp)
+            proxy.registerClientAndStartEngine(
+                self.clientID,
+                clientNotificationEndpoint: localListener.endpoint
+            ) { @Sendable [weak self] success, errorFromDaemon in
+                // XPC REPLY BLOCK (NOT on actor executor)
+                Task { @MainActor in
+                    await self?.handleRegisterReplyForContinuation(success: success, error: errorFromDaemon, specificContinuation: continuation)
                 }
             }
         }
-        return success
+    }
+
+    /// Legacy connect method - now delegates to consolidated method
+    public func connect() async -> Bool {
+        do {
+            return try await connectAndInitializeDaemonEngine()
+        } catch {
+            logger.error("Connection failed: \(error)")
+            return false
+        }
     }
 
     public func disconnect() async {
-        await handleDisconnect(reason: "manual disconnect")
+        await handleDisconnect(reason: "manual disconnect", invalidateManually: true)
     }
 
-    private func handleDisconnect(reason: String) async {
+    private func handleDisconnect(reason: String, invalidateManually: Bool = true) async {
         logger.warning("XPC closed: \(reason)")
-        xpcConnection?.invalidate()
-        listener?.invalidate()
+        if invalidateManually {
+            xpcConnection?.invalidate() // Invalidate connection TO daemon
+        }
+        listener?.invalidate()      // Invalidate OUR listener for daemon callbacks
         xpcConnection = nil
         listener = nil
+        // Optionally notify other parts of the GUI that the connection is lost.
+        // Example: cont.driverStatus.yield(false) or a specific "disconnected" event.
+    }
+
+    // Actor-isolated method to handle proxy errors and resume a specific continuation
+    nonisolated private func handleProxyErrorForContinuation(error: Error,
+                                                 specificContinuation: CheckedContinuation<Bool, Error>?) {
+        Task { @MainActor in
+            await self.logger.error("Proxy error during an XPC call: \(error.localizedDescription)")
+            await self.handleDisconnect(reason: "Proxy error on XPC call", invalidateManually: false)
+            specificContinuation?.resume(throwing: error)
+        }
+    }
+
+    // Actor-isolated method to handle replies and resume a specific continuation
+    nonisolated private func handleRegisterReplyForContinuation(success: Bool,
+                                                   error: Error?,
+                                                   specificContinuation: CheckedContinuation<Bool, Error>?) {
+        guard let continuation = specificContinuation else { return }
+
+        Task { @MainActor in
+            if let nsError = error {
+                await self.logger.error("Daemon replied with error for registerClientAndStartEngine: \(nsError.localizedDescription)")
+                continuation.resume(throwing: nsError)
+            } else if success {
+                await self.logger.info("Successfully registered with daemon and engine start requested.")
+                continuation.resume(returning: true)
+                Task {
+                    if let isUp = await self.getIsDriverConnected() {
+                       await self.dispatchDriverStatus(isUp)
+                    }
+                }
+            } else {
+                let genericError = NSError(domain: "XPCManagerErrorDomain", code: 102, userInfo: [NSLocalizedDescriptionKey: "Daemon returned failure for registerClientAndStartEngine without specific error."])
+                await self.logger.error("\(genericError.localizedDescription)")
+                continuation.resume(throwing: genericError)
+            }
+        }
     }
 
     // MARK: — Queries
@@ -237,18 +304,41 @@ public final actor XPCManager {
     }
 
     /// Manually query the daemon for current driver connection state
-    public func getDriverConnected() async -> Bool? {
-        guard let proxy = validProxy() else { return nil }
-        return await withCheckedContinuation { (cc: CheckedContinuation<Bool?, Never>) in
-            proxy.getIsDriverConnected { isConnected in
-                cc.resume(returning: isConnected)
-            }
-        }
-    }
+    // Removed duplicate getDriverConnected()
 
     // MARK: — Engine Lifecycle Methods
 
+    /// Disconnect from daemon and stop engine (combines old unregisterClientAndStopEngine + disconnect)
+    public func disconnectAndStopEngine() async throws -> Bool {
+        logger.info("Disconnecting from daemon and stopping engine...")
+        
+        guard let proxy = validProxy() else {
+            logger.warning("No valid proxy available for disconnectAndStopEngine, performing local cleanup only")
+            await handleDisconnect(reason: "manual disconnect - no proxy", invalidateManually: true)
+            return true // Consider this success since we're disconnecting anyway
+        }
+        
+        let stopSuccess = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
+            proxy.unregisterClientAndStopEngine(clientID) { success, error in
+                if let nsError = error {
+                    self.logger.error("unregisterClientAndStopEngine failed: \(nsError.localizedDescription)")
+                    continuation.resume(throwing: nsError)
+                } else {
+                    self.logger.info("Successfully unregistered from daemon and requested engine stop")
+                    continuation.resume(returning: success)
+                }
+            }
+        }
+        // Always perform local cleanup regardless of daemon response
+        await handleDisconnect(reason: "manual disconnect after engine stop", invalidateManually: true)
+        return stopSuccess
+    }
+
+    // MARK: — Legacy Engine Methods (Deprecated - use connectAndInitializeDaemonEngine instead)
+
+    @available(*, deprecated, message: "Use connectAndInitializeDaemonEngine() instead")
     public func registerClientAndStartEngine() async throws -> Bool {
+        logger.warning("Using deprecated registerClientAndStartEngine - consider using connectAndInitializeDaemonEngine")
         guard let proxy = validProxy() else { 
             throw NSError(domain: "XPCManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "No valid XPC proxy"])
         }
@@ -263,7 +353,9 @@ public final actor XPCManager {
         }
     }
 
+    @available(*, deprecated, message: "Use disconnectAndStopEngine() instead")
     public func unregisterClientAndStopEngine() async throws -> Bool {
+        logger.warning("Using deprecated unregisterClientAndStopEngine - consider using disconnectAndStopEngine")
         guard let proxy = validProxy() else { 
             throw NSError(domain: "XPCManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "No valid XPC proxy"])
         }
@@ -337,7 +429,7 @@ private final class XPCNotificationHandler: NSObject,
                                            FWAClientNotificationProtocol,
                                            @unchecked Sendable
 {
-    /// Retain callback connections so they aren’t deallocated immediately
+    /// Retain callback connections so they aren't deallocated immediately
     private var callbackConnections = [NSXPCConnection]()
     
     // MARK: NSXPCListenerDelegate
