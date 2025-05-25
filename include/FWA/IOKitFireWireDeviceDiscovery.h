@@ -28,7 +28,9 @@ public:
     /**
      * @brief Construct a new IOKit FireWire Device Discovery object
      */
-    IOKitFireWireDeviceDiscovery(std::shared_ptr<DeviceController> deviceController);
+    explicit IOKitFireWireDeviceDiscovery(std::shared_ptr<DeviceController> deviceController);
+    // Optionally, add a default constructor if needed for legacy code
+    // IOKitFireWireDeviceDiscovery();
     
     /**
      * @brief Destroy the IOKit FireWire Device Discovery object

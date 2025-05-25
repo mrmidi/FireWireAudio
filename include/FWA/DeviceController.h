@@ -27,6 +27,10 @@ public:
      * @param discovery Unique pointer to device discovery implementation
      */
     DeviceController(std::unique_ptr<IFireWireDeviceDiscovery> discovery);
+    DeviceController(std::nullptr_t) {}
+    void setDiscoveryService(std::unique_ptr<IFireWireDeviceDiscovery> discovery) {
+        discovery_ = std::move(discovery);
+    }
     ~DeviceController();
 
     /**

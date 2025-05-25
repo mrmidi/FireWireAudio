@@ -25,6 +25,11 @@ void ShmIsochBridge::stop()
     if (thread_.joinable()) thread_.join();
 }
 
+bool ShmIsochBridge::isRunning() const
+{
+    return running_.load(std::memory_order_relaxed);
+}
+
 ShmIsochBridge::~ShmIsochBridge() { stop(); }
 
 void ShmIsochBridge::enqueue(const RTShmRing::AudioChunk_POD& chunk)
