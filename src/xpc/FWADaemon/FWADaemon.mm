@@ -1,3 +1,4 @@
+
 #import "FWADaemon.h" // Import the interface declaration
 #import "shared/xpc/FWAClientNotificationProtocol.h" // Correct client protocol
 #import <Foundation/Foundation.h>
@@ -1069,6 +1070,8 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
     }
     // No need for an 'else' log here, the sink already decided not to call if no clients.
 }
+
+
 // END ADDED/MOVED Method Implementations +++
 
 @end
