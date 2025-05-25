@@ -10,6 +10,55 @@
 #include "core/DaemonCore.hpp"          // Path to your DaemonCore.hpp
 #include "OsLogSink.hpp"                // Your custom sink for C++ logs to os_log
 #include "GuiCallbackSink.hpp"          // Your custom sink for C++ logs to GUI clients
+#include "shared/xpc/FWAXPCCommonTypes.h"  // For FWAXPCLoglevel
+
+// Helper to convert DaemonCoreError to NSError
+static NSError* errorFromDaemonCoreError(FWA::DaemonCoreError daemonError, NSString* descriptionPrefix) {
+    NSString *desc = [NSString stringWithFormat:@"%@: DaemonCore error code %d",
+                                     descriptionPrefix ?: @"Operation failed",
+                                     static_cast<int>(daemonError)];
+    return [NSError errorWithDomain:@"FWADaemonCoreErrorDomain"
+                               code:static_cast<NSInteger>(daemonError)
+                           userInfo:@{NSLocalizedDescriptionKey: desc}];
+}
+
+// Helper to convert IOKitError to NSError
+static NSError* errorFromIOKitError(FWA::IOKitError fwaError, NSString* descriptionPrefix) {
+    NSString *desc = [NSString stringWithFormat:@"%@: C++ error code %d",
+                                     descriptionPrefix ?: @"Operation failed",
+                                     static_cast<int>(fwaError)];
+    return [NSError errorWithDomain:@"FWADaemonCppErrorDomain"
+                               code:static_cast<NSInteger>(fwaError)
+                           userInfo:@{NSLocalizedDescriptionKey: desc}];
+}
+
+// Helper to convert spdlog level to FWAXPCLoglevel
+static FWAXPCLoglevel spdlogLevelToFWAXPCLoglevel(spdlog::level::level_enum spdlogLevel) {
+    switch (spdlogLevel) {
+        case spdlog::level::trace:    return FWAXPCLoglevelTrace;
+        case spdlog::level::debug:    return FWAXPCLoglevelDebug;
+        case spdlog::level::info:     return FWAXPCLoglevelInfo;
+        case spdlog::level::warn:     return FWAXPCLoglevelWarn;
+        case spdlog::level::err:      return FWAXPCLoglevelError;
+        case spdlog::level::critical: return FWAXPCLoglevelCritical;
+        case spdlog::level::off:      return FWAXPCLoglevelOff;
+        default:                      return FWAXPCLoglevelInfo; // Default
+    }
+}
+
+// Helper to convert FWAXPCLoglevel to spdlog level
+static spdlog::level::level_enum fwaXPCLoglevelToSpdlogLevel(FWAXPCLoglevel xpcLevel) {
+    switch (xpcLevel) {
+        case FWAXPCLoglevelTrace:    return spdlog::level::trace;
+        case FWAXPCLoglevelDebug:    return spdlog::level::debug;
+        case FWAXPCLoglevelInfo:     return spdlog::level::info;
+        case FWAXPCLoglevelWarn:     return spdlog::level::warn;
+        case FWAXPCLoglevelError:    return spdlog::level::err;
+        case FWAXPCLoglevelCritical: return spdlog::level::critical;
+        case FWAXPCLoglevelOff:      return spdlog::level::off;
+        default:                     return spdlog::level::info; // Default
+    }
+}
 
 // --- Global/Static for C++ Core and Daemon's own logger ---
 static std::shared_ptr<spdlog::logger> s_FWADaemon_ObjC_logger; // Logger for FWADaemon.mm
@@ -568,102 +617,261 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
     }
 }
 
-// --- New FWADaemonControlProtocol Methods (Placeholder Implementations) ---
+// --- New FWADaemonControlProtocol Methods ---
 
 - (void)registerClientAndStartEngine:(NSString *)clientID
           clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
                            withReply:(void (^)(BOOL success, NSError * _Nullable error))reply {
-    SPDLOG_WARN("registerClientAndStartEngine:clientNotificationEndpoint:withReply: called for client '{}' - NOT IMPLEMENTED YET", 
-                [clientID UTF8String] ?: "<nil>");
-    if (reply) {
-        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
-                                             code:1001 
-                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
-        reply(NO, error);
+    SPDLOG_INFO("XPC: registerClientAndStartEngine from '{}'", [clientID UTF8String] ?: "<nil_client_id>");
+
+    if (!_cppCore) {
+        SPDLOG_CRITICAL("C++ DaemonCore is not initialized!");
+        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonError" code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]);
+        return;
     }
+
+    // 1. Register the client (reusing existing logic, slightly adapted)
+    if (!clientID || [clientID length] == 0 || !clientNotificationEndpoint) {
+        SPDLOG_ERROR("Registration failed - invalid clientID or endpoint for '{}'.", [clientID UTF8String] ?: "<nil_client_id>");
+        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonError" code:1001 userInfo:@{NSLocalizedDescriptionKey:@"Invalid client ID or endpoint"}]);
+        return;
+    }
+
+    NSXPCConnection *clientConnection = [[NSXPCConnection alloc] initWithListenerEndpoint:clientNotificationEndpoint];
+    clientConnection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(FWAClientNotificationProtocol)];
+
+    ClientInfo *newClientInfo = [[ClientInfo alloc] init];
+    newClientInfo.clientID = clientID;
+    newClientInfo.connection = clientConnection;
+    newClientInfo.remoteProxy = [clientConnection remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
+        // Error handler
+        const char* clientID_cstr = [clientID UTF8String];
+        const char* error_cstr = [[error description] UTF8String];
+        SPDLOG_ERROR("XPC error calling remote proxy for client '{}': {}",
+                     clientID_cstr ? clientID_cstr : "<nil_id>",
+                     error_cstr ? error_cstr : "<nil_error>");
+        [self performOnInternalQueueAsync:^{
+             ClientInfo *info = self.connectedClients[clientID];
+             if (info && info.connection == clientConnection) {
+                 [self.connectedClients removeObjectForKey:clientID];
+             }
+         }];
+    }];
+    clientConnection.invalidationHandler = ^{
+        // Invalidation handler
+        const char* clientID_cstr = [clientID UTF8String];
+        SPDLOG_INFO("Client connection invalidated for '{}'. Removing from registry.", clientID_cstr ? clientID_cstr : "<nil_id>");
+        [self performOnInternalQueueAsync:^{
+            [self.connectedClients removeObjectForKey:clientID];
+        }];
+    };
+    [clientConnection resume];
+
+    [self performOnInternalQueueSync:^{
+        ClientInfo* existingClient = self.connectedClients[clientID];
+        if (existingClient) {
+            SPDLOG_WARN("Client ID '{}' already registered. Invalidating old connection.", [clientID UTF8String]);
+            [existingClient.connection invalidate];
+        }
+        self.connectedClients[clientID] = newClientInfo;
+    }];
+
+    // 2. Start the C++ Engine (if not already started by another client)
+    //    This needs careful state management if multiple clients can trigger it.
+    //    For now, let's assume it's okay to call initializeAndStartService multiple times or it's idempotent.
+    std::expected<void, FWA::DaemonCoreError> engineStartResult = _cppCore->initializeAndStartService();
+    if (!engineStartResult) {
+        SPDLOG_ERROR("Failed to start C++ service: {}", static_cast<int>(engineStartResult.error()));
+        // Clean up newly registered client if engine start fails? Or let it stay for notifications?
+        // For now, let client stay but report failure.
+        NSError *error = [NSError errorWithDomain:@"FWADaemonCppErrorDomain" 
+                                             code:static_cast<NSInteger>(engineStartResult.error()) 
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Failed to start service"}];
+        if (reply) reply(NO, error);
+        return;
+    }
+
+    SPDLOG_INFO("Client '{}' registered and C++ engine started/confirmed running.", [clientID UTF8String]);
+    if (reply) reply(YES, nil);
+
+    // Optionally, send current state to the new client
+    if (self.driverIsConnected) {
+        [newClientInfo.remoteProxy driverConnectionStatusDidChange:self.driverIsConnected];
+    }
+    // TODO: Send current device list summary to the new client
 }
 
 - (void)unregisterClientAndStopEngine:(NSString *)clientID
                             withReply:(void (^)(BOOL success, NSError * _Nullable error))reply {
-    SPDLOG_WARN("unregisterClientAndStopEngine:withReply: called for client '{}' - NOT IMPLEMENTED YET", 
-                [clientID UTF8String] ?: "<nil>");
-    if (reply) {
-        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
-                                             code:1002 
-                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
-        reply(NO, error);
+    SPDLOG_INFO("XPC: unregisterClientAndStopEngine from '{}'", [clientID UTF8String] ?: "<nil>");
+
+    if (!_cppCore) {
+        SPDLOG_CRITICAL("C++ DaemonCore is not initialized!");
+        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonError" code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]);
+        return;
     }
+
+    // 1. Unregister the client
+    __block BOOL clientWasRegistered = NO;
+    [self performOnInternalQueueSync:^{
+        ClientInfo *info = self.connectedClients[clientID];
+        if (info) {
+            clientWasRegistered = YES;
+            [info.connection invalidate];
+            [self.connectedClients removeObjectForKey:clientID];
+            SPDLOG_INFO("Client '{}' unregistered.", [clientID UTF8String]);
+        } else {
+            SPDLOG_WARN("Attempted to unregister unknown client '{}'.", [clientID UTF8String]);
+        }
+    }];
+
+    // 2. Stop the C++ Engine (conditionally, e.g., if no other clients remain)
+    //    This needs careful logic: only stop if this was the *last* "engine-controlling" client.
+    //    For simplicity now, let's assume unregistering *any* client implies engine stop,
+    //    or that stopEngine is idempotent / reference counted internally in DaemonCore.
+    __block BOOL shouldStopEngine = YES; // Simplistic: always try to stop.
+                                 // Better: check if self.connectedClients is empty.
+    [self performOnInternalQueueSync:^{ // Check on queue
+        if (self.connectedClients.count == 0) {
+            shouldStopEngine = YES;
+        } else {
+            // Check if any other client is an "engine controller" type
+            // For now, assume any client keeps engine alive.
+            shouldStopEngine = NO; // Don't stop if other clients exist
+            SPDLOG_INFO("Other clients still connected, engine will not be stopped by unregistering '{}'.", [clientID UTF8String]);
+        }
+    }];
+
+
+    if (shouldStopEngine) {
+        SPDLOG_INFO("Attempting to stop C++ service as client '{}' unregisters and no other clients (or last controlling client).", [clientID UTF8String]);
+        _cppCore->stopAndCleanupService();
+        SPDLOG_INFO("C++ service stopped successfully.");
+    }
+
+    if (reply) reply(YES, nil);
 }
 
 - (void)getConnectedDeviceSummariesWithReply:(void (^)(NSArray<NSDictionary *> * _Nullable deviceSummaries, NSError * _Nullable error))reply {
-    SPDLOG_WARN("getConnectedDeviceSummariesWithReply: called - NOT IMPLEMENTED YET");
-    if (reply) {
-        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
-                                             code:1003 
-                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
-        reply(nil, error);
+    SPDLOG_INFO("XPC: getConnectedDeviceSummaries");
+    if (!_cppCore) { 
+        if (reply) reply(nil, [NSError errorWithDomain:@"FWADaemonError" code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]); 
+        return; 
     }
+
+    // TODO: DaemonCore doesn't have getConnectedDevices method yet
+    // For now, return empty array until the method is implemented in DaemonCore
+    SPDLOG_WARN("getConnectedDeviceSummaries: DaemonCore method not implemented yet, returning empty array");
+    NSArray<NSDictionary *> *summaries = @[];
+    if (reply) reply(summaries, nil);
 }
 
 - (void)getDetailedDeviceInfoJSONForGUID:(uint64_t)guid
                                withReply:(void (^)(NSString * _Nullable deviceInfoJSON, NSError * _Nullable error))reply {
-    SPDLOG_WARN("getDetailedDeviceInfoJSONForGUID:withReply: called for GUID 0x{:016X} - NOT IMPLEMENTED YET", guid);
-    if (reply) {
-        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
-                                             code:1004 
-                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
-        reply(nil, error);
+    SPDLOG_INFO("XPC: getDetailedDeviceInfoJSONForGUID: 0x{:016X}", guid);
+    if (!_cppCore) { 
+        if (reply) reply(nil, [NSError errorWithDomain:@"FWADaemonError" code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]); 
+        return; 
     }
+
+    std::expected<std::string, FWA::DaemonCoreError> jsonResult = _cppCore->getDetailedDeviceInfoJSON(guid);
+    if (!jsonResult) {
+        SPDLOG_ERROR("Failed to get detailed device info for GUID 0x{:016X}: {}", guid, static_cast<int>(jsonResult.error()));
+        if (reply) reply(nil, errorFromDaemonCoreError(jsonResult.error(), @"Failed to get detailed device info"));
+        return;
+    }
+
+    NSString *jsonString = [NSString stringWithUTF8String:jsonResult.value().c_str()];
+    if (reply) reply(jsonString, nil);
 }
 
 - (void)sendAVCCommandToDevice:(uint64_t)guid
                        command:(NSData *)commandData
                      withReply:(void (^)(NSData * _Nullable responseData, NSError * _Nullable error))reply {
-    SPDLOG_WARN("sendAVCCommandToDevice:command:withReply: called for GUID 0x{:016X} with {} bytes - NOT IMPLEMENTED YET", 
-                guid, commandData ? [commandData length] : 0);
-    if (reply) {
-        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
-                                             code:1005 
-                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
-        reply(nil, error);
+    SPDLOG_INFO("XPC: sendAVCCommandToDevice: GUID=0x{:016X}, CommandBytes={}", guid, commandData ? commandData.length : 0);
+    if (!_cppCore) { 
+        if (reply) reply(nil, [NSError errorWithDomain:@"FWADaemonError" code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]); 
+        return; 
     }
+    if (!commandData || commandData.length == 0) {
+        if (reply) reply(nil, [NSError errorWithDomain:@"FWADaemonError" code:1002 userInfo:@{NSLocalizedDescriptionKey:@"Empty command data"}]);
+        return;
+    }
+
+    std::vector<uint8_t> cppCommand(static_cast<const uint8_t*>(commandData.bytes),
+                                    static_cast<const uint8_t*>(commandData.bytes) + commandData.length);
+
+    std::expected<std::vector<uint8_t>, FWA::DaemonCoreError> cppResponseResult = _cppCore->sendAVCCommand(guid, cppCommand);
+
+    if (!cppResponseResult) {
+        SPDLOG_ERROR("C++ sendAVCCommand failed for GUID 0x{:016X}: {}", guid, static_cast<int>(cppResponseResult.error()));
+        if (reply) reply(nil, errorFromDaemonCoreError(cppResponseResult.error(), @"Failed to send AV/C command"));
+        return;
+    }
+
+    NSData *nsResponseData = [NSData dataWithBytes:cppResponseResult.value().data() length:cppResponseResult.value().size()];
+    if (reply) reply(nsResponseData, nil);
 }
 
 - (void)startAudioStreamsForDevice:(uint64_t)guid
                          withReply:(void (^)(BOOL success, NSError * _Nullable error))reply {
-    SPDLOG_WARN("startAudioStreamsForDevice:withReply: called for GUID 0x{:016X} - NOT IMPLEMENTED YET", guid);
-    if (reply) {
-        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
-                                             code:1006 
-                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
-        reply(NO, error);
+    SPDLOG_INFO("XPC: startAudioStreamsForDevice: GUID=0x{:016X}", guid);
+    if (!_cppCore) { 
+        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonError" code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]); 
+        return; 
     }
+
+    std::expected<void, FWA::DaemonCoreError> startResult = _cppCore->startAudioStreams(guid);
+    if (!startResult) {
+        SPDLOG_ERROR("C++ startAudioStreams failed for GUID 0x{:016X}: {}", guid, static_cast<int>(startResult.error()));
+        if (reply) reply(NO, errorFromDaemonCoreError(startResult.error(), @"Failed to start audio streams"));
+        return;
+    }
+    if (reply) reply(YES, nil);
 }
 
 - (void)stopAudioStreamsForDevice:(uint64_t)guid
                         withReply:(void (^)(BOOL success, NSError * _Nullable error))reply {
-    SPDLOG_WARN("stopAudioStreamsForDevice:withReply: called for GUID 0x{:016X} - NOT IMPLEMENTED YET", guid);
-    if (reply) {
-        NSError *error = [NSError errorWithDomain:@"FWADaemonError" 
-                                             code:1007 
-                                         userInfo:@{NSLocalizedDescriptionKey: @"Method not implemented yet"}];
-        reply(NO, error);
+    SPDLOG_INFO("XPC: stopAudioStreamsForDevice: GUID=0x{:016X}", guid);
+    if (!_cppCore) { 
+        if (reply) reply(NO, [NSError errorWithDomain:@"FWADaemonError" code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]); 
+        return; 
     }
+
+    std::expected<void, FWA::DaemonCoreError> stopResult = _cppCore->stopAudioStreams(guid);
+    if (!stopResult) {
+        SPDLOG_ERROR("C++ stopAudioStreams failed for GUID 0x{:016X}: {}", guid, static_cast<int>(stopResult.error()));
+        if (reply) reply(NO, errorFromDaemonCoreError(stopResult.error(), @"Failed to stop audio streams"));
+        return;
+    }
+    if (reply) reply(YES, nil);
 }
 
 - (void)setDaemonLogLevel:(FWAXPCLoglevel)level
                 withReply:(void (^)(BOOL success))reply {
-    SPDLOG_WARN("setDaemonLogLevel:withReply: called with level {} - NOT IMPLEMENTED YET", (int)level);
-    if (reply) {
-        reply(NO);
+    SPDLOG_INFO("XPC: setDaemonLogLevel: Level={}", static_cast<int>(level));
+    if (!_cppCore) { 
+        if (reply) reply(NO); 
+        return; 
     }
+
+    _cppCore->setDaemonLogLevel(static_cast<int>(fwaXPCLoglevelToSpdlogLevel(level)));
+    // Also set for the ObjC FWADaemon logger if desired
+    if (s_FWADaemon_ObjC_logger) {
+        s_FWADaemon_ObjC_logger->set_level(fwaXPCLoglevelToSpdlogLevel(level));
+    }
+    if (reply) reply(YES);
 }
 
 - (void)getDaemonLogLevelWithReply:(void (^)(FWAXPCLoglevel currentLevel))reply {
-    SPDLOG_WARN("getDaemonLogLevelWithReply: called - NOT IMPLEMENTED YET");
-    if (reply) {
-        reply(FWAXPCLoglevelInfo); // Return a default level
-    }
+    SPDLOG_INFO("XPC: getDaemonLogLevel");
+    if (!_cppCore) { 
+        if (reply) reply(FWAXPCLoglevelInfo); 
+        return; 
+    } // Default
+
+    int currentLevel = _cppCore->getDaemonLogLevel();
+    if (reply) reply(spdlogLevelToFWAXPCLoglevel(static_cast<spdlog::level::level_enum>(currentLevel)));
 }
 
 // ADDED/MOVED Method Implementations +++
