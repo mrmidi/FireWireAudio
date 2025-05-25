@@ -36,21 +36,39 @@ private:
 
 
 // --- Constructor & Destructor ---
-DaemonCore::DaemonCore(std::shared_ptr<spdlog::logger> logger)
+DaemonCore::DaemonCore(
+    std::shared_ptr<spdlog::logger> logger,
+    DeviceNotificationToXPC_Cb deviceCb,
+    LogToXPC_Cb logCb)
     : m_logger(std::move(logger)),
+      m_deviceNotificationCb_toXPC(std::move(deviceCb)),
+      m_logCb_toXPC(std::move(logCb)),
       m_driverSharedMemoryName("/fwa_daemon_shm_v1_dc_test"),
       m_driverShmRingBufferManager(RingBufferManager::instance()),
       m_shmToIsochBridge(ShmIsochBridge::instance())
 {
     if (!m_logger) {
-        // Fallback logic as previously discussed
         auto stderr_fallback_sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
         m_logger = std::make_shared<spdlog::logger>("DaemonCore_Fallback", stderr_fallback_sink);
         m_logger->set_level(spdlog::level::info);
         m_logger->warn("DaemonCore: Using fallback stderr logger.");
     }
     m_logger->info("DaemonCore constructing...");
-    setupSpdlogForwardingToXPC(); // Setup sink to forward logs via m_logCb_toXPC
+
+    if (!m_logCb_toXPC) {
+        m_logger->error("DaemonCore Constructor: Log CB is NULL after construction!");
+    } else {
+        setupSpdlogForwardingToXPC();
+    }
+
+    // Setup driver shared memory in constructor
+    auto shmResult = setupDriverSharedMemory();
+    if (!shmResult) {
+        m_logger->critical("DaemonCore: CRITICAL FAILURE during constructor: Failed to setup driver shared memory: {}", static_cast<int>(shmResult.error()));
+    } else {
+        m_logger->info("DaemonCore: Driver shared memory setup successfully during construction.");
+    }
+
     m_logger->info("DaemonCore constructed.");
 }
 
@@ -65,33 +83,68 @@ DaemonCore::~DaemonCore() {
 
 // --- Lifecycle Management ---
 std::expected<void, DaemonCoreError> DaemonCore::initializeAndStartService() {
-    m_logger->info("DaemonCore: Initializing and starting service...");
+    m_logger->info("DaemonCore: Initializing and starting service (discovery, etc.)...");
 
     if (m_serviceIsRunning.load(std::memory_order_acquire)) {
         m_logger->warn("DaemonCore: Service already running.");
         return std::unexpected(DaemonCoreError::AlreadyInitialized);
     }
 
-    // 1. Setup Driver Shared Memory
-    m_logger->info("DaemonCore: Setting up shared memory '{}' for driver communication...", m_driverSharedMemoryName);
-    shm_unlink(m_driverSharedMemoryName.c_str()); // Clean stale first
+    // Ensure SHM is ready before proceeding
+    if (!m_shmInitialized.load()) {
+        m_logger->error("DaemonCore::initializeAndStartService: Driver SHM is not initialized. Cannot start full service.");
+        return std::unexpected(DaemonCoreError::SharedMemoryFailure);
+    }
 
-    int shmFd = shm_open(m_driverSharedMemoryName.c_str(), O_CREAT | O_EXCL | O_RDWR, 0666);
-    bool isCreator = true; // Daemon is the creator
+    // Start Controller Thread for IOKit Discovery
+    m_logger->info("DaemonCore: Starting controller/discovery thread...");
+    m_serviceIsRunning.store(true, std::memory_order_release);
+
+    m_runLoopReadyPromise = std::promise<void>();
+    auto runLoopReadyFuture = m_runLoopReadyPromise.get_future();
+
+    try {
+        m_controllerThread = std::thread(&DaemonCore::controllerThreadRunLoopFunc, this);
+    } catch (const std::system_error& e) {
+        m_logger->critical("DaemonCore: Failed to create controller thread: {}", e.what());
+        m_serviceIsRunning.store(false, std::memory_order_relaxed);
+        return std::unexpected(DaemonCoreError::ThreadCreationFailed);
+    }
+
+    m_logger->debug("DaemonCore: Waiting for controller thread run loop to become ready...");
+    try {
+        runLoopReadyFuture.get();
+        m_logger->info("DaemonCore: Controller thread run loop is ready.");
+    } catch (const std::future_error& e) {
+        m_logger->critical("DaemonCore: Error waiting for run loop ready signal: {}", e.what());
+        m_serviceIsRunning.store(false, std::memory_order_relaxed);
+        if (m_controllerThreadStopSignalSource && m_controllerRunLoopRef) {
+            CFRunLoopSourceSignal(m_controllerThreadStopSignalSource);
+            CFRunLoopWakeUp(m_controllerRunLoopRef);
+        }
+        if (m_controllerThread.joinable()) m_controllerThread.join();
+        return std::unexpected(DaemonCoreError::OperationFailed);
+    }
+
+    m_logger->info("DaemonCore: Service initialization and startup sequence complete.");
+    return {};
+}
+// New private method for SHM setup
+std::expected<void, DaemonCoreError> DaemonCore::setupDriverSharedMemory() {
+    if (m_shmInitialized.load()) {
+        m_logger->warn("DaemonCore::setupDriverSharedMemory: SHM already initialized.");
+        return {};
+    }
+
+    m_logger->info("DaemonCore: Setting up shared memory '{}' for driver communication...", m_driverSharedMemoryName);
+    shm_unlink(m_driverSharedMemoryName.c_str());
+
+    int shmFd = shm_open(m_driverSharedMemoryName.c_str(), O_CREAT | O_RDWR, 0666);
+    bool isCreator = true;
 
     if (shmFd == -1) {
-        if (errno == EEXIST) { // Should not happen if unlink worked, but handle defensively
-            m_logger->error("DaemonCore: SHM segment '{}' still exists after unlink attempt. Trying to open.", m_driverSharedMemoryName);
-            shmFd = shm_open(m_driverSharedMemoryName.c_str(), O_RDWR, 0666);
-            isCreator = false;
-             if (shmFd == -1) {
-                m_logger->critical("DaemonCore: Failed to open existing SHM segment '{}': {} - {}", m_driverSharedMemoryName, errno, strerror(errno));
-                return std::unexpected(DaemonCoreError::SharedMemoryFailure);
-            }
-        } else {
-            m_logger->critical("DaemonCore: shm_open (O_CREAT | O_EXCL) failed for '{}': {} - {}", m_driverSharedMemoryName, errno, strerror(errno));
-            return std::unexpected(DaemonCoreError::SharedMemoryFailure);
-        }
+        m_logger->critical("DaemonCore: shm_open failed for '{}': {} - {}", m_driverSharedMemoryName, errno, strerror(errno));
+        return std::unexpected(DaemonCoreError::SharedMemoryFailure);
     }
     m_logger->info("DaemonCore: SHM segment '{}' descriptor acquired (fd {}).", m_driverSharedMemoryName, shmFd);
 
@@ -104,64 +157,16 @@ std::expected<void, DaemonCoreError> DaemonCore::initializeAndStartService() {
     }
     m_logger->info("DaemonCore: SHM segment truncated to {} bytes.", requiredSize);
 
-    // Map and initialize the SHM (RingBufferManager will do the init if isCreator is true)
     bool mapSuccess = m_driverShmRingBufferManager.map(shmFd, isCreator);
-    close(shmFd); // FD can be closed after mapping
+    close(shmFd);
 
     if (!mapSuccess) {
         m_logger->critical("DaemonCore: RingBufferManager failed to map shared memory '{}'.", m_driverSharedMemoryName);
-        shm_unlink(m_driverSharedMemoryName.c_str()); // Clean up if map failed
+        shm_unlink(m_driverSharedMemoryName.c_str());
         return std::unexpected(DaemonCoreError::SharedMemoryFailure);
     }
-    m_driverShmIsInitializedByDaemon = true;
+    m_shmInitialized.store(true);
     m_logger->info("DaemonCore: Driver Shared Memory '{}' successfully setup and mapped.", m_driverSharedMemoryName);
-
-
-    // 2. Start Controller Thread for IOKit Discovery
-    m_logger->info("DaemonCore: Starting controller/discovery thread...");
-    m_serviceIsRunning.store(true, std::memory_order_release); // Set before thread creation
-    
-    // Reset promise before starting thread
-    m_runLoopReadyPromise = std::promise<void>();
-    auto runLoopReadyFuture = m_runLoopReadyPromise.get_future();
-
-    try {
-        m_controllerThread = std::thread(&DaemonCore::controllerThreadRunLoopFunc, this);
-    } catch (const std::system_error& e) {
-        m_logger->critical("DaemonCore: Failed to create controller thread: {}", e.what());
-        m_serviceIsRunning.store(false, std::memory_order_relaxed);
-        if (m_driverShmIsInitializedByDaemon) { // Cleanup SHM if thread failed
-             m_driverShmRingBufferManager.unmap();
-             shm_unlink(m_driverSharedMemoryName.c_str());
-             m_driverShmIsInitializedByDaemon = false;
-        }
-        return std::unexpected(DaemonCoreError::ThreadCreationFailed);
-    }
-
-    // Wait for the run loop to be ready on the new thread
-    m_logger->debug("DaemonCore: Waiting for controller thread run loop to become ready...");
-    try {
-        runLoopReadyFuture.get(); // This will block until m_runLoopReadyPromise.set_value() is called
-        m_logger->info("DaemonCore: Controller thread run loop is ready.");
-    } catch (const std::future_error& e) {
-        m_logger->critical("DaemonCore: Error waiting for run loop ready signal: {}", e.what());
-        // Attempt to cleanup thread if it started but didn't signal
-        m_serviceIsRunning.store(false, std::memory_order_relaxed);
-        if (m_controllerThreadStopSignalSource && m_controllerRunLoopRef) {
-            CFRunLoopSourceSignal(m_controllerThreadStopSignalSource);
-            CFRunLoopWakeUp(m_controllerRunLoopRef);
-        }
-        if (m_controllerThread.joinable()) m_controllerThread.join();
-        // SHM cleanup
-        if (m_driverShmIsInitializedByDaemon) {
-             m_driverShmRingBufferManager.unmap();
-             shm_unlink(m_driverSharedMemoryName.c_str());
-             m_driverShmIsInitializedByDaemon = false;
-        }
-        return std::unexpected(DaemonCoreError::OperationFailed);
-    }
-
-    m_logger->info("DaemonCore: Service initialization and startup sequence complete.");
     return {};
 }
 
@@ -348,20 +353,19 @@ void DaemonCore::handleDeviceControllerNotification(std::shared_ptr<FWA::AudioDe
         return;
     }
     uint64_t guid = device->getGuid();
-    std::string nameStr = device->getDeviceName(); // Assuming AudioDevice::init() populated this
+    std::string nameStr = device->getDeviceName();
     std::string vendorStr = device->getVendorName();
 
     m_logger->info("DaemonCore: DeviceController Notification: GUID {:#016x} ('{}'), Added: {}", guid, nameStr, added);
 
     if (!added) {
-        // If device is removed, ensure its streams are stopped and handler is cleaned up
-        ensureStreamsStoppedForDevice(guid, device); // Pass device to avoid re-fetch
+        ensureStreamsStoppedForDevice(guid, device);
     }
 
     if (m_deviceNotificationCb_toXPC) {
         m_deviceNotificationCb_toXPC(guid, nameStr, vendorStr, added);
     } else {
-        m_logger->warn("DaemonCore: m_deviceNotificationCb_toXPC is not set, cannot forward device notification.");
+        m_logger->critical("DaemonCore: m_deviceNotificationCb_toXPC is NOT SET even after constructor initialization! Cannot forward device notification.");
     }
 }
 
@@ -435,10 +439,8 @@ void DaemonCore::invokeLogCallbackToXpc(const std::string& formattedMessage, int
     }
 }
 
-// Implement setters
-void DaemonCore::setDeviceNotificationCallback(DeviceNotificationToXPC_Cb cb) { m_deviceNotificationCb_toXPC = std::move(cb); }
+// Removed setDeviceNotificationCallback and setLogCallback (now in constructor)
 void DaemonCore::setStreamStatusCallback(StreamStatusToXPC_Cb cb) { m_streamStatusCb_toXPC = std::move(cb); }
-void DaemonCore::setLogCallback(LogToXPC_Cb cb) { m_logCb_toXPC = std::move(cb); }
 void DaemonCore::setDriverPresenceCallback(DriverPresenceNotificationToXPC_Cb cb) { m_driverPresenceCb_toXPC = std::move(cb); }
 
 
@@ -581,32 +583,7 @@ std::string DaemonCore::getSharedMemoryName() const {
     return m_driverSharedMemoryName;
 }
 
-// Shared memory XPC method
-std::expected<void, DaemonCoreError> DaemonCore::initializeSharedMemory() {
-    m_logger->info("DaemonCore::initializeSharedMemory called.");
-    int shmFd = shm_open(m_driverSharedMemoryName.c_str(), O_RDWR | O_CREAT, 0666);
-    if (shmFd == -1) {
-        m_logger->error("shm_open failed for {}: {}", m_driverSharedMemoryName, strerror(errno));
-        return std::unexpected(DaemonCoreError::SharedMemoryFailure);
-    }
-    off_t requiredSize = sizeof(RTShmRing::SharedRingBuffer_POD);
-    if (ftruncate(shmFd, requiredSize) == -1) {
-        m_logger->error("ftruncate failed for {}: {}", m_driverSharedMemoryName, strerror(errno));
-        close(shmFd);
-        shm_unlink(m_driverSharedMemoryName.c_str());
-        return std::unexpected(DaemonCoreError::SharedMemoryTruncateFailure);
-    }
-    bool mapSuccess = m_driverShmRingBufferManager.map(shmFd, true);
-    close(shmFd);
-    if (!mapSuccess) {
-        m_logger->error("RingBufferManager::map failed for {}", m_driverSharedMemoryName);
-        shm_unlink(m_driverSharedMemoryName.c_str());
-        return std::unexpected(DaemonCoreError::SharedMemoryFailure);
-    }
-    m_shmInitialized = true;
-    m_logger->info("DaemonCore shared memory initialized successfully: {}", m_driverSharedMemoryName);
-    return {};
-}
+
 
 bool DaemonCore::isSharedMemoryInitialized() const {
     return m_shmInitialized;

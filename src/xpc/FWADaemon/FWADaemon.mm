@@ -172,28 +172,44 @@ static void * const kInternalQueueContext = (void *)&kInternalQueueContext;
         if (s_FWADaemon_ObjC_logger) {
             s_FWADaemon_ObjC_logger->info("Creating FWA::DaemonCore instance...");
         }
-        _cppCore = std::make_unique<FWA::DaemonCore>(spdlog::default_logger()); // Pass the configured default logger
+        // --- Define the callback lambdas FIRST ---
+        FWADaemon *strongSelf = self;
+        auto deviceNotificationCallbackToXPC = [strongSelf](uint64_t guid, const std::string& name, const std::string& vendor, bool added) {
+            if (!strongSelf) {
+                SPDLOG_WARN("FWADaemon instance (self) is nil in C++ to XPC callback. Skipping notification.");
+                return;
+            }
+            // Forward to Objective-C method or notification system as needed
+            // Example: [strongSelf deviceNotificationReceived:guid name:name vendor:vendor added:added];
+            // (Implement this method if needed)
+        };
 
-        // --- Initialize SHM via DaemonCore ---
-        // For this minimal step, do it here. Later, it will be triggered by
-        // an XPC call like `registerClientAndStartEngine`.
+        auto logCallbackToXPC = [strongSelf](const std::string& message, int level, const std::string& source) {
+            if (!strongSelf) {
+                SPDLOG_WARN("FWADaemon instance (self) is nil in C++ log callback. Skipping log forwarding.");
+                return;
+            }
+            // Forward to Objective-C method that handles XPC broadcast
+            NSString *nsMessage = [NSString stringWithUTF8String:message.c_str()];
+            NSString *nsSource = [NSString stringWithUTF8String:source.c_str()];
+            // Example: [strongSelf forwardLogMessageToClients:nsSource level:level message:nsMessage];
+            // (Implement this method if needed)
+        };
+
+        // --- Instantiate C++ DaemonCore, PASSING the callbacks ---
+        _cppCore = std::make_unique<FWA::DaemonCore>(
+            spdlog::default_logger(),
+            deviceNotificationCallbackToXPC,
+            logCallbackToXPC
+        );
+
         if (s_FWADaemon_ObjC_logger) {
-            s_FWADaemon_ObjC_logger->info("Requesting DaemonCore to initialize shared memory...");
+            s_FWADaemon_ObjC_logger->info("FWA::DaemonCore instance created with callbacks passed to constructor.");
         }
-        auto shmResult = _cppCore->initializeSharedMemory();
-        if (!shmResult) {
-            if (s_FWADaemon_ObjC_logger) {
-                s_FWADaemon_ObjC_logger->critical("DaemonCore failed to initialize shared memory: error code {}",
-                                           static_cast<int>(shmResult.error()));
-            }
-            // This is a critical failure for the daemon's primary function with the driver.
-            // Depending on requirements, might want to prevent daemon from fully starting.
-        } else {
-            if (s_FWADaemon_ObjC_logger) {
-                s_FWADaemon_ObjC_logger->info("DaemonCore shared memory initialized successfully.");
-            }
-        }
-        // The old call to [self setupSharedMemory] is removed.
+        // Set any remaining callbacks that are still managed by setters:
+        // _cppCore->setStreamStatusCallback(...);
+        // _cppCore->setDriverPresenceCallback(...);
+        // DaemonCore's constructor now handles SHM initialization.
         if (s_FWADaemon_ObjC_logger) {
             s_FWADaemon_ObjC_logger->info("FWADaemon initPrivate finished.");
         }

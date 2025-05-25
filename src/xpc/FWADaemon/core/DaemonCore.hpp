@@ -92,7 +92,12 @@ public:
 
 
     // --- Constructor & Destructor ---
-    explicit DaemonCore(std::shared_ptr<spdlog::logger> logger);
+    // Modified constructor to accept critical callbacks
+    explicit DaemonCore(
+        std::shared_ptr<spdlog::logger> logger,
+        DeviceNotificationToXPC_Cb deviceCb,
+        LogToXPC_Cb logCb
+    );
     ~DaemonCore();
 
     // Prevent copy/move until properly implemented if needed
@@ -103,9 +108,8 @@ public:
 
 
     // --- Lifecycle Management ---
-    // Initializes DeviceController, starts its discovery thread & run loop, sets up SHM.
+    // Initializes DeviceController, starts its discovery thread & run loop. SHM is now set up in constructor.
     std::expected<void, DaemonCoreError> initializeAndStartService();
-    // Stops discovery thread, cleans up DeviceController, active streams, SHM.
     void stopAndCleanupService();
     bool isServiceRunning() const;
 
@@ -132,22 +136,15 @@ public:
 
 
     // --- Driver & Shared Memory Interaction ---
-    // Called by FWADaemon.mm when the ASPL driver notifies of its presence via XPC.
-    // This might trigger SHM readiness checks or inform the DriverPresence_Cb.
     void notifyDriverPresenceChanged(bool isPresent);
-    // Called by FWADaemon.mm (on XPC request from ASPL driver) to get the SHM name.
     std::string getSharedMemoryName() const;
-
+    bool isSharedMemoryInitialized() const;
 
     // --- Setters for Callbacks to Objective-C++ XPC Layer ---
-    void setDeviceNotificationCallback(DeviceNotificationToXPC_Cb cb);
     void setStreamStatusCallback(StreamStatusToXPC_Cb cb);
-    void setLogCallback(LogToXPC_Cb cb);
     void setDriverPresenceCallback(DriverPresenceNotificationToXPC_Cb cb);
 
-
     // Public method for the XPC Log Forwarding Sink to call.
-    // The sink itself will be a private member or helper class.
     bool isLogCallbackToXpcSet() const { return static_cast<bool>(m_logCb_toXPC); }
     void invokeLogCallbackToXpc(const std::string& formattedMessage, int spdlogLevel, const std::string& loggerName);
 
@@ -174,14 +171,13 @@ private:
     // Stream management
     std::mutex m_streamsMutex;
     std::map<uint64_t, std::shared_ptr<FWA::IsoStreamHandler>> m_streamHandlers;
-    // Shared memory init flag for XPC
-    bool m_shmInitialized{false};
-public:
-    // Methods for XPC/ObjC++
-    std::expected<void, DaemonCoreError> initializeSharedMemory();
-    bool isSharedMemoryInitialized() const;
+
+    std::atomic<bool> m_shmInitialized{false};
     const std::string m_driverSharedMemoryName; // Initialized in constructor
     std::optional<uint64_t> m_currentShmBridgeUserGuid; // GUID of device whose transmitter uses the bridge
+
+    // New private method for SHM setup
+    std::expected<void, DaemonCoreError> setupDriverSharedMemory();
 
 
     // --- Callbacks to Objective-C++ XPC Layer ---

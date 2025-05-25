@@ -143,8 +143,8 @@ public final actor XPCManager {
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
             guard let proxy = daemonConnection.remoteObjectProxyWithErrorHandler({ @Sendable [weak self] error in
                 // XPC PROXY ERROR HANDLER (NOT on actor executor)
-                Task { @MainActor in
-                    await self?.handleProxyErrorForContinuation(error: error, specificContinuation: continuation)
+            Task { @MainActor in
+                self?.handleProxyErrorForContinuation(error: error, specificContinuation: continuation)
                 }
             }) as? FWADaemonControlProtocol else {
                 let initError = NSError(domain: "XPCManagerErrorDomain", code: 101, userInfo: [NSLocalizedDescriptionKey: "Failed to get remote proxy for daemon."])
@@ -158,8 +158,8 @@ public final actor XPCManager {
                 clientNotificationEndpoint: localListener.endpoint
             ) { @Sendable [weak self] success, errorFromDaemon in
                 // XPC REPLY BLOCK (NOT on actor executor)
-                Task { @MainActor in
-                    await self?.handleRegisterReplyForContinuation(success: success, error: errorFromDaemon, specificContinuation: continuation)
+            Task { @MainActor in
+                self?.handleRegisterReplyForContinuation(success: success, error: errorFromDaemon, specificContinuation: continuation)
                 }
             }
         }
@@ -195,7 +195,7 @@ public final actor XPCManager {
     nonisolated private func handleProxyErrorForContinuation(error: Error,
                                                  specificContinuation: CheckedContinuation<Bool, Error>?) {
         Task { @MainActor in
-            await self.logger.error("Proxy error during an XPC call: \(error.localizedDescription)")
+            self.logger.error("Proxy error during an XPC call: \(error.localizedDescription)")
             await self.handleDisconnect(reason: "Proxy error on XPC call", invalidateManually: false)
             specificContinuation?.resume(throwing: error)
         }
@@ -209,19 +209,19 @@ public final actor XPCManager {
 
         Task { @MainActor in
             if let nsError = error {
-                await self.logger.error("Daemon replied with error for registerClientAndStartEngine: \(nsError.localizedDescription)")
+                self.logger.error("Daemon replied with error for registerClientAndStartEngine: \(nsError.localizedDescription)")
                 continuation.resume(throwing: nsError)
             } else if success {
-                await self.logger.info("Successfully registered with daemon and engine start requested.")
+                self.logger.info("Successfully registered with daemon and engine start requested.")
                 continuation.resume(returning: true)
                 Task {
                     if let isUp = await self.getIsDriverConnected() {
-                       await self.dispatchDriverStatus(isUp)
+                        await self.dispatchDriverStatus(isUp)
                     }
                 }
             } else {
                 let genericError = NSError(domain: "XPCManagerErrorDomain", code: 102, userInfo: [NSLocalizedDescriptionKey: "Daemon returned failure for registerClientAndStartEngine without specific error."])
-                await self.logger.error("\(genericError.localizedDescription)")
+                self.logger.error("\(genericError.localizedDescription)")
                 continuation.resume(throwing: genericError)
             }
         }
