@@ -1,11 +1,4 @@
-/**
- * @file FWADriver.cpp
- * @brief Core Audio Server Plugin (ASPL) driver implementation
- *
- * This file implements a Core Audio Server Plugin driver using libASPL.
- * The driver provides a minimal no-op implementation that can be extended
- * with actual audio device functionality.
- */
+// FWADriver.cpp
 
 #include <memory>
 #include <CoreFoundation/CoreFoundation.h>
@@ -16,19 +9,10 @@
 #include "FWADriverInit.hpp"
 #include <aspl/Tracer.hpp>
 
-constexpr UInt32 SampleRate = 48000;
+constexpr UInt32 SampleRate = 44100;
 constexpr UInt32 ChannelCount = 2;
 constexpr const char* LogPrefix = "FWADriverASPL: ";
 
-/**
- * @brief Creates and configures the ASPL driver instance
- * 
- * Sets up a basic audio driver with output stream and controls.
- * This is currently a no-op implementation that can be extended
- * with actual device functionality.
- *
- * @return std::shared_ptr<aspl::Driver> Configured driver instance
- */
 std::shared_ptr<aspl::Driver> CreateDriver()
 {
     auto tracer = std::make_shared<aspl::Tracer>(
@@ -49,16 +33,30 @@ std::shared_ptr<aspl::Driver> CreateDriver()
     aspl::StreamParameters streamParams;
     streamParams.Direction = aspl::Direction::Output;
     streamParams.StartingChannel = 1;
-    streamParams.Format = {
-        .mSampleRate = 48000,
-        .mFormatID = kAudioFormatLinearPCM,
-        .mFormatFlags = kAudioFormatFlagIsSignedInteger,
-        .mBitsPerChannel = 24,
-        .mChannelsPerFrame = 2,
-        .mBytesPerFrame = 8,
-        .mFramesPerPacket = 1,
-        .mBytesPerPacket = 8,
-    };
+    // streamParams.Format = {
+    //     .mSampleRate = 44100,
+    //     .mFormatID = kAudioFormatLinearPCM,
+    //     .mFormatFlags = kAudioFormatFlagIsSignedInteger,
+    //     .mBitsPerChannel = 24,
+    //     .mChannelsPerFrame = 2,
+    //     .mBytesPerFrame = 8,
+    //     .mFramesPerPacket = 1,
+    //     .mBytesPerPacket = 8,
+    // };
+
+    // NB Working for packed streams:
+       streamParams.StartingChannel = 1;                 // Explicitly set starting channel
+       streamParams.Format = {
+           .mSampleRate = 44100,
+           .mFormatID = kAudioFormatLinearPCM,
+           .mFormatFlags = kAudioFormatFlagIsSignedInteger | // 24-bit signed integer
+                           kAudioFormatFlagIsAlignedHigh,
+           .mBitsPerChannel = 24,
+           .mChannelsPerFrame = 2,
+           .mBytesPerFrame = 8,
+           .mFramesPerPacket = 1,
+           .mBytesPerPacket = 8,                  
+       };
 
     auto device = std::make_shared<FWADriverDevice>(context, deviceParams);
     device->AddStreamWithControlsAsync(streamParams);

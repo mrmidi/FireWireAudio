@@ -145,7 +145,7 @@ if [[ "$MODE" == "xpc" ]]; then
     echo "Creating $OUTPUT_FILE with all XPC source and header files..."
     for DIR in "src/xpc" "include/xpc"; do
         if [ -d "$DIR" ]; then
-            find "$DIR" -type f \( -name "*.m" -o -name "*.mm" -o -name "*.h" \) | while read -r file; do
+            find "$DIR" -type f \( -name "*.m" -o -name "*.mm" -o -name "*.h" -o -name "*.hpp" -o -name "*.cpp" \) | while read -r file; do
                 echo "=== $file ===" >> "$OUTPUT_FILE"
                 cat "$file" >> "$OUTPUT_FILE"
                 echo -e "\n\n" >> "$OUTPUT_FILE"
@@ -217,7 +217,7 @@ process_directory() {
   local dir="$1"
   
   # Find all .cpp and .hpp files in the directory and subdirectories
-  find "$dir" -type f \( -name "*.cpp" -o -name "*.hpp" \) | while read -r file; do
+find "$dir" -type f \( -name "*.cpp" -o -name "*.hpp" -o -name "*.h" -o -name "*.mm" -o -name "*.m" \) | while read -r file; do
     # Skip if the file should be ignored or is in an ignored folder
     if should_ignore "$file" || contains_ignored_folder "$file"; then
       continue

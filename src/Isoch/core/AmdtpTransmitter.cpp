@@ -8,12 +8,15 @@
 #include <CoreServices/CoreServices.h> // For endian swap
 #include <vector>
 #include <chrono> // For timing/sleep 
+#include <os/log.h>
 
 namespace FWA {
 namespace Isoch {
 
 // --- Factory Method ---
 std::shared_ptr<AmdtpTransmitter> AmdtpTransmitter::create(const TransmitterConfig& config) {
+    os_log(OS_LOG_DEFAULT, "Creating AmdtpTransmitter with config: numGroups=%u, packetsPerGroup=%u",
+           config.numGroups, config.packetsPerGroup);
     // Using make_shared with a helper struct to handle enable_shared_from_this properly
     struct MakeSharedEnabler : public AmdtpTransmitter {
         MakeSharedEnabler(const TransmitterConfig& cfg) : AmdtpTransmitter(cfg) {}
@@ -27,6 +30,7 @@ ITransmitPacketProvider* AmdtpTransmitter::getPacketProvider() const {
 }
 
 std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
+    os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::startTransmit called");
     // Temporary storage for callback info
     MessageCallback callback_to_notify = nullptr;
     void* refcon_to_notify = nullptr;
@@ -237,6 +241,8 @@ void AmdtpTransmitter::handleDCLOverrun() {
 // --- IMPLEMENTATION OF handleDCLComplete (Instance Method) ---
 // This is the core real-time loop function called from the RunLoop via the static helper
 void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
+    // os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::handleDCLComplete FIRED");
+    logger_->critical("<<<<< AmdtpTransmitter::handleDCLComplete ENTERED for Group: {} >>>>>", completedGroupIndex);
     // --- 1. State Check ---
     // Check running state *without* lock first for performance optimisation
     if (!running_.load(std::memory_order_relaxed)) {

@@ -93,7 +93,13 @@ inline bool push(ControlBlock_POD&       cb,
     std::byte* dst = c.audio;
     for (UInt32 i = 0; i < src->mNumberBuffers; ++i) {
         const AudioBuffer& b = src->mBuffers[i];
-        std::memcpy(dst, b.mData, b.mDataByteSize);
+
+        // --- NEW --- guard against null or 0-byte buffers
+        if (b.mData == nullptr || b.mDataByteSize == 0) {
+            std::memset(dst, 0, b.mDataByteSize);   // fill silence
+        } else {
+            std::memcpy(dst, b.mData, b.mDataByteSize);
+        }
         dst += b.mDataByteSize;
     }
     std::atomic_thread_fence(std::memory_order_release);

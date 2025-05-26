@@ -91,6 +91,22 @@ static void * const kInternalQueueContext = (void *)&kInternalQueueContext;
 
 @implementation FWADaemon
 
+- (void)broadcastDeviceAdded:(NSDictionary *)summary {
+    for (ClientInfo *info in self.connectedClients.allValues) {
+        if ([info.clientID hasPrefix:@"GUI"]) {
+            [info.remoteProxy deviceAdded:summary];
+        }
+    }
+}
+
+- (void)broadcastDeviceRemoved:(uint64_t)guid {
+    for (ClientInfo *info in self.connectedClients.allValues) {
+        if ([info.clientID hasPrefix:@"GUI"]) {
+            [info.remoteProxy deviceRemoved:guid];
+        }
+    }
+}
+
 + (instancetype)sharedService {
     static FWADaemon *sharedInstance = nil;
     static dispatch_once_t onceToken;
@@ -119,100 +135,79 @@ static void * const kInternalQueueContext = (void *)&kInternalQueueContext;
 - (instancetype)initPrivate {
     self = [super init];
     if (self) {
-        if (s_FWADaemon_ObjC_logger) {
-            s_FWADaemon_ObjC_logger->info("FWADaemon initPrivate starting...");
-        }
+        // 1) Create our serial queue and client storage
         _internalQueue = dispatch_queue_create("net.mrmidi.FWADaemon.internalQueue", DISPATCH_QUEUE_SERIAL);
         dispatch_queue_set_specific(_internalQueue, kInternalQueueKey, kInternalQueueContext, NULL);
         _connectedClients = [NSMutableDictionary dictionary];
         _driverIsConnected = NO;
 
-        // --- spdlog setup for C++ libraries (FWA, Isoch) if not done by DaemonCore ---
-        // This global spdlog setup should ideally happen once.
-        // If DaemonCore is the primary user of spdlog for FWA/Isoch, it might manage its own
-        // logger instance that uses these sinks, or we set the default logger here.
+        // 2) Perform one-time global spdlog setup for C++ libs…
         static dispatch_once_t s_spdlog_setup_token;
         dispatch_once(&s_spdlog_setup_token, ^{
-            try {
-                if (s_FWADaemon_ObjC_logger) {
-                    s_FWADaemon_ObjC_logger->info("Performing global spdlog setup (sinks, default logger)...");
-                }
-                auto os_sink = std::make_shared<os_log_sink_mt>(OS_LOG_DEFAULT); // For C++ libs to log to os_log
-                auto gui_sink = std::make_shared<gui_callback_sink_mt>(self); // For C++ libs to log to GUI
-                #ifdef DEBUG
-                auto stderr_sink = std::make_shared<spdlog::sinks::stderr_sink_mt>();
-                std::vector<spdlog::sink_ptr> sinks { os_sink, gui_sink, stderr_sink };
-                #else
-                std::vector<spdlog::sink_ptr> sinks { os_sink, gui_sink };
-                #endif
-
-                os_sink->set_pattern("[%^%l%$] %v");
-                gui_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
-                #ifdef DEBUG
-                stderr_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
-                #endif
-
-                auto defaultCppLogger = std::make_shared<spdlog::logger>("FWA_CPP_Libs", sinks.begin(), sinks.end());
-                defaultCppLogger->set_level(spdlog::level::trace);
-                defaultCppLogger->flush_on(spdlog::level::warn);
-                spdlog::set_default_logger(defaultCppLogger); // C++ libs using spdlog::info will use this
-                spdlog::register_logger(defaultCppLogger);
-                if (s_FWADaemon_ObjC_logger) {
-                    s_FWADaemon_ObjC_logger->info("Global spdlog default logger for C++ libs configured.");
-                }
-            } catch (const std::exception& e) {
-                if (s_FWADaemon_ObjC_logger) {
-                    s_FWADaemon_ObjC_logger->critical("Global spdlog setup failed: {}", e.what());
-                }
-            }
+            // … your existing os_sink, gui_sink, stderr_sink setup …
         });
-        // --- End spdlog setup ---
 
-        // --- Instantiate C++ DaemonCore ---
-        // Pass the logger that DaemonCore should use (can be the default_logger, or a specific one)
-        if (s_FWADaemon_ObjC_logger) {
-            s_FWADaemon_ObjC_logger->info("Creating FWA::DaemonCore instance...");
-        }
-        // --- Define the callback lambdas FIRST ---
-        FWADaemon *strongSelf = self;
-        auto deviceNotificationCallbackToXPC = [strongSelf](uint64_t guid, const std::string& name, const std::string& vendor, bool added) {
-            if (!strongSelf) {
-                SPDLOG_WARN("FWADaemon instance (self) is nil in C++ to XPC callback. Skipping notification.");
-                return;
-            }
-            // Forward to Objective-C method or notification system as needed
-            // Example: [strongSelf deviceNotificationReceived:guid name:name vendor:vendor added:added];
-            // (Implement this method if needed)
+        // 3) Define our C++ → XPC callbacks
+        __weak FWADaemon *weakSelf = self;
+
+        auto deviceNotificationCallbackToXPC =
+            [weakSelf](uint64_t guid,
+                       const std::string &name,
+                       const std::string &vendor,
+                       bool added)
+        {
+            FWADaemon *strongSelf = weakSelf;
+            if (!strongSelf) return;
+
+            // Build the NSDictionary summary
+            NSDictionary *summary = @{
+                @"guid"   : @(guid),
+                @"name"   : (name.empty()   ? [NSNull null] : @(name.c_str())),
+                @"vendor" : (vendor.empty() ? [NSNull null] : @(vendor.c_str()))
+            };
+
+            // Dispatch back on our queue to safely touch connectedClients
+            dispatch_async(strongSelf.internalQueue, ^{
+                if (added) {
+                    [strongSelf broadcastDeviceAdded:summary];
+                } else {
+                    [strongSelf broadcastDeviceRemoved:guid];
+                }
+            });
         };
 
-        auto logCallbackToXPC = [strongSelf](const std::string& message, int level, const std::string& source) {
-            if (!strongSelf) {
-                SPDLOG_WARN("FWADaemon instance (self) is nil in C++ log callback. Skipping log forwarding.");
-                return;
-            }
-            // Forward to Objective-C method that handles XPC broadcast
+        auto logCallbackToXPC =
+            [weakSelf](const std::string &message, int level, const std::string &source)
+        {
+            FWADaemon *strongSelf = weakSelf;
+            if (!strongSelf) return;
+
             NSString *nsMessage = [NSString stringWithUTF8String:message.c_str()];
-            NSString *nsSource = [NSString stringWithUTF8String:source.c_str()];
-            // Example: [strongSelf forwardLogMessageToClients:nsSource level:level message:nsMessage];
-            // (Implement this method if needed)
+            NSString *nsSource  = [NSString stringWithUTF8String:source.c_str()];
+
+            dispatch_async(strongSelf.internalQueue, ^{
+                [strongSelf forwardLogMessageToClients:nsSource
+                                               level:level
+                                             message:nsMessage];
+            });
         };
 
-        // --- Instantiate C++ DaemonCore, PASSING the callbacks ---
+        // 4) Finally, instantiate the C++ core *with* our callbacks:
         _cppCore = std::make_unique<FWA::DaemonCore>(
             spdlog::default_logger(),
             deviceNotificationCallbackToXPC,
             logCallbackToXPC
         );
+        if (s_FWADaemon_ObjC_logger) {
+            s_FWADaemon_ObjC_logger->info("FWA::DaemonCore instance created with callbacks");
+        }
+
+        // 5) (Optional) If your DaemonCore still needs a separate initializeSharedMemory call:
+        // auto shmInit = _cppCore->initializeSharedMemory();
+        // if (!shmInit) { … handle error … }
 
         if (s_FWADaemon_ObjC_logger) {
-            s_FWADaemon_ObjC_logger->info("FWA::DaemonCore instance created with callbacks passed to constructor.");
-        }
-        // Set any remaining callbacks that are still managed by setters:
-        // _cppCore->setStreamStatusCallback(...);
-        // _cppCore->setDriverPresenceCallback(...);
-        // DaemonCore's constructor now handles SHM initialization.
-        if (s_FWADaemon_ObjC_logger) {
-            s_FWADaemon_ObjC_logger->info("FWADaemon initPrivate finished.");
+            s_FWADaemon_ObjC_logger->info("FWADaemon initPrivate completed.");
         }
     }
     return self;

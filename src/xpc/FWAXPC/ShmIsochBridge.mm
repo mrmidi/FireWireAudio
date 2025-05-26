@@ -13,6 +13,7 @@ ShmIsochBridge& ShmIsochBridge::instance()
 // New start: store only the provider interface
 void ShmIsochBridge::start(FWA::Isoch::ITransmitPacketProvider* provider)
 {
+    os_log_debug(OS_LOG_DEFAULT, "%s starting bridge", kLog);
     if (running_ || !provider) return;
     provider_ = provider;
     running_  = true;
@@ -21,6 +22,7 @@ void ShmIsochBridge::start(FWA::Isoch::ITransmitPacketProvider* provider)
 
 void ShmIsochBridge::stop()
 {
+    os_log_debug(OS_LOG_DEFAULT, "%s stopping bridge", kLog);
     running_ = false;
     if (thread_.joinable()) thread_.join();
 }
@@ -38,6 +40,7 @@ void ShmIsochBridge::enqueue(const RTShmRing::AudioChunk_POD& chunk)
     const size_t rd = readIdx_.load(std::memory_order_acquire);
     if (wr - rd >= kQCap)
     {
+        // Be quiet for now please! :)
         os_log_error(OS_LOG_DEFAULT, "%s queue overflow", kLog);
         return;
     }

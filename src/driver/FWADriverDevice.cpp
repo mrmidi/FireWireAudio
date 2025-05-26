@@ -10,6 +10,9 @@
 #include <cassert>
 #include "FWADriverHandler.hpp"
 #include <CoreAudio/AudioServerPlugIn.h>
+// os_log
+#include <os/log.h>
+
 constexpr const char* LogPrefix = "FWADriverASPL: ";
 
 // --- Local Helper Function ---
@@ -157,6 +160,30 @@ std::vector<AudioValueRange> FWADriverDevice::GetSimulatedAvailableSampleRates()
     };
 }
 
+// Helper function to log an AudioTimeStamp (optional, but keeps DoIOOperation cleaner)
+static void LogAudioTimeStamp(const char* prefix, const AudioTimeStamp& ts) {
+    // Check for valid flags to determine what to print
+    std::string flagsStr;
+    if (ts.mFlags & kAudioTimeStampSampleTimeValid) flagsStr += "SampleTimeValid ";
+    if (ts.mFlags & kAudioTimeStampHostTimeValid) flagsStr += "HostTimeValid ";
+    if (ts.mFlags & kAudioTimeStampRateScalarValid) flagsStr += "RateScalarValid ";
+    if (ts.mFlags & kAudioTimeStampWordClockTimeValid) flagsStr += "WordClockTimeValid ";
+    if (ts.mFlags & kAudioTimeStampSMPTETimeValid) flagsStr += "SMPTETimeValid ";
+    if (ts.mFlags & kAudioTimeStampSampleHostTimeValid) flagsStr += "SampleHostTimeValid "; // macOS 10.15+
+
+    os_log_debug(OS_LOG_DEFAULT, "%s%s: Flags=[%s], SampleTime=%.0f, HostTime=%llu, RateScalar=%.6f",
+                 LogPrefix, // Your existing LogPrefix
+                 prefix,
+                 flagsStr.empty() ? "None" : flagsStr.c_str(),
+                 (ts.mFlags & kAudioTimeStampSampleTimeValid) ? ts.mSampleTime : -1.0,
+                 (ts.mFlags & kAudioTimeStampHostTimeValid) ? ts.mHostTime : 0ULL,
+                 (ts.mFlags & kAudioTimeStampRateScalarValid) ? ts.mRateScalar : 0.0);
+
+    // For SMPTETime, you'd need to break down mSMPTETime structure
+    // For WordClockTime, it's just a UInt64
+}
+
+
 OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
                                         AudioObjectID streamID,
                                         UInt32 clientID,
@@ -167,29 +194,45 @@ OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
                                         void* ioSecondaryBuffer)
 {
     // Only handle WriteMix and ReadInput
-    if (operationID == kAudioServerPlugInIOOperationWriteMix) {
-        auto stream = GetStreamByID(streamID);
-        if (!stream) {
-            GetContext()->Tracer->Message("%sERROR: DoIOOperation: Unknown stream ID %u", LogPrefix, streamID);
-            return kAudioHardwareBadStreamError;
-        }
-        AudioStreamBasicDescription format = stream->GetVirtualFormat();
-        uint32_t bytesPerFrame = format.mBytesPerFrame;
-        if (bytesPerFrame == 0) {
-            GetContext()->Tracer->Message("%sERROR: DoIOOperation: Invalid bytesPerFrame (0) for stream %u", LogPrefix, streamID);
-            return kAudioHardwareUnspecifiedError;
-        }
+    if (operationID == kAudioServerPlugInIOOperationWriteMix)
+    {
+        auto stream  = GetStreamByID(streamID);
+        AudioStreamBasicDescription fmt = stream->GetVirtualFormat();
+        const bool nonInterleaved = (fmt.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
+        const uint32_t bytesPerFrame = fmt.mBytesPerFrame;
+
         FWADriverHandler* ioHandler = static_cast<FWADriverHandler*>(GetIOHandler());
-        if (!ioHandler || !ioHandler->IsSharedMemoryReady()) {
-            GetContext()->Tracer->Message("%sERROR: DoIOOperation: Shared memory not ready", LogPrefix);
+        if (!ioHandler || !ioHandler->IsSharedMemoryReady())
             return kAudioHardwareUnspecifiedError;
+
+        if (nonInterleaved)
+        {
+            // --- existing path ---
+            const AudioBufferList* abl =
+                static_cast<const AudioBufferList*>(ioMainBuffer);
+            ioHandler->PushToSharedMemory(abl,
+                                          ioCycleInfo->mOutputTime,
+                                          ioBufferFrameSize,
+                                          bytesPerFrame);
         }
-        bool success = ioHandler->PushToSharedMemory(static_cast<const AudioBufferList*>(ioMainBuffer),
-                                                     ioCycleInfo->mOutputTime,
-                                                     ioBufferFrameSize,
-                                                     bytesPerFrame);
-        // Optionally log on overrun (already handled in handler)
-        (void)success;
+        else
+        {
+            // --- NEW: build a fake ABL with one interleaved buffer ---
+            AudioBufferList abl;
+            abl.mNumberBuffers          = 1;
+            abl.mBuffers[0].mNumberChannels = fmt.mChannelsPerFrame;
+            abl.mBuffers[0].mData           = const_cast<void*>(ioMainBuffer);
+            abl.mBuffers[0].mDataByteSize   = ioBufferFrameSize * bytesPerFrame;
+
+            // Log the packet with os_log
+            LogAudioTimeStamp("DoIOOperation WriteMix", ioCycleInfo->mOutputTime);
+            
+
+            ioHandler->PushToSharedMemory(&abl,
+                                          ioCycleInfo->mOutputTime,
+                                          ioBufferFrameSize,
+                                          bytesPerFrame);
+        }
         return kAudioHardwareNoError;
     } else if (operationID == kAudioServerPlugInIOOperationReadInput) {
         // Provide silence for input
