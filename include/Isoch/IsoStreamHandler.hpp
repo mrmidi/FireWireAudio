@@ -78,6 +78,9 @@ public:
      */
     bool pushTransmitData(const void* buffer, size_t bufferSizeInBytes);
 
+    Isoch::ITransmitPacketProvider* getTransmitPacketProvider();
+
+
 private:
     // Callback handlers with proper refcon
     static void handleDataPush(const uint8_t* pPayload, size_t payloadLength, void* refCon);
@@ -122,7 +125,6 @@ private:
     std::thread m_processingThread;
     std::atomic<bool> m_processingRunning{false};
 
-    Isoch::ITransmitPacketProvider* getTransmitPacketProvider();
 
     // Streams (Input and Output)
     std::shared_ptr<AudioDeviceStream> m_inputStream;

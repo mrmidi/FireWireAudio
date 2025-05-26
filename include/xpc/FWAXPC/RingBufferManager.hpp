@@ -4,6 +4,7 @@
 #include <shared/SharedMemoryStructures.hpp>
 #include <Isoch/interfaces/ITransmitPacketProvider.hpp>
 #include <atomic>
+#include <os/log.h>
 #include <thread>
 #include <cstdint>
 #include <sys/types.h>
@@ -39,7 +40,12 @@ public:
        Inject the packet provider that will receive 64-byte slices.
     */
     void setPacketProvider(FWA::Isoch::ITransmitPacketProvider* prov) noexcept {
-        packetProvider_ = prov;
+        packetProvider_.store(prov, std::memory_order_release); // Store atomically
+        if (prov) {
+            os_log_info(OS_LOG_DEFAULT, "RingBufferManager: Packet provider set to %p.", static_cast<void*>(prov));
+        } else {
+            os_log_info(OS_LOG_DEFAULT, "RingBufferManager: Packet provider cleared (set to nullptr).");
+        }
     }
 
 private:
@@ -54,5 +60,5 @@ private:
     size_t                          shmSize_ = 0;
     std::atomic<bool>               running_{false};
     std::thread                    reader_;
-    FWA::Isoch::ITransmitPacketProvider* packetProvider_ = nullptr;
+    std::atomic<FWA::Isoch::ITransmitPacketProvider*> packetProvider_{nullptr}; // Make atomic
 };

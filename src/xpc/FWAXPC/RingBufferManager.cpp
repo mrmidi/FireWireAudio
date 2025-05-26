@@ -41,14 +41,13 @@ bool RingBufferManager::map(int shmFd, bool isCreator) {
         std::memset(shm_, 0, shmSize_);
         shm_->control.abiVersion = kShmVersion;
         shm_->control.capacity   = kRingCapacityPow2;
-        os_log(OS_LOG_DEFAULT, "RingBufferManager::map: shared memory initialized, abiVersion=%u, capacity=%u", kShmVersion, kRingCapacityPow2);
+        os_log(OS_LOG_DEFAULT, "RingBufferManager::map: shared memory initialized");
     } else {
         os_log(OS_LOG_DEFAULT, "RingBufferManager::map: validating shared memory header as reader");
         if (shm_->control.abiVersion != kShmVersion ||
             shm_->control.capacity   != kRingCapacityPow2) {
             spdlog::error("RingBufferManager::map: SHM header mismatch");
-            os_log(OS_LOG_DEFAULT, "RingBufferManager::map: SHM header mismatch, expected abi=%u got=%u, expected capacity=%u got=%u", 
-                   kShmVersion, shm_->control.abiVersion, kRingCapacityPow2, shm_->control.capacity);
+            os_log(OS_LOG_DEFAULT, "RingBufferManager::map: SHM header mismatch");
             ::munlock(ptr, shmSize_);
             ::munmap(ptr, shmSize_);
             shm_ = nullptr;
@@ -89,25 +88,35 @@ void RingBufferManager::unmap() {
 }
 
 void RingBufferManager::readerLoop() {
-    if (!shm_ || !packetProvider_) {
+
+    auto* prov = packetProvider_.load(std::memory_order_acquire);
+    if (!shm_ || !prov) {
         spdlog::error("RingBufferManager::readerLoop: missing shm or provider");
-        os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: missing shm=%p or provider=%p", shm_, packetProvider_);
+        os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: missing shm=%p or provider=%p", shm_, static_cast<void*>(prov));
         return;
     }
 
     os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: starting reader loop");
     
     RTShmRing::AudioChunk_POD localChunk;
-    auto* prov = packetProvider_;
     size_t totalChunksProcessed = 0;
     size_t totalBytesProcessed = 0;
 
+
     while (running_.load(std::memory_order_relaxed)) {
+        FWA::Isoch::ITransmitPacketProvider* currentProvider = packetProvider_.load(std::memory_order_acquire);
+
         // Try to pop one chunk
         if (!RTShmRing::pop(shm_->control, shm_->ring, localChunk)) {
             // No data available, sleep briefly
             std::this_thread::sleep_for(std::chrono::microseconds(50));
             continue;
+        }
+
+        // Chunk successfully popped
+        if (!currentProvider) {
+            os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: chunk popped but no provider, discarding chunk of %u bytes", localChunk.dataBytes);
+            continue; // Discard and go to next pop
         }
 
         totalChunksProcessed++;
@@ -124,7 +133,7 @@ void RingBufferManager::readerLoop() {
             size_t remain = static_cast<size_t>(end - ptr);
             size_t slice  = (remain >= kSliceSize ? kSliceSize : remain);
 
-            if (prov->pushAudioData(ptr, slice)) {
+            if (currentProvider->pushAudioData(ptr, slice)) {
                 ptr += slice;
                 slicesInChunk++;
                 os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: data pushed successfully, slice=%zu bytes, slices_in_chunk=%zu", slice, slicesInChunk);

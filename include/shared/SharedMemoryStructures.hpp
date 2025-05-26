@@ -80,8 +80,8 @@ inline bool push(ControlBlock_POD&       cb,
 {
     if (!src || !ring || frames == 0) return false;
     if (frames > kMaxFramesPerChunk)  return false;
-    const uint64_t rd = ReadIndexProxy(cb).load(std::memory_order_acquire);
-    const uint64_t wr = WriteIndexProxy(cb).load(std::memory_order_relaxed);
+    const uint64_t rd = ReadIndexProxy(cb).load(std::memory_order_acquire); // Correct: Acquire consumer's position
+    const uint64_t wr = WriteIndexProxy(cb).load(std::memory_order_relaxed); // Correct: Our own index can be relaxed for this check
     if (wr - rd >= cb.capacity)       return false;
     const uint64_t slot = wr & (cb.capacity - 1);
     AudioChunk_POD& c   = ring[slot];
@@ -112,8 +112,8 @@ inline bool pop(ControlBlock_POD& cb,
                 AudioChunk_POD*   ring,
                 AudioChunk_POD&   out) noexcept
 {
-    const uint64_t wr = WriteIndexProxy(cb).load(std::memory_order_acquire);
-    const uint64_t rd = ReadIndexProxy(cb).load(std::memory_order_relaxed);
+    const uint64_t wr = WriteIndexProxy(cb).load(std::memory_order_acquire); // Correct: Acquire producer's position
+    const uint64_t rd = ReadIndexProxy(cb).load(std::memory_order_relaxed); // Correct: Our own index can be relaxed for this check
     if (rd == wr) return false;
     const uint64_t slot = rd & (cb.capacity - 1);
     AudioChunk_POD& c   = ring[slot];
