@@ -11,6 +11,7 @@
 #include <IOKit/avc/IOFireWireAVCLib.h>
 #include "FWA/AudioStreamFormat.hpp"
 #include <mutex> 
+#include <Isoch/interfaces/ITransmitPacketProvider.hpp>
 
 
 // Forward declarations
@@ -227,6 +228,12 @@ public:
      * @return Success or error status
      */
     std::expected<void, IOKitError> stopStreams();
+
+    /**
+     * @brief Get the transmit packet provider for this device's output streams
+     * @return Pointer to the transmit packet provider, or nullptr if streams not started
+     */
+    Isoch::ITransmitPacketProvider* getTransmitPacketProvider();
 
 private:
     std::uint64_t guid_;

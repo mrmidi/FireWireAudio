@@ -647,4 +647,22 @@ std::expected<void, IOKitError> AudioDevice::stopStreams() {
     }
 }
 
+Isoch::ITransmitPacketProvider* AudioDevice::getTransmitPacketProvider() {
+    std::lock_guard<std::mutex> lock(streamHandlerMutex_);
+    
+    if (!isoStreamHandler_) {
+        spdlog::debug("AudioDevice::getTransmitPacketProvider: No IsoStreamHandler available for GUID 0x{:x}", guid_);
+        return nullptr;
+    }
+    
+    auto* provider = isoStreamHandler_->getTransmitPacketProvider();
+    if (!provider) {
+        spdlog::debug("AudioDevice::getTransmitPacketProvider: IsoStreamHandler returned null provider for GUID 0x{:x}", guid_);
+        return nullptr;
+    }
+    
+    spdlog::debug("AudioDevice::getTransmitPacketProvider: Successfully retrieved provider for GUID 0x{:x}", guid_);
+    return provider;
+}
+
 } // namespace FWA
