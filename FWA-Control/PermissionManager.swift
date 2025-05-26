@@ -1,5 +1,3 @@
-// === FWA-Control/PermissionManager.swift ===
-
 import Foundation
 import AVFoundation
 import Combine // For PassthroughSubject if publishing status directly
@@ -33,37 +31,47 @@ class PermissionManager: ObservableObject { // Make Observable if views need to 
     /// Checks the current status and requests permission if it's not determined.
     /// Calls the completion handler with the result (true if authorized, false otherwise).
     func checkAndRequestCameraPermission(completion: ((Bool) -> Void)? = nil) {
+        // This method itself is already on the MainActor due to the class annotation.
         checkCameraPermissionStatus() // Update status first
 
         switch self.cameraPermissionStatus {
         case .notDetermined:
             logger.info("Requesting camera (FireWire/Thunderbolt) permission...")
-            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
-                // This completion handler might not be on the main thread
-                Task { @MainActor [weak self] in // Dispatch back to main actor
-                    guard let self = self else { return }
-                    self.cameraPermissionStatus = granted ? .authorized : .denied // Update state
-                    if granted {
-                        self.logger.info("✅ Camera (FireWire/Thunderbolt) permission granted by user.")
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted_from_avkit in
+                // This completion handler is called on a background thread by the system.
+                
+                // Schedule UI updates and state changes on the MainActor.
+                // This Task is "fire-and-forget" for UI/state work.
+                Task { @MainActor in
+                    guard let strongSelf = self else { return }
+                    strongSelf.cameraPermissionStatus = granted_from_avkit ? .authorized : .denied // Update state
+                    if granted_from_avkit {
+                        strongSelf.logger.info("✅ Camera (FireWire/Thunderbolt) permission granted by user.")
                     } else {
-                        self.logger.error("❌ Camera (FireWire/Thunderbolt) permission denied by user.")
-                        // Show alert AFTER updating status and calling completion
-                        self.showPermissionRequiredAlert()
+                        strongSelf.logger.error("❌ Camera (FireWire/Thunderbolt) permission denied by user.")
+                        // Show alert AFTER updating status.
+                        strongSelf.showPermissionRequiredAlert()
                     }
-                    completion?(granted) // Call completion handler
                 }
+                
+                // Call the original completion handler (which is likely continuation.resume).
+                // This is safe to call from any thread.
+                completion?(granted_from_avkit)
             }
 
         case .restricted, .denied:
+            // Already on MainActor.
             logger.error("Camera (FireWire/Thunderbolt) permission is \(statusString(self.cameraPermissionStatus)).")
             showPermissionRequiredAlert() // Show explanation
             completion?(false) // Permission is not granted
 
         case .authorized:
+            // Already on MainActor.
             logger.info("Camera (FireWire/Thunderbolt) permission already authorized.")
             completion?(true) // Permission is granted
 
         @unknown default:
+            // Already on MainActor.
             logger.warning("Unknown camera permission status: \(self.cameraPermissionStatus)")
             completion?(false) // Treat unknown as not granted
         }
