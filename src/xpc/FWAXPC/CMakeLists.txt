@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.26)
 
 add_library(FWAXPC STATIC
     RingBufferManager.mm
-    ShmIsochBridge.mm
+    ShmIsochBridge.cpp
 )
 
 target_include_directories(FWAXPC

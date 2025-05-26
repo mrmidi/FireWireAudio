@@ -8,33 +8,34 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <algorithm>
 #include <spdlog/spdlog.h>
 
 // Include ARM NEON headers
 #ifdef __ARM_NEON
-#include <arm_neon.h>
+#  include <arm_neon.h>
 #endif
 
 namespace raul {
 
 /**
-   A lock-free RingBuffer.
-   Thread-safe with a single reader and single writer, and real-time safe
-   on both ends.
-   @ingroup raul
+   A lock-free RingBuffer with partial-write support.
+   Thread-safe for single producer / single consumer.
+   Real-time safe on both ends.
 */
 class RingBuffer
 {
 public:
     /**
        Create a new RingBuffer.
-       @param size Size in bytes (note this may be rounded up).
+       @param size Size in bytes (rounded up to next power of two).
     */
-    explicit RingBuffer(uint32_t size, std::shared_ptr<spdlog::logger> logger = nullptr)
-        : _size(next_power_of_two(size))
-        , _size_mask(_size - 1)
-        , _buf(static_cast<char*>(std::aligned_alloc(64, _size)))
-        , _logger(logger)
+    explicit RingBuffer(uint32_t size,
+                        std::shared_ptr<spdlog::logger> logger = nullptr)
+      : _size(next_power_of_two(size))
+      , _size_mask(_size - 1)
+      , _buf(static_cast<char*>(std::aligned_alloc(64, _size)), &std::free)
+      , _logger(std::move(logger))
     {
         if (_logger) {
             _logger->debug("[RingBuffer] Initialized with size: {} bytes", _size);
@@ -50,102 +51,89 @@ public:
     RingBuffer& operator=(RingBuffer&&) = delete;
     ~RingBuffer() = default;
 
-    /**
-       Reset (empty) the RingBuffer.
-       This method is NOT thread-safe, it may only be called when there are no
-       readers or writers.
-    */
+    /// Reset to empty. Not thread-safe.
     void reset()
     {
-        _write_head = 0;
-        _read_head = 0;
+        _write_head.store(0, std::memory_order_relaxed);
+        _read_head.store(0,  std::memory_order_relaxed);
     }
 
-    /// Return the number of bytes of space available for reading
-    [[nodiscard]] uint32_t read_space() const
+    /// Bytes available for reading.
+    [[nodiscard]] uint32_t read_space() const noexcept
     {
         const uint32_t r = _read_head.load(std::memory_order_relaxed);
         const uint32_t w = _write_head.load(std::memory_order_acquire);
         return read_space_internal(r, w);
     }
 
-    /// Return the number of bytes of space available for writing
-    [[nodiscard]] uint32_t write_space() const
+    /// Bytes available for writing.
+    [[nodiscard]] uint32_t write_space() const noexcept
     {
         const uint32_t r = _read_head.load(std::memory_order_acquire);
         const uint32_t w = _write_head.load(std::memory_order_relaxed);
         return write_space_internal(r, w);
     }
 
-    /// Return the capacity (i.e. total write space when empty)
-    [[nodiscard]] uint32_t capacity() const { return _size - 1; }
+    /// Total capacity (write space when empty).
+    [[nodiscard]] uint32_t capacity() const noexcept { return _size - 1; }
 
-    /// Read from the RingBuffer without advancing the read head
-    uint32_t peek(uint32_t size, void* dst)
+    /// Peek up to `size` bytes without advancing read head.
+    uint32_t peek(uint32_t size, void* dst) const noexcept
     {
-        return peek_internal(_read_head, _write_head, size, dst);
+        return peek_internal(_read_head.load(std::memory_order_relaxed),
+                             _write_head.load(std::memory_order_acquire),
+                             size, dst);
     }
 
-    /// Read from the RingBuffer and advance the read head
-    uint32_t read(uint32_t size, void* dst)
+    /// Read `size` bytes and advance read head.
+    uint32_t read(uint32_t size, void* dst) noexcept
     {
-        const uint32_t r = _read_head;
-        const uint32_t w = _write_head;
-        if (peek_internal(r, w, size, dst)) {
-            std::atomic_thread_fence(std::memory_order_acquire);
-            _read_head = (r + size) & _size_mask;
-            return size;
-        }
-        return 0;
-    }
-
-    /// Skip data in the RingBuffer (advance read head without reading)
-    uint32_t skip(uint32_t size)
-    {
-        const uint32_t r = _read_head;
-        const uint32_t w = _write_head;
-        if (read_space_internal(r, w) < size) {
+        const uint32_t r = _read_head.load(std::memory_order_relaxed);
+        const uint32_t w = _write_head.load(std::memory_order_acquire);
+        if (!peek_internal(r, w, size, dst)) {
             return 0;
         }
         std::atomic_thread_fence(std::memory_order_acquire);
-        _read_head = (r + size) & _size_mask;
+        _read_head.store((r + size) & _size_mask, std::memory_order_relaxed);
         return size;
     }
 
-    /// Write data to the RingBuffer
-    uint32_t write(uint32_t size, const void* src)
+    /// Write up to `size` bytes, returns actually written.
+    uint32_t write(uint32_t size, const void* src) noexcept
     {
-        const uint32_t r = _read_head;
-        const uint32_t w = _write_head;
-        if (write_space_internal(r, w) < size) {
-            return 0;
-        }
-        
-        if (w + size <= _size) {
-            // Contiguous write
-            neon_memcpy(&_buf[w], src, size);
+        const uint8_t* s = static_cast<const uint8_t*>(src);
+        uint32_t to_write = size;
+        uint32_t total_written = 0;
+
+        while (to_write) {
+            // Load fresh indices
+            uint32_t r = _read_head.load(std::memory_order_acquire);
+            uint32_t w = _write_head.load(std::memory_order_relaxed);
+            uint32_t space = write_space_internal(r, w);
+            if (!space) break;
+
+            // Amount we can copy this iteration
+            uint32_t chunk = std::min(space, to_write);
+            // But cap to contiguous region
+            uint32_t cont = std::min(chunk, _size - w);
+
+            // Copy
+            neon_memcpy(&_buf.get()[w], s, cont);
             std::atomic_thread_fence(std::memory_order_release);
-            _write_head = (w + size) & _size_mask;
-        } else {
-            // Split write across boundary
-            const uint32_t this_size = _size - w;
-            assert(this_size < size);
-            assert(w + this_size <= _size);
-            
-            // Use optimized copy for both parts
-            neon_memcpy(&_buf[w], src, this_size);
-            neon_memcpy(&_buf[0], 
-                       static_cast<const uint8_t*>(src) + this_size, 
-                       size - this_size);
-                       
-            std::atomic_thread_fence(std::memory_order_release);
-            _write_head = size - this_size;
+
+            // Advance write head
+            uint32_t new_w = (w + cont) & _size_mask;
+            _write_head.store(new_w, std::memory_order_relaxed);
+
+            prefetch_next_write();
+
+            // Advance pointers/counters
+            s             += cont;
+            to_write      -= cont;
+            total_written += cont;
         }
-        
-        // Prefetch next potential write location
-        prefetch_next_write();
-        
-        return size;
+
+        return total_written;
     }
 
 private:
@@ -154,104 +142,85 @@ private:
 #if __cplusplus >= 202002L
         return std::bit_ceil(s);
 #else
-        --s; s |= s >> 1; s |= s >> 2; s |= s >> 4; s |= s >> 8; s |= s >> 16; return ++s;
+        --s; s |= s >> 1; s |= s >> 2; s |= s >> 4;
+        s |= s >> 8; s |= s >> 16; return ++s;
 #endif
     }
 
-    [[nodiscard]] uint32_t write_space_internal(uint32_t r, uint32_t w) const
+    uint32_t write_space_internal(uint32_t r, uint32_t w) const noexcept
     {
         if (r == w) {
             return _size - 1;
         }
         if (r < w) {
-            return ((r - w + _size) & _size_mask) - 1;
+            return ((r + _size) - w) & _size_mask;
         }
         return (r - w) - 1;
     }
 
-    [[nodiscard]] uint32_t read_space_internal(uint32_t r, uint32_t w) const
+    uint32_t read_space_internal(uint32_t r, uint32_t w) const noexcept
     {
-        if (r < w) {
+        if (r <= w) {
             return w - r;
         }
-        return (w - r + _size) & _size_mask;
+        return (w + _size - r) & _size_mask;
     }
 
-    uint32_t peek_internal(uint32_t r, uint32_t w, uint32_t size, void* dst) const
+    uint32_t peek_internal(uint32_t r, uint32_t w,
+                           uint32_t size, void* dst) const noexcept
     {
-        if (read_space_internal(r, w) < size) {
-            return 0;
-        }
-        
+        uint32_t available = read_space_internal(r, w);
+        if (available < size) return 0;
+
+        char* d = static_cast<char*>(dst);
         if (r + size <= _size) {
-            // Contiguous read - use optimized copy
-            neon_memcpy(dst, &_buf[r], size);
+            neon_memcpy(d, &_buf.get()[r], size);
         } else {
-            // Split read across boundary
-            const uint32_t first_size = _size - r;
-            
-            // Use optimized copy for both parts
-            neon_memcpy(dst, &_buf[r], first_size);
-            neon_memcpy(static_cast<uint8_t*>(dst) + first_size, 
-                       &_buf[0], 
-                       size - first_size);
+            uint32_t first = _size - r;
+            neon_memcpy(d, &_buf.get()[r], first);
+            neon_memcpy(d + first, &_buf.get()[0], size - first);
         }
-        
         return size;
     }
-    
-    // Prefetch the next likely write location
-    void prefetch_next_write() const {
+
+    void prefetch_next_write() const noexcept {
 #ifdef __ARM_NEON
-        const uint32_t next_write = (_write_head + 64) & _size_mask;
-        __builtin_prefetch(&_buf[next_write], 1, 0);
-#endif
-    }
-    
-    // Prefetch the next likely read location
-    void prefetch_next_read() const {
-#ifdef __ARM_NEON
-        const uint32_t next_read = (_read_head + 64) & _size_mask;
-        __builtin_prefetch(&_buf[next_read], 0, 0);
+        uint32_t w = _write_head.load(std::memory_order_relaxed);
+        uint32_t nxt = (w + 64) & _size_mask;
+        __builtin_prefetch(&_buf.get()[nxt], 1, 0);
 #endif
     }
 
-    // NEON-optimized memcpy
-    static void neon_memcpy(void* dst, const void* src, size_t size) {
+    static void neon_memcpy(void* dst, const void* src, size_t size) noexcept {
 #ifdef __ARM_NEON
-        uint8_t* d = static_cast<uint8_t*>(dst);
-        const uint8_t* s = static_cast<const uint8_t*>(src);
-        // For small copies (<128 B) use the compiler’s inline memcpy
+        auto* d = static_cast<uint8_t*>(dst);
+        auto* s = static_cast<const uint8_t*>(src);
         if (size < 128) {
             std::memcpy(d, s, size);
             return;
         }
-        // Aligned bulk copy – 64-byte step, unroll ×4
         size_t i = 0;
         for (; i + 64 <= size; i += 64) {
-            uint8x16x4_t v = vld1q_u8_x4(s + i);   // four 16-B loads
-            vst1q_u8_x4(d + i, v);                 // four stores
+            uint8x16x4_t v = vld1q_u8_x4(s + i);
+            vst1q_u8_x4(d + i, v);
         }
-        // Remaining multiples of 16 B
-        size_t simd_end = size - ((size - i) % 16);
-        for (; i < simd_end; i += 16) {
+        size_t end16 = size - ((size - i) % 16);
+        for (; i < end16; i += 16) {
             vst1q_u8(d + i, vld1q_u8(s + i));
         }
-        // Tail (<16 B)
         for (; i < size; ++i) {
             d[i] = s[i];
         }
 #else
-        // Fall back to standard memcpy if NEON not available
         std::memcpy(dst, src, size);
 #endif
     }
 
-    std::atomic<uint32_t> _write_head{0}; ///< Write index into _buf
-    std::atomic<uint32_t> _read_head{0};  ///< Read index into _buf
-    uint32_t _size;                       ///< Size (capacity) in bytes
-    uint32_t _size_mask;                  ///< Mask for fast modulo
-    std::unique_ptr<char[]> _buf;         ///< Contents
+    std::atomic<uint32_t>           _write_head{0};
+    std::atomic<uint32_t>           _read_head{0};
+    const uint32_t                  _size;
+    const uint32_t                  _size_mask;
+    std::unique_ptr<char, void(*)(void*)> _buf;
     std::shared_ptr<spdlog::logger> _logger;
 };
 

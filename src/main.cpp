@@ -69,38 +69,39 @@ int main() {
         FWA::DeviceNotificationCallback cpp_callback =
             [&logger](std::shared_ptr<FWA::AudioDevice> device, bool connected) {
             if (connected) {
-                spdlog::info("Device connected: '{}' (Vendor: '{}', GUID: 0x{:x})",
-                             device->getDeviceName(), device->getVendorName(), device->getGuid());
-                // PARSING IS NOW DONE INTERNALLY DURING device->init() triggered by Discovery
-                // We just need to access the results stored in device->getDeviceInfo()
-                const auto& info = device->getDeviceInfo();
-                spdlog::info("--- Parsed Device Capabilities (from main.cpp callback) ---");
-                spdlog::info("  Iso In Plugs:  {}", info.getNumIsoInputPlugs());
-                spdlog::info("  Iso Out Plugs: {}", info.getNumIsoOutputPlugs());
-                spdlog::info("  Ext In Plugs:  {}", info.getNumExternalInputPlugs());
-                spdlog::info("  Ext Out Plugs: {}", info.getNumExternalOutputPlugs());
-                spdlog::info("  Has Music SU:  {}", info.hasMusicSubunit());
-                spdlog::info("  Has Audio SU:  {}", info.hasAudioSubunit());
-                try {
-                    nlohmann::json deviceInfoJson = info.toJson(*device);
-                    spdlog::debug("Device JSON:\n{}", deviceInfoJson.dump(2));
-                } catch (const std::exception& e) {
-                    spdlog::error("Error generating JSON in main.cpp callback: {}", e.what());
-                }
-                if (info.hasMusicSubunit()) {
-                    const auto& musicSubunit = info.getMusicSubunit();
-                    const auto& topLevelBlocks = musicSubunit.getParsedStatusInfoBlocks();
-                    if (!topLevelBlocks.empty()) {
-                        spdlog::info("--- Music Subunit Status Descriptor Info Blocks Tree (from main.cpp callback) ---");
-                        for (const auto& blockPtr : topLevelBlocks) {
-                            if (blockPtr) {
-                                std::cout << "--- Block Tree Start ---" << std::endl;
-                                printInfoBlockTree(*blockPtr, 1);
-                                std::cout << "--- Block Tree End ---" << std::endl;
-                            }
-                        }
-                    }
-                }
+                device->startStreams();
+                // spdlog::info("Device connected: '{}' (Vendor: '{}', GUID: 0x{:x})",
+                //              device->getDeviceName(), device->getVendorName(), device->getGuid());
+                // // PARSING IS NOW DONE INTERNALLY DURING device->init() triggered by Discovery
+                // // We just need to access the results stored in device->getDeviceInfo()
+                // const auto& info = device->getDeviceInfo();
+                // spdlog::info("--- Parsed Device Capabilities (from main.cpp callback) ---");
+                // spdlog::info("  Iso In Plugs:  {}", info.getNumIsoInputPlugs());
+                // spdlog::info("  Iso Out Plugs: {}", info.getNumIsoOutputPlugs());
+                // spdlog::info("  Ext In Plugs:  {}", info.getNumExternalInputPlugs());
+                // spdlog::info("  Ext Out Plugs: {}", info.getNumExternalOutputPlugs());
+                // spdlog::info("  Has Music SU:  {}", info.hasMusicSubunit());
+                // spdlog::info("  Has Audio SU:  {}", info.hasAudioSubunit());
+                // try {
+                //     nlohmann::json deviceInfoJson = info.toJson(*device);
+                //     spdlog::debug("Device JSON:\n{}", deviceInfoJson.dump(2));
+                // } catch (const std::exception& e) {
+                //     spdlog::error("Error generating JSON in main.cpp callback: {}", e.what());
+                // }
+                // if (info.hasMusicSubunit()) {
+                //     const auto& musicSubunit = info.getMusicSubunit();
+                //     const auto& topLevelBlocks = musicSubunit.getParsedStatusInfoBlocks();
+                //     if (!topLevelBlocks.empty()) {
+                //         spdlog::info("--- Music Subunit Status Descriptor Info Blocks Tree (from main.cpp callback) ---");
+                //         for (const auto& blockPtr : topLevelBlocks) {
+                //             if (blockPtr) {
+                //                 std::cout << "--- Block Tree Start ---" << std::endl;
+                //                 printInfoBlockTree(*blockPtr, 1);
+                //                 std::cout << "--- Block Tree End ---" << std::endl;
+                //             }
+                //         }
+                //     }
+                // }
             } else {
                 spdlog::info("Device disconnected: GUID 0x{:x}", device ? device->getGuid() : 0);
             }

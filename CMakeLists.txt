@@ -396,6 +396,7 @@ src/FWA/JsonHelpers.cpp
 src/FWA/XPC/XPCBridge.mm
 src/FWA/XPC/XPCReceiverClient.mm
 src/FWA/XPC/MixedAudioBuffer.m
+src/main.cpp
 )
 
 # Group header files
