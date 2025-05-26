@@ -167,7 +167,7 @@ private:
 
     // Shared Memory (Driver -> Daemon) & Bridge to Isoch Transmitter
     RingBufferManager& m_driverShmRingBufferManager;
-    ShmIsochBridge& m_shmToIsochBridge;
+    // ShmIsochBridge& m_shmToIsochBridge;
     // Stream management
     std::mutex m_streamsMutex;
     std::map<uint64_t, std::shared_ptr<FWA::IsoStreamHandler>> m_streamHandlers;

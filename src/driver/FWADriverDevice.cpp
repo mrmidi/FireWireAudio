@@ -225,7 +225,7 @@ OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
             abl.mBuffers[0].mDataByteSize   = ioBufferFrameSize * bytesPerFrame;
 
             // Log the packet with os_log
-            LogAudioTimeStamp("DoIOOperation WriteMix", ioCycleInfo->mOutputTime);
+            // LogAudioTimeStamp("DoIOOperation WriteMix", ioCycleInfo->mOutputTime);
             
 
             ioHandler->PushToSharedMemory(&abl,

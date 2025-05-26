@@ -15,7 +15,8 @@
 #include <chrono>  // For sleep_for & time points
 #include <ctime>   // For std::time
 #include "Isoch/interfaces/ITransmitPacketProvider.hpp" // Include for the packet provider interface
-#include "xpc/FWAXPC/ShmIsochBridge.hpp" // Updated path from shared/xpc
+// #include "xpc/FWAXPC/ShmIsochBridge.hpp" // Updated path from shared/xpc
+#include "xpc/FWAXPC/RingBufferManager.hpp"
 
 // Define stream direction enable/disable flags
 #define RECEIVE 0  // Set to 0 to disable receiver (input stream)
@@ -253,10 +254,12 @@ std::expected<void, IOKitError> IsoStreamHandler::start() {
     m_logger->info("IsoStreamHandler: Starting ShmIsochBridge...");
     Isoch::ITransmitPacketProvider* provider = getTransmitPacketProvider();
     if (provider) {
-        ShmIsochBridge::instance().start(provider); // Pass the provider pointer
-        m_logger->info("IsoStreamHandler: ShmIsochBridge started with Packet Provider.");
+        // ShmIsochBridge::instance().start(provider); // Pass the provider pointer
+        // We are using RingBufferManager instead of ShmIsochBridge
+        RingBufferManager::instance().setPacketProvider(provider);
+        m_logger->info("IsoStreamHandler: RingBufferManager started with Packet Provider.");
     } else {
-        m_logger->error("IsoStreamHandler: Failed to get Packet Provider from output stream! SHM bridge NOT started.");
+        m_logger->error("IsoStreamHandler: Failed to get Packet Provider from output stream! RingBufferManager NOT started.");
         // Decide if this is fatal? Probably should be.
 #if RECEIVE
         if (m_inputStream) m_inputStream->stop(); m_inputStream.reset();
@@ -331,9 +334,9 @@ void IsoStreamHandler::stop() {
     // --- +++ Stop ShmIsochBridge BEFORE stopping output stream +++ ---
 #if TRANSMIT
     if (m_outputStream) { // Only stop bridge if transmitter was active
-         m_logger->info("IsoStreamHandler: Stopping ShmIsochBridge...");
-         ShmIsochBridge::instance().stop();
-         m_logger->info("IsoStreamHandler: ShmIsochBridge stopped.");
+        //  m_logger->info("IsoStreamHandler: Stopping ShmIsochBridge...");
+        //  ShmIsochBridge::instance().stop();
+        //  m_logger->info("IsoStreamHandler: ShmIsochBridge stopped.");
     }
 #endif
     // --- +++ End ShmIsochBridge Stop +++ ---

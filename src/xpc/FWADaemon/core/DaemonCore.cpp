@@ -44,8 +44,7 @@ DaemonCore::DaemonCore(
       m_deviceNotificationCb_toXPC(std::move(deviceCb)),
       m_logCb_toXPC(std::move(logCb)),
       m_driverSharedMemoryName("/fwa_daemon_shm_v1_dc_test"),
-      m_driverShmRingBufferManager(RingBufferManager::instance()),
-      m_shmToIsochBridge(ShmIsochBridge::instance())
+      m_driverShmRingBufferManager(RingBufferManager::instance())
 {
     if (!m_logger) {
         auto stderr_fallback_sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
@@ -307,12 +306,13 @@ void DaemonCore::stopAndCleanupService() {
         std::lock_guard<std::mutex> lock(m_streamsMutex);
         m_streamHandlers.clear();
     }
+
     // Explicitly stop bridge if it was somehow left running
-    if (m_shmToIsochBridge.isRunning()) {
-        m_logger->warn("DaemonCore: ShmIsochBridge was still running during final cleanup, stopping it.");
-        m_shmToIsochBridge.stop();
-    }
-    m_currentShmBridgeUserGuid.reset();
+    // if (m_shmToIsochBridge.isRunning()) {
+    //     m_logger->warn("DaemonCore: ShmIsochBridge was still running during final cleanup, stopping it.");
+    //     m_shmToIsochBridge.stop();
+    // }
+    // m_currentShmBridgeUserGuid.reset();
 
 
 
@@ -406,8 +406,8 @@ void DaemonCore::ensureStreamsStoppedForDevice(uint64_t guid, std::shared_ptr<FW
     // If this device was using the ShmIsochBridge, stop the bridge
     if (m_currentShmBridgeUserGuid && m_currentShmBridgeUserGuid.value() == guid) {
         m_logger->info("DaemonCore: Device {:#016x} was using ShmIsochBridge. Stopping bridge.", guid);
-        m_shmToIsochBridge.stop();
-        m_currentShmBridgeUserGuid.reset();
+        // m_shmToIsochBridge.stop();
+        // m_currentShmBridgeUserGuid.reset();
     }
 }
 
@@ -525,7 +525,7 @@ std::expected<void, DaemonCoreError> DaemonCore::stopAudioStreams(uint64_t guid)
 
     if (m_currentShmBridgeUserGuid && m_currentShmBridgeUserGuid.value() == guid) {
         m_logger->info("DaemonCore: Stopping ShmIsochBridge as device {:#016x} was using it.", guid);
-        m_shmToIsochBridge.stop();
+        // m_shmToIsochBridge.stop();
         m_currentShmBridgeUserGuid.reset();
     }
 

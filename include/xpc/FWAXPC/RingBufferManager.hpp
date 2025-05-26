@@ -1,29 +1,58 @@
+// RingBufferManager.hpp
 #pragma once
+
 #include <shared/SharedMemoryStructures.hpp>
+#include <Isoch/interfaces/ITransmitPacketProvider.hpp>
 #include <atomic>
 #include <thread>
+#include <cstdint>
+#include <sys/types.h>
 
-class RingBufferManager
-{
+/**
+   A pure-C++ shared-memory reader that slices audio into 64-byte packets
+   and pushes them directly into the FireWire stack via ITransmitPacketProvider.
+   Removes the intermediate ShmIsochBridge.
+*/
+class RingBufferManager {
 public:
-    static RingBufferManager& instance();
+    static RingBufferManager& instance() {
+        static RingBufferManager inst;
+        return inst;
+    }
 
-    // Accepts isCreator: true if this process created the SHM, false if attaching
+    /**
+       Map (or attach to) the shared-memory ring. Starts the reader thread.
+       @param shmFd     POSIX shm file descriptor
+       @param isCreator true if this process created and zeroed the region
+       @returns         true on success
+    */
     bool map(int shmFd, bool isCreator);
-    void unmap();                 // daemon shutdown
+
+    /**
+       Stop reader thread and unmap shared memory.
+    */
+    void unmap();
+
     bool isMapped() const { return shm_ != nullptr; }
+
+    /**
+       Inject the packet provider that will receive 64-byte slices.
+    */
+    void setPacketProvider(FWA::Isoch::ITransmitPacketProvider* prov) noexcept {
+        packetProvider_ = prov;
+    }
 
 private:
     RingBufferManager() = default;
-    ~RingBufferManager();
+    ~RingBufferManager() { unmap(); }
+    RingBufferManager(const RingBufferManager&) = delete;
+    RingBufferManager& operator=(const RingBufferManager&) = delete;
 
-    void readerLoop();            // background thread
+    void readerLoop();
 
-    // --- SHM pointers ---
-    RTShmRing::SharedRingBuffer_POD *shm_ = nullptr;
-    size_t                       shmSize_ = 0;
-
-    // --- thread control ---
-    std::atomic<bool>            running_{false};
-    std::thread                  reader_;
+    RTShmRing::SharedRingBuffer_POD* shm_     = nullptr;
+    size_t                          shmSize_ = 0;
+    std::atomic<bool>               running_{false};
+    std::thread                    reader_;
+    FWA::Isoch::ITransmitPacketProvider* packetProvider_ = nullptr;
 };
