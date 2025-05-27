@@ -88,13 +88,13 @@ void RingBufferManager::unmap() {
 }
 
 void RingBufferManager::readerLoop() {
-
-    auto* prov = packetProvider_.load(std::memory_order_acquire);
-    if (!shm_ || !prov) {
-        spdlog::error("RingBufferManager::readerLoop: missing shm or provider");
-        os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: missing shm=%p or provider=%p", shm_, static_cast<void*>(prov));
-        return;
-    }
+    // prevent early exit if not running
+    // auto* prov = packetProvider_.load(std::memory_order_acquire);
+    // if (!shm_ || !prov) {
+    //     spdlog::error("RingBufferManager::readerLoop: missing shm or provider");
+    //     os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: missing shm=%p or provider=%p", shm_, static_cast<void*>(prov));
+    //     return;
+    // }
 
     os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: starting reader loop");
     
@@ -105,7 +105,12 @@ void RingBufferManager::readerLoop() {
 
     while (running_.load(std::memory_order_relaxed)) {
         FWA::Isoch::ITransmitPacketProvider* currentProvider = packetProvider_.load(std::memory_order_acquire);
-
+        
+        auto* prov = packetProvider_.load(std::memory_order_acquire);
+        if (!shm_ || !prov) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;          // spin until both are ready or we get stopped
+        }
         // Try to pop one chunk
         if (!RTShmRing::pop(shm_->control, shm_->ring, localChunk)) {
             // No data available, sleep briefly
@@ -121,8 +126,8 @@ void RingBufferManager::readerLoop() {
 
         totalChunksProcessed++;
         totalBytesProcessed += localChunk.dataBytes;
-        os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: popped chunk %zu, size=%u bytes, total processed=%zu bytes", 
-               totalChunksProcessed, localChunk.dataBytes, totalBytesProcessed);
+        // os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: popped chunk %zu, size=%u bytes, total processed=%zu bytes", 
+        //        totalChunksProcessed, localChunk.dataBytes, totalBytesProcessed);
 
         const std::byte* ptr = localChunk.audio;
         const std::byte* end = ptr + localChunk.dataBytes;
@@ -130,13 +135,15 @@ void RingBufferManager::readerLoop() {
 
         // Slice into 64-byte packets
         while (ptr < end && running_.load(std::memory_order_relaxed)) {
+            
+
             size_t remain = static_cast<size_t>(end - ptr);
             size_t slice  = (remain >= kSliceSize ? kSliceSize : remain);
 
             if (currentProvider->pushAudioData(ptr, slice)) {
                 ptr += slice;
                 slicesInChunk++;
-                os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: data pushed successfully, slice=%zu bytes, slices_in_chunk=%zu", slice, slicesInChunk);
+                // os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: data pushed successfully, slice=%zu bytes, slices_in_chunk=%zu", slice, slicesInChunk);
             } else {
                 os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: failed to push data, slice=%zu bytes, retrying", slice);
                 std::this_thread::sleep_for(std::chrono::microseconds(10));
@@ -144,7 +151,7 @@ void RingBufferManager::readerLoop() {
         }
         
         if (slicesInChunk > 0) {
-            os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: completed chunk processing, %zu slices processed", slicesInChunk);
+            // os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: completed chunk processing, %zu slices processed", slicesInChunk);
         }
     }
     
