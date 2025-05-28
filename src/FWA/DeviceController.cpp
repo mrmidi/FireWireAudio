@@ -22,21 +22,22 @@ std::expected<void, IOKitError> DeviceController::start(DeviceNotificationCallba
         return std::unexpected(static_cast<IOKitError>(kIOReturnExclusiveAccess));
     }
 
-    // Store the provided callback.  NO LONGER create a lambda here.
+    /* -------- new order: -------- */
     notificationCallback_ = callback;
 
-    // Start device discovery.  This sets up IOKit notifications.
-    // Pass the stored callback directly to startDiscovery.
+    /* make absolutely sure the run-loop pointer is valid
+       BEFORE the discovery thread can call deviceAdded() */
+    runLoopRef_ = CFRunLoopGetCurrent();
+
     auto result = discovery_->startDiscovery(notificationCallback_);
     if (!result) {
         spdlog::error("Failed to start discovery: 0x{:x}", static_cast<int>(result.error()));
+        runLoopRef_ = nullptr;            // tidy up on error
         return std::unexpected(result.error());
     }
-    
-    runLoopRef_ = CFRunLoopGetCurrent();
-    
-    isRunning_ = true; // Set isRunning_ *after* successful startDiscovery.
-    return {}; // Return success. No need start any thread!
+
+    isRunning_ = true;
+    return {};
 
     // NO THREAD CREATION HERE.  Let IOKit handle notifications.
 }

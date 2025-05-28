@@ -720,7 +720,7 @@ std::expected<void, IOKitError> IsochManager::createOverrunDCL(IOVirtualRange& b
     // Set callback
     (*nuDCLPool_)->SetDCLCallback(overrunDCL_, DCLOverrun_Helper);
     
-    //    (*nuDCLPool_)->PrintProgram(nuDCLPool_);
+       (*nuDCLPool_)->PrintProgram(nuDCLPool_);
     
     if (logger_) {
         logger_->debug("IsochManager::createOverrunDCL: Created overrun DCL: {:p}", (void*)overrunDCL_);

@@ -8,8 +8,14 @@
 #include <pthread.h>
 #include <FWA/CommandInterface.h>
 
-namespace FWA {
+#include <CoreFoundation/CoreFoundation.h>
+#include <future>
+#include <optional>
+#include <memory>
+#include <stdexcept>
+#include <os/log.h>
 
+namespace FWA {
 // -----------------------------------------------------------------------------
 //  spdlog → XPC forwarding sink
 // -----------------------------------------------------------------------------
@@ -34,21 +40,55 @@ private:
 };
 
 // -----------------------------------------------------------------------------
+//  Helper: run a block synchronously on the controller thread's run‑loop
+// -----------------------------------------------------------------------------
+void DaemonCore::performOnControllerThreadSync(const std::function<void()>& block)
+{
+    if (!m_controllerRunLoopRef) {
+        m_logger->error("performOnControllerThreadSync: Controller run loop is not valid!");
+        os_log(OS_LOG_DEFAULT,
+               "DaemonCore: performOnControllerThreadSync called without valid controller run loop");
+        throw std::runtime_error("Controller run loop not available for sync execution");
+    }
+    if (CFRunLoopGetCurrent() == m_controllerRunLoopRef) {
+        block();
+        return;
+    }
+
+    auto promisePtr = std::make_shared<std::promise<std::optional<std::exception_ptr>>>();
+    auto future     = promisePtr->get_future();
+
+    CFRunLoopPerformBlock(m_controllerRunLoopRef,
+                          kCFRunLoopDefaultMode,
+                          ^{
+                              try {
+                                  block();
+                                  promisePtr->set_value(std::nullopt);
+                              } catch (...) {
+                                  promisePtr->set_value(std::current_exception());
+                              }
+                          });
+    CFRunLoopWakeUp(m_controllerRunLoopRef);
+
+    if (auto maybeEx = future.get(); maybeEx) {
+        std::rethrow_exception(*maybeEx);
+    }
+}
+
+// -----------------------------------------------------------------------------
 //  Constructor / Destructor
 // -----------------------------------------------------------------------------
-DaemonCore::DaemonCore(
-    std::shared_ptr<spdlog::logger> logger,
-    DeviceNotificationToXPC_Cb      deviceCb,
-    LogToXPC_Cb                     logCb
-)
-  : m_logger(std::move(logger))
-  , m_deviceNotificationCb_toXPC(std::move(deviceCb))
-  , m_logCb_toXPC(std::move(logCb))
-  , m_shmName("/fwa_daemon_shm_v1")
+DaemonCore::DaemonCore(std::shared_ptr<spdlog::logger> logger,
+                       DeviceNotificationToXPC_Cb deviceCb,
+                       LogToXPC_Cb logCb)
+  : m_logger(std::move(logger)),
+    m_deviceNotificationCb_toXPC(std::move(deviceCb)),
+    m_logCb_toXPC(std::move(logCb)),
+    m_shmName("/fwa_daemon_shm_v1")
 {
     if (!m_logger) {
         auto sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
-        m_logger = std::make_shared<spdlog::logger>("DaemonCore", sink);
+        m_logger  = std::make_shared<spdlog::logger>("DaemonCore", sink);
         m_logger->warn("No logger passed → using stderr_color_sink_mt fallback");
     }
 
@@ -61,9 +101,7 @@ DaemonCore::DaemonCore(
     }
 }
 
-DaemonCore::~DaemonCore() {
-    stopAndCleanupService();
-}
+DaemonCore::~DaemonCore() { stopAndCleanupService(); }
 
 // -----------------------------------------------------------------------------
 //  Setup SHM region for driver → daemon communication
@@ -176,13 +214,16 @@ void DaemonCore::stopAndCleanupService() {
     m_logger->info("All active audio streams requested to stop.");
     // --- END MODIFIED ORDER ---
 
-    // Signal controller thread to end its run loop
+    // 2. Tell the controller thread's run‑loop to stop
     m_serviceIsRunning.store(false, std::memory_order_release);
-    if (m_controllerRunLoopRef && m_controllerThreadStopSignal) {
-        CFRunLoopSourceSignal(m_controllerThreadStopSignal);
+    if (m_controllerRunLoopRef) {
+        CFRunLoopPerformBlock(m_controllerRunLoopRef,
+                              kCFRunLoopDefaultMode,
+                              ^{ CFRunLoopStop(CFRunLoopGetCurrent()); });
         CFRunLoopWakeUp(m_controllerRunLoopRef);
     }
 
+    // 3. Join controller thread
     if (m_controllerThread.joinable()) {
         m_logger->info("Joining controller thread...");
         m_controllerThread.join();
@@ -214,16 +255,20 @@ bool DaemonCore::isServiceRunning() const {
 }
 
 // -----------------------------------------------------------------------------
-//  CFRunLoop + DeviceController discovery
+//  Controller thread main – now uses a single CFRunLoopRun()
 // -----------------------------------------------------------------------------
 void DaemonCore::controllerThreadRunLoopFunc() {
     pthread_setname_np("FWA.DaemonCore.Ctrl");
 
     m_logger->info("Controller thread starting CFRunLoop...");
+    os_log(OS_LOG_DEFAULT, "DaemonCore: Controller thread starting CFRunLoop...");
     m_controllerRunLoopRef = CFRunLoopGetCurrent();
 
-    // Create a dummy source so we can stop the loop
-    CFRunLoopSourceContext ctx = {0, this, nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
+    // allow default-mode sources to run whenever kCFRunLoopCommonModes is active
+    CFRunLoopAddCommonMode(m_controllerRunLoopRef, kCFRunLoopDefaultMode);
+
+    // Dummy source to keep a reference we can wake/stop with
+    CFRunLoopSourceContext ctx = {0, this};
     m_controllerThreadStopSignal = CFRunLoopSourceCreate(kCFAllocatorDefault, 0, &ctx);
     CFRunLoopAddSource(m_controllerRunLoopRef,
                        m_controllerThreadStopSignal,
@@ -266,19 +311,16 @@ void DaemonCore::controllerThreadRunLoopFunc() {
     // Signal main thread that we're up & running
     m_runLoopReadyPromise.set_value();
     m_logger->info("Device discovery started; entering CFRunLoop");
+    os_log(OS_LOG_DEFAULT, "DaemonCore: Device discovery started; entering CFRunLoop");
 
-    // Run loop until stop signaled
-    while (m_serviceIsRunning.load(std::memory_order_acquire)) {
-        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0, /*returnAfterSourceHandled=*/true);
-    }
+    // *** Run loop lives until CFRunLoopStop is invoked ***
+    CFRunLoopRun();
 
     m_logger->info("Controller CFRunLoop exiting");
-    if (m_controllerRunLoopRef && m_controllerThreadStopSignal) {
-        CFRunLoopRemoveSource(
-            m_controllerRunLoopRef,
-            m_controllerThreadStopSignal,
-            kCFRunLoopDefaultMode
-        );
+    if (m_controllerThreadStopSignal) {
+        CFRunLoopRemoveSource(m_controllerRunLoopRef,
+                              m_controllerThreadStopSignal,
+                              kCFRunLoopDefaultMode);
         CFRelease(m_controllerThreadStopSignal);
         m_controllerThreadStopSignal = nullptr;
     }

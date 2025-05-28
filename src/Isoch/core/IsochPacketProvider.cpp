@@ -7,6 +7,7 @@
 #include "Isoch/core/TransmitterTypes.hpp" // Assuming constants are here
 #include "shared/SharedMemoryStructures.hpp"
 #include "xpc/FWAXPC/RingBufferManager.hpp"
+#include <os/log.h>
 
 namespace FWA {
 namespace Isoch {
@@ -80,6 +81,8 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
     size_t targetBufferSize,
     const TransmitPacketInfo& info)
 {
+    // os_log(OS_LOG_DEFAULT, "IsochPacketProvider: fillPacketData called for Segment: %d, Packet: %d, AbsPkt: %d, TargetSize: %zu",
+    //        info.segmentIndex, info.packetIndexInGroup, info.absolutePacketIndex, targetBufferSize);
 //    if(logger_) logger_->debug("fillPacketData called: Seg={}, Pkt={}, AbsPkt={}, TargetSize={}",
 //                              info.segmentIndex, info.packetIndexInGroup, info.absolutePacketIndex, targetBufferSize);
 

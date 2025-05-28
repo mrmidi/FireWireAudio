@@ -151,6 +151,9 @@ private:
     std::shared_ptr<spdlog::sinks::sink> m_xpcSink;
     void setupSpdlogForwardingToXPC();
 
+    // sync helper
+    void performOnControllerThreadSync(const std::function<void()>& block);
+
     // Helper to get device by GUID
     std::expected<std::shared_ptr<AudioDevice>, DaemonCoreError> getDeviceByGuid(uint64_t guid);
 };

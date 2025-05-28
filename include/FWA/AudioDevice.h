@@ -235,6 +235,8 @@ public:
      */
     Isoch::ITransmitPacketProvider* getTransmitPacketProvider();
 
+    DeviceController* getDeviceController() const { return deviceController_; }
+
 private:
     std::uint64_t guid_;
     std::string deviceName_;

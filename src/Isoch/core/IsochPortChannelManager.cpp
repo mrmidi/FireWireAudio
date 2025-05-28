@@ -1,6 +1,7 @@
 #include "Isoch/core/IsochPortChannelManager.hpp"
 #include <spdlog/spdlog.h>
 #include <unistd.h>
+#include <os/log.h>
 
 namespace FWA {
 namespace Isoch {
@@ -154,6 +155,8 @@ std::expected<void, IOKitError> IsochPortChannelManager::initialize() {
         cleanupDispatchers();
         return result;
     }
+
+    os_log(OS_LOG_DEFAULT, "IsochPortChannelManager::initialize: NuDCL pool created");
     
     // Create remote port
     result = createRemotePort();
@@ -172,6 +175,8 @@ std::expected<void, IOKitError> IsochPortChannelManager::initialize() {
         cleanupDispatchers();
         return result;
     }
+
+    os_log(OS_LOG_DEFAULT, "IsochPortChannelManager::initialize: Remote port created");
     
     // Mark initialization as successful
     initialized_ = true;
@@ -179,6 +184,8 @@ std::expected<void, IOKitError> IsochPortChannelManager::initialize() {
     if (logger_) {
         logger_->info("IsochPortChannelManager::initialize: completed successfully");
     }
+
+    os_log(OS_LOG_DEFAULT, "IsochPortChannelManager::initialize: Initialization complete");
     
     return {};
 }

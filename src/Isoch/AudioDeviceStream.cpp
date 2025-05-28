@@ -10,6 +10,7 @@
 #include <mach/thread_policy.h>
 #include <mach/thread_act.h>
 #include "Isoch/utils/RunLoopHelper.hpp"
+#include "FWA/DeviceController.h"
 
 namespace FWA {
 
@@ -403,9 +404,20 @@ void AudioDeviceStream::setPacketPullCallback(Isoch::PacketCallback callback, vo
 }
 
 std::expected<void, IOKitError> AudioDeviceStream::initializeRunLoop() {
-    // Just use the current thread's RunLoop - no need for a separate thread
-    m_runLoop = CFRunLoopGetCurrent();
-    
+    // 1. Prefer the controller’s run-loop – it is guaranteed to spin.
+    if (auto dc = m_audioDevice->getDeviceController()) {
+        m_runLoop = dc->getRunLoopRef();
+        m_logger->info("AudioDeviceStream: Using RunLoop from DeviceController: {:p}",
+                     (void*)m_runLoop);
+    }
+    else {
+        m_runLoop = nullptr;
+    }
+
+    // fallback for unit-tests / CLI:
+    if (!m_runLoop)
+        m_runLoop = CFRunLoopGetCurrent();
+
     if (m_logger) {
         m_logger->info("AudioDeviceStream: Using RunLoop={:p} from thread {}",
                      (void*)m_runLoop,

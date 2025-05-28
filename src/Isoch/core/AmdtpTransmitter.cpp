@@ -131,6 +131,40 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
             }
         }
 
+            // --- PLACE DCL PROGRAM DUMP HERE (Attempt 1) ---
+            // At this point, the DCLs should be created, linked, and their initial content prepared.
+            // The IsochPortChannelManager should also have its nuDCLPool_ if dclManager_ got it.
+            if (portChannelManager_) { // Ensure portChannelManager_ exists
+                IOFireWireLibNuDCLPoolRef dclPool = portChannelManager_->getNuDCLPool();
+                if (dclPool) {
+
+                    CFArrayRef dclArray = (*dclPool)->GetDCLs(dclPool);
+                    if (dclArray) {
+                        CFIndex dclCount = CFArrayGetCount(dclArray);
+                        os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::startTransmit: NuDCLPool GetDCLs reports %ld DCLs.", dclCount);
+
+                        // You can optionally iterate and log the DCLRef pointers for more detail
+                        // for (CFIndex i = 0; i < dclCount; ++i) {
+                        //     NuDCLRef dcl = (NuDCLRef)CFArrayGetValueAtIndex(dclArray, i);
+                        //     logger_->trace("  DCL[{}]: {:p}", i, (void*)dcl);
+                        // }
+                        
+                        CFRelease(dclArray); // IMPORTANT: Release the CFArrayRef
+                    }
+
+
+                    // logger_->info("--- DUMPING DCL PROGRAM (TRANSMIT) BEFORE TRANSPORT START ---");
+                    os_log(OS_LOG_DEFAULT, "--- DUMPING DCL PROGRAM (TRANSMIT) BEFORE TRANSPORT START ---");
+                    (*dclPool)->PrintProgram(dclPool); // Call PrintProgram
+                    logger_->info("--- END DCL PROGRAM DUMP (TRANSMIT) ---");
+                } else {
+                    logger_->error("AmdtpTransmitter::startTransmit: NuDCLPool is null from portChannelManager_, cannot dump DCL program.");
+                    os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::startTransmit: NuDCLPool is null from portChannelManager_, cannot dump DCL program.");
+                }
+            } else {
+                os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::startTransmit: portChannelManager_ is null, cannot get NuDCLPool to dump DCL program.");
+            }
+
         // --- 4. Start Transport (only if no error so far) ---
         if (error_code == IOKitError::Success) {
             auto channel = portChannelManager_->getIsochChannel();
@@ -242,7 +276,7 @@ void AmdtpTransmitter::handleDCLOverrun() {
 // This is the core real-time loop function called from the RunLoop via the static helper
 void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
     // os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::handleDCLComplete FIRED");
-    logger_->critical("<<<<< AmdtpTransmitter::handleDCLComplete ENTERED for Group: {} >>>>>", completedGroupIndex);
+    // logger_->critical("<<<<< AmdtpTransmitter::handleDCLComplete ENTERED for Group: {} >>>>>", completedGroupIndex);
     // --- 1. State Check ---
     // Check running state *without* lock first for performance optimisation
     if (!running_.load(std::memory_order_relaxed)) {

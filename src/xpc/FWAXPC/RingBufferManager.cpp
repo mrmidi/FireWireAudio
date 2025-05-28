@@ -145,7 +145,7 @@ void RingBufferManager::readerLoop() {
                 slicesInChunk++;
                 // os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: data pushed successfully, slice=%zu bytes, slices_in_chunk=%zu", slice, slicesInChunk);
             } else {
-                os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: failed to push data, slice=%zu bytes, retrying", slice);
+                // os_log(OS_LOG_DEFAULT, "RingBufferManager::readerLoop: failed to push data, slice=%zu bytes, retrying", slice);
                 std::this_thread::sleep_for(std::chrono::microseconds(10));
             }
         }
