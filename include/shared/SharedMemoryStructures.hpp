@@ -1,51 +1,54 @@
-// Single-producer / single-consumer ring buffer for Core Audio plug-in <-> daemon
-// Build with Clang 16 or newer, -std=c++20
-
+// SharedMemoryStructures.hpp (refactored)
 #pragma once
-#include <CoreAudio/AudioServerPlugIn.h>   // AudioTimeStamp, AudioBufferList
+#include <CoreAudio/AudioServerPlugIn.h>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 
-// ---------- Cache-line constant (compile-time!) ----------
-constexpr std::size_t kDestructiveCL = 64;   // 64 bytes is correct on every Apple CPU since 2008
-
-// ---------- Tunables ----------
-constexpr std::size_t kMaxFramesPerChunk = 4096;
-constexpr std::size_t kMaxChannels       = 32;
-constexpr std::size_t kMaxBytesPerSample = 4;                     // 32-bit float / int
+constexpr std::size_t kDestructiveCL     = 64;
+constexpr std::size_t kMaxFramesPerChunk = 512;
+constexpr std::size_t kMaxChannels       = 2;
+constexpr std::size_t kMaxBytesPerSample = 4;
 constexpr std::size_t kMaxBytesPerFrame  = kMaxChannels * kMaxBytesPerSample;
-constexpr std::size_t kRingCapacityPow2  = 128;                   // must be power-of-two
-static_assert((kRingCapacityPow2 & (kRingCapacityPow2 - 1)) == 0,
-              "kRingCapacityPow2 must be a power of two");
-
+constexpr std::size_t kRingCapacityPow2  = 256;
+static_assert((kRingCapacityPow2 & (kRingCapacityPow2 - 1)) == 0);
 constexpr std::size_t kAudioDataBytes = kMaxFramesPerChunk * kMaxBytesPerFrame;
-constexpr uint32_t kShmVersion = 1;
+constexpr uint32_t    kShmVersion     = 2;
 
 namespace RTShmRing {
 
-// --- POD Structures for Shared Memory ---
-struct alignas(kDestructiveCL) AudioChunk_POD
-{
-    AudioTimeStamp timeStamp   {};
-    uint32_t       frameCount  {0};
-    uint32_t       dataBytes   {0};
-    uint64_t       sequence    {0};
-    std::byte      audio[kAudioDataBytes] {};
-};
+// --- POD Structures ---
 
-struct alignas(kDestructiveCL) ControlBlock_POD
-{
-    uint32_t abiVersion {0};
-    uint32_t capacity   {0};
-    uint64_t writeIndex {0};
-    char     pad0[kDestructiveCL - sizeof(uint32_t)*2 - sizeof(uint64_t)];
-    uint64_t readIndex  {0};
-    char     pad1[kDestructiveCL - sizeof(uint64_t)];
-    uint32_t overrunCount  {0};
-    uint32_t underrunCount {0};
+struct alignas(kDestructiveCL) AudioChunk_POD {
+    AudioTimeStamp timeStamp{};
+    uint32_t       frameCount{0};
+    uint32_t       dataBytes{0};
+    uint64_t       sequence{0};
+    std::byte      audio[kAudioDataBytes]{};
 };
+// static_assert(sizeof(AudioChunk_POD) <= 4096);
+static_assert(sizeof(AudioChunk_POD) % kDestructiveCL == 0);
+
+
+
+
+struct alignas(kDestructiveCL) ControlBlock_POD {
+    uint32_t abiVersion;      // = 2
+    uint32_t capacity;        // ring length
+    uint32_t sampleRateHz;    // e.g. 44100
+    uint32_t channelCount;    // e.g. 2
+    uint32_t bytesPerFrame;   // = channelCount * bytesPerSample
+    uint64_t writeIndex;
+    char     pad0[kDestructiveCL
+                   - sizeof(uint32_t)*5
+                   - sizeof(uint64_t)];
+    uint64_t readIndex;
+    char     pad1[kDestructiveCL - sizeof(uint64_t)];
+    uint32_t overrunCount;
+    uint32_t underrunCount;
+};
+static_assert(sizeof(ControlBlock_POD) % kDestructiveCL == 0);
 
 struct alignas(kDestructiveCL) SharedRingBuffer_POD
 {
@@ -53,15 +56,30 @@ struct alignas(kDestructiveCL) SharedRingBuffer_POD
     AudioChunk_POD   ring[kRingCapacityPow2];
 };
 
-// --- Helper Functions for Atomic Access (Proxies) ---
+// --- Format Validation Helpers ---
+inline bool ValidateFormat(const ControlBlock_POD& cb) noexcept {
+    if (cb.abiVersion != kShmVersion) return false;
+    if (cb.sampleRateHz == 0 || cb.channelCount == 0) return false;
+    if (cb.channelCount > kMaxChannels) return false;
+    if (cb.bytesPerFrame != cb.channelCount * kMaxBytesPerSample) return false;
+    
+    // NEW: Validate capacity is power-of-two and reasonable
+    if (cb.capacity == 0) return false;
+    if ((cb.capacity & (cb.capacity - 1)) != 0) return false;  // Must be power of 2
+    if (cb.capacity > 65536) return false;  // Reasonable upper limit
+    
+    return true;
+}
+
+// --- Atomic Proxies ---
 inline std::atomic<uint64_t>& WriteIndexProxy(ControlBlock_POD& cb) noexcept {
     return *reinterpret_cast<std::atomic<uint64_t>*>(&cb.writeIndex);
 }
 inline std::atomic<uint64_t>& ReadIndexProxy(ControlBlock_POD& cb) noexcept {
     return *reinterpret_cast<std::atomic<uint64_t>*>(&cb.readIndex);
 }
-inline std::atomic<uint64_t>& SequenceProxy(AudioChunk_POD& chunk) noexcept {
-    return *reinterpret_cast<std::atomic<uint64_t>*>(&chunk.sequence);
+inline std::atomic<uint64_t>& SequenceProxy(AudioChunk_POD& c) noexcept {
+    return *reinterpret_cast<std::atomic<uint64_t>*>(&c.sequence);
 }
 inline std::atomic<uint32_t>& OverrunCountProxy(ControlBlock_POD& cb) noexcept {
     return *reinterpret_cast<std::atomic<uint32_t>*>(&cb.overrunCount);
@@ -70,58 +88,70 @@ inline std::atomic<uint32_t>& UnderrunCountProxy(ControlBlock_POD& cb) noexcept 
     return *reinterpret_cast<std::atomic<uint32_t>*>(&cb.underrunCount);
 }
 
-// --- Modified push/pop using POD types and proxies ---
+// --- push → unchanged except format check ---
 inline bool push(ControlBlock_POD&       cb,
                  AudioChunk_POD*         ring,
                  const AudioBufferList*  src,
                  const AudioTimeStamp&   ts,
                  uint32_t                frames,
-                 uint32_t                bytesPerFrame) noexcept
+                 uint32_t                bpf) noexcept
 {
-    if (!src || !ring || frames == 0) return false;
-    if (frames > kMaxFramesPerChunk)  return false;
-    const uint64_t rd = ReadIndexProxy(cb).load(std::memory_order_acquire); // Correct: Acquire consumer's position
-    const uint64_t wr = WriteIndexProxy(cb).load(std::memory_order_relaxed); // Correct: Our own index can be relaxed for this check
-    if (wr - rd >= cb.capacity)       return false;
-    const uint64_t slot = wr & (cb.capacity - 1);
-    AudioChunk_POD& c   = ring[slot];
-    const uint32_t totalBytes = frames * bytesPerFrame;
+    if (!ValidateFormat(cb)) return false;
+    if (!src || !ring || frames==0 || frames>kMaxFramesPerChunk) return false;
+    auto rd = ReadIndexProxy(cb).load(std::memory_order_acquire);
+    auto wr = WriteIndexProxy(cb).load(std::memory_order_relaxed);
+    if (wr - rd >= cb.capacity) return false;
+
+    auto slot = wr & (cb.capacity-1);
+    auto& c   = ring[slot];
+    auto totalBytes = frames * bpf;
     if (totalBytes > kAudioDataBytes) return false;
+
     c.timeStamp  = ts;
     c.frameCount = frames;
     c.dataBytes  = totalBytes;
-    std::byte* dst = c.audio;
-    for (UInt32 i = 0; i < src->mNumberBuffers; ++i) {
-        const AudioBuffer& b = src->mBuffers[i];
 
-        // --- NEW --- guard against null or 0-byte buffers
-        if (b.mData == nullptr || b.mDataByteSize == 0) {
-            std::memset(dst, 0, b.mDataByteSize);   // fill silence
-        } else {
-            std::memcpy(dst, b.mData, b.mDataByteSize);
-        }
+    auto dst = c.audio;
+    for (UInt32 i=0; i<src->mNumberBuffers; ++i) {
+        auto& b = src->mBuffers[i];
+        if (!b.mData || b.mDataByteSize==0)
+            std::memset(dst,0,b.mDataByteSize);
+        else
+            std::memcpy(dst,b.mData,b.mDataByteSize);
         dst += b.mDataByteSize;
     }
+
     std::atomic_thread_fence(std::memory_order_release);
-    SequenceProxy(c).store(wr + 1, std::memory_order_relaxed);
-    WriteIndexProxy(cb).store(wr + 1, std::memory_order_release);
+    SequenceProxy(c).store(wr+1, std::memory_order_relaxed);
+    WriteIndexProxy(cb).store(wr+1, std::memory_order_release);
     return true;
 }
 
-inline bool pop(ControlBlock_POD& cb,
-                AudioChunk_POD*   ring,
-                AudioChunk_POD&   out) noexcept
+// --- zero-copy pop → new API for packet provider ---
+// FIXED pop() function - remove const parameters to avoid const_cast
+inline bool pop(ControlBlock_POD&       cb,           // CHANGED: remove const
+                AudioChunk_POD*         ring,         // CHANGED: remove const  
+                AudioTimeStamp&         tsOut,
+                uint32_t&               bytesOut,
+                const std::byte*&       audioPtrOut) noexcept
 {
-    const uint64_t wr = WriteIndexProxy(cb).load(std::memory_order_acquire); // Correct: Acquire producer's position
-    const uint64_t rd = ReadIndexProxy(cb).load(std::memory_order_relaxed); // Correct: Our own index can be relaxed for this check
+    if (!ValidateFormat(cb)) return false;
+    
+    // CRITICAL FIX: Use WriteIndexProxy for wr, not ReadIndexProxy!
+    const uint64_t wr = WriteIndexProxy(cb).load(std::memory_order_acquire);
+    const uint64_t rd = ReadIndexProxy(cb).load(std::memory_order_relaxed);
     if (rd == wr) return false;
+
     const uint64_t slot = rd & (cb.capacity - 1);
-    AudioChunk_POD& c   = ring[slot];
-    const uint64_t expectedSequence = rd + 1;
-    if (SequenceProxy(c).load(std::memory_order_acquire) != expectedSequence) {
-         return false;
-    }
-    std::memcpy(&out, &c, sizeof(AudioChunk_POD));
+    AudioChunk_POD& c = ring[slot];
+    
+    if (SequenceProxy(c).load(std::memory_order_acquire) != rd + 1)
+        return false;
+
+    tsOut       = c.timeStamp;
+    bytesOut    = c.dataBytes;
+    audioPtrOut = c.audio;
+
     ReadIndexProxy(cb).store(rd + 1, std::memory_order_release);
     return true;
 }

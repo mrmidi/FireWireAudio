@@ -516,7 +516,9 @@ std::expected<void, IOKitError> AmdtpTransmitter::setupComponents(IOFireWireLibN
      portChannelManager_ = std::make_unique<IsochPortChannelManager>(logger_, interface, runLoopRef_, true /*isTalker*/);
      dclManager_ = std::make_unique<IsochTransmitDCLManager>(logger_);
      transportManager_ = std::make_unique<IsochTransportManager>(logger_);
-     packetProvider_ = std::make_unique<IsochPacketProvider>(logger_, config_.clientBufferSize);
+     // old one
+    //  packetProvider_ = std::make_unique<IsochPacketProvider>(logger_, config_.clientBufferSize);
+    packetProvider_ = std::make_unique<IsochPacketProvider>(logger_);
 
      // Initialize... (Error checking omitted for brevity in stub)
      bufferManager_->setupBuffers(config_);

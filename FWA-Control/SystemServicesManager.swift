@@ -344,17 +344,14 @@ actor SystemServicesManager {
     }
 
     // MARK: - Permissions
-    // *** MODIFIED: Update internal status after check ***
+    // FIXED: Proper async permission checking
     private func checkAndRequestCameraPermission() async -> Bool {
-        let granted = await Task { @MainActor () -> Bool in
-            return await withCheckedContinuation { continuation in
-                permissionManager.checkAndRequestCameraPermission { granted in
-                    continuation.resume(returning: granted)
-                }
-            }
+        // FIXED: Direct async call without completion handlers
+        let granted = await Task { @MainActor in
+            await permissionManager.checkAndRequestCameraPermission()
         }.value
 
-        // Update internal state AFTER the check/request is done
+        // Update status after permission check completes
         let latestStatus = await Task { @MainActor in
             permissionManager.cameraPermissionStatus
         }.value
@@ -363,7 +360,7 @@ actor SystemServicesManager {
         var newStatus = currentStatus
         if newStatus.cameraPermissionStatus != latestStatus {
             newStatus.cameraPermissionStatus = latestStatus
-            updateStatus(newStatus) // Update and publish
+            updateStatus(newStatus)
         }
         return granted
     }

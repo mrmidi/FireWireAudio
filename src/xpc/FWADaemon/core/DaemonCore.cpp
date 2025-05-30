@@ -15,6 +15,8 @@
 #include <stdexcept>
 #include <os/log.h>
 
+#include "Isoch/core/IsochPacketProvider.hpp"
+
 namespace FWA {
 // -----------------------------------------------------------------------------
 //  spdlog → XPC forwarding sink
@@ -84,7 +86,7 @@ DaemonCore::DaemonCore(std::shared_ptr<spdlog::logger> logger,
   : m_logger(std::move(logger)),
     m_deviceNotificationCb_toXPC(std::move(deviceCb)),
     m_logCb_toXPC(std::move(logCb)),
-    m_shmName("/fwa_daemon_shm_v1")
+    m_shmName("/fwa_daemon_shm_v2")  // Updated for ABI v2
 {
     if (!m_logger) {
         auto sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
@@ -94,14 +96,13 @@ DaemonCore::DaemonCore(std::shared_ptr<spdlog::logger> logger,
 
     setupSpdlogForwardingToXPC();
 
-    if (auto res = setupDriverSharedMemory(); !res) {
-        m_logger->critical("Failed to set up driver shared memory: {}", int(res.error()));
-    } else {
-        m_logger->info("Driver shared memory '{}' initialized", m_shmName);
-    }
+    // SHM setup is now deferred to initializeAndStartService()
 }
 
-DaemonCore::~DaemonCore() { stopAndCleanupService(); }
+DaemonCore::~DaemonCore() { 
+    stopAndCleanupService(); 
+    cleanupSharedMemory();
+}
 
 // -----------------------------------------------------------------------------
 //  Setup SHM region for driver → daemon communication
@@ -115,17 +116,18 @@ std::expected<void,DaemonCoreError> DaemonCore::setupDriverSharedMemory() {
     // Ensure stale segment is gone
     shm_unlink(m_shmName.c_str());
 
-    int fd = shm_open(m_shmName.c_str(), O_CREAT|O_RDWR, 0666);
-    if (fd < 0) {
+    // Create or open SHM segment
+    m_shmFd = shm_open(m_shmName.c_str(), O_CREAT|O_RDWR, 0666);
+    if (m_shmFd < 0) {
         m_logger->critical("shm_open('{}') failed: {} ({})",
                            m_shmName, errno, std::strerror(errno));
         return std::unexpected(DaemonCoreError::SharedMemoryFailure);
     }
 
-    m_shmFd = fd; // Store the fd
-
-    // Resize to fit our POD
+    // Set size for the entire SharedRingBuffer_POD structure
     const size_t required = sizeof(RTShmRing::SharedRingBuffer_POD);
+    m_shmSize = required;
+    
     if (ftruncate(m_shmFd, required) != 0) {
         m_logger->critical("ftruncate(fd={},size={}) failed: {} ({})",
                            m_shmFd, required, errno, std::strerror(errno));
@@ -134,16 +136,56 @@ std::expected<void,DaemonCoreError> DaemonCore::setupDriverSharedMemory() {
         return std::unexpected(DaemonCoreError::SharedMemoryTruncateFailure);
     }
 
-    // Map into RingBufferManager
-    if (!m_shmManager.map(m_shmFd, true/*creator*/)) {
-        m_logger->critical("RingBufferManager.map() failed");
-        close(m_shmFd); // Close on error
+
+    // Direct mmap of the entire structure
+    m_shmRawPtr = mmap(nullptr, required, PROT_READ | PROT_WRITE, MAP_SHARED, m_shmFd, 0);
+    if (m_shmRawPtr == MAP_FAILED) {
+        m_logger->critical("mmap(size={}) failed: {} ({})",
+                           required, errno, std::strerror(errno));
+        close(m_shmFd);
         m_shmFd = -1;
-        shm_unlink(m_shmName.c_str());
-        return std::unexpected(DaemonCoreError::SharedMemoryFailure);
+        m_shmRawPtr = nullptr;
+        return std::unexpected(DaemonCoreError::SharedMemoryMappingFailure);
     }
-    // DO NOT close(m_shmFd) here anymore
+
+    // Zero the entire SHM region to prevent stale data
+    std::memset(m_shmRawPtr, 0, required);
+
+    // Lock pages in memory for real-time performance
+    if (mlock(m_shmRawPtr, required) != 0) {
+        m_logger->warn("mlock failed: {} ({}) - real-time performance may suffer", 
+                       errno, strerror(errno));
+        // Continue anyway - mlock failure isn't fatal
+    }
+
+    // Extract direct pointers to control block and ring array
+    RTShmRing::SharedRingBuffer_POD* shmBuffer = 
+        static_cast<RTShmRing::SharedRingBuffer_POD*>(m_shmRawPtr);
+    m_shmControlBlock = &shmBuffer->control;
+    m_shmRingArray = shmBuffer->ring;
+
+    // Initialize ABI v2 control block
+    m_shmControlBlock->abiVersion = kShmVersion;
+    m_shmControlBlock->capacity = kRingCapacityPow2;
+    m_shmControlBlock->sampleRateHz = 44100;    // Default, driver may override
+    m_shmControlBlock->channelCount = 2;        // Default stereo
+    m_shmControlBlock->bytesPerFrame = 8;       // 2 channels * 4 bytes (24-bit in 32-bit)
+    
+    // Initialize atomic indices
+    RTShmRing::WriteIndexProxy(*m_shmControlBlock).store(0, std::memory_order_relaxed);
+    RTShmRing::ReadIndexProxy(*m_shmControlBlock).store(0, std::memory_order_relaxed);
+    RTShmRing::OverrunCountProxy(*m_shmControlBlock).store(0, std::memory_order_relaxed);
+    RTShmRing::UnderrunCountProxy(*m_shmControlBlock).store(0, std::memory_order_relaxed);
+
+    // Validate the initialized format
+    if (auto validateRes = validateSharedMemoryFormat(); !validateRes) {
+        cleanupSharedMemory();
+        return validateRes;
+    }
+
     m_shmInitialized = true;
+    m_logger->info("Direct SHM mapping established: ptr={}, size={}, ABI v{}", 
+                   m_shmRawPtr, m_shmSize, m_shmControlBlock->abiVersion);
     return {};
 }
 
@@ -153,14 +195,18 @@ std::expected<void,DaemonCoreError> DaemonCore::setupDriverSharedMemory() {
 std::expected<void,DaemonCoreError> DaemonCore::initializeAndStartService() {
     m_logger->info("initializeAndStartService()...");
 
+
+    // Setup SHM first if not already done
+    if (!m_shmInitialized) {
+        if (auto res = setupDriverSharedMemory(); !res) {
+            m_logger->error("Cannot start service: shared memory setup failed: {}", int(res.error()));
+            return res;
+        }
+    }
+
     if (m_serviceIsRunning) {
         m_logger->warn("Service already running");
         return std::unexpected(DaemonCoreError::AlreadyInitialized);
-    }
-
-    if (!m_shmInitialized) {
-        m_logger->error("Cannot start service: shared memory not initialized");
-        return std::unexpected(DaemonCoreError::SharedMemoryFailure);
     }
 
     m_serviceIsRunning = true;
@@ -195,8 +241,7 @@ void DaemonCore::stopAndCleanupService() {
         return;
     }
 
-    // --- MODIFIED ORDER ---
-    // 1. Stop all active audio streams FIRST
+    // Stop all active audio streams FIRST
     m_logger->info("Stopping all active audio streams...");
     std::vector<uint64_t> guids_to_stop;
     {
@@ -208,13 +253,13 @@ void DaemonCore::stopAndCleanupService() {
     for (uint64_t guid : guids_to_stop) {
         auto stop_res = stopAudioStreams(guid);
         if (!stop_res) {
-            m_logger->error("Error stopping streams for GUID 0x{:x} during shutdown: {}", guid, static_cast<int>(stop_res.error()));
+            m_logger->error("Error stopping streams for GUID 0x{:x} during shutdown: {}", 
+                           guid, static_cast<int>(stop_res.error()));
         }
     }
     m_logger->info("All active audio streams requested to stop.");
-    // --- END MODIFIED ORDER ---
 
-    // 2. Tell the controller thread's run‑loop to stop
+    // Signal controller thread to stop
     m_serviceIsRunning.store(false, std::memory_order_release);
     if (m_controllerRunLoopRef) {
         CFRunLoopPerformBlock(m_controllerRunLoopRef,
@@ -223,30 +268,14 @@ void DaemonCore::stopAndCleanupService() {
         CFRunLoopWakeUp(m_controllerRunLoopRef);
     }
 
-    // 3. Join controller thread
+    // Join controller thread
     if (m_controllerThread.joinable()) {
         m_logger->info("Joining controller thread...");
         m_controllerThread.join();
         m_logger->info("Controller thread joined.");
-    } else {
-        m_logger->warn("Controller thread was not joinable.");
     }
 
-    // Unmap & unlink shared memory
-    if (m_shmInitialized) {
-        m_shmManager.unmap();
-        if (m_shmFd != -1) {
-            close(m_shmFd);
-            m_shmFd = -1;
-        }
-        if (shm_unlink(m_shmName.c_str()) == 0) {
-            m_logger->info("Unlinked shared memory '{}'", m_shmName);
-        } else {
-             m_logger->error("Failed to unlink shared memory '{}': {}", m_shmName, strerror(errno));
-        }
-        m_shmInitialized = false;
-    }
-
+    // NOTE: Direct SHM cleanup happens in destructor via cleanupSharedMemory()
     m_logger->info("Service cleanup complete");
 }
 
@@ -426,23 +455,37 @@ DaemonCore::configureDataFlow(uint64_t guid, std::shared_ptr<AudioDevice> device
         return std::unexpected(DaemonCoreError::DeviceNotFound);
     }
 
-    // Get the transmit packet provider from the device
-    m_logger->debug("Getting transmit packet provider for GUID 0x{:x}", guid);
-    Isoch::ITransmitPacketProvider* provider = device->getTransmitPacketProvider();
+    m_logger->debug("Configuring direct SHM data flow for GUID 0x{:x}", guid);
     
+    // Validate SHM is ready
+    if (!m_shmInitialized || !m_shmControlBlock || !m_shmRingArray) {
+        m_logger->error("SHM not initialized for GUID 0x{:x}", guid);
+        return std::unexpected(DaemonCoreError::SharedMemoryFailure);
+    }
+
+    // Get transmit packet provider from device
+    Isoch::ITransmitPacketProvider* provider = device->getTransmitPacketProvider();
     if (!provider) {
         m_logger->error("No transmit packet provider available for GUID 0x{:x}", guid);
         return std::unexpected(DaemonCoreError::NoTransmitProvider);
     }
 
-    // Configure the RingBufferManager with the provider
-    try {
-        m_shmManager.setPacketProvider(provider);
-        m_logger->info("RingBufferManager configured with packet provider for GUID 0x{:x}", guid);
-    } catch (const std::exception& e) {
-        m_logger->error("Failed to configure RingBufferManager: {}", e.what());
+    // Type validation - ensure it's IsochPacketProvider for direct binding
+    auto* isochProvider = dynamic_cast<Isoch::IsochPacketProvider*>(provider);
+    if (!isochProvider) {
+        m_logger->error("Provider is not IsochPacketProvider type for GUID 0x{:x}", guid);
         return std::unexpected(DaemonCoreError::DataFlowConfigurationFailure);
     }
+
+    // Direct binding to SHM
+    if (!isochProvider->bindSharedMemory(m_shmControlBlock, m_shmRingArray)) {
+        m_logger->error("Failed to bind provider to SHM for GUID 0x{:x}", guid);
+        return std::unexpected(DaemonCoreError::ProviderBindingFailure);
+    }
+    
+    m_logger->info("Direct SHM binding configured for GUID 0x{:x} - {} Hz, {} channels, {} bytes/frame",
+                   guid, m_shmControlBlock->sampleRateHz, m_shmControlBlock->channelCount, 
+                   m_shmControlBlock->bytesPerFrame);
 
     // Store the active provider
     {
@@ -450,7 +493,6 @@ DaemonCore::configureDataFlow(uint64_t guid, std::shared_ptr<AudioDevice> device
         m_activeProviders[guid] = provider;
     }
 
-    m_logger->debug("Data flow configured successfully for GUID 0x{:x}", guid);
     return {};
 }
 
@@ -461,23 +503,11 @@ DaemonCore::stopAudioStreams(uint64_t guid)
     
     auto deviceRes = getDeviceByGuid(guid);
     if (!deviceRes) return std::unexpected(deviceRes.error());
+    auto device = deviceRes.value();
 
-    // Phase 1: Stop data flow first
-    m_logger->debug("Phase 1: Stopping data flow...");
-    {
-        std::lock_guard lk(m_streamsMutex);
-        auto it = m_activeProviders.find(guid);
-        if (it != m_activeProviders.end()) {
-            // Clear the provider from RingBufferManager
-            m_shmManager.setPacketProvider(nullptr);
-            m_activeProviders.erase(it);
-            m_logger->debug("Data flow stopped for GUID 0x{:x}", guid);
-        }
-    }
-
-    // Phase 2: Stop the device streams
-    m_logger->debug("Phase 2: Stopping device streams...");
-    auto stopRes = deviceRes.value()->stopStreams();
+    // Phase 0: Stop the hardware first so no more writes happen
+    m_logger->debug("Phase 0: Stopping device streams...");
+    auto stopRes = device->stopStreams();
     if (!stopRes) {
         m_logger->error("Failed to stop streams for GUID 0x{:x}: {}", 
                        guid, static_cast<int>(stopRes.error()));
@@ -485,6 +515,36 @@ DaemonCore::stopAudioStreams(uint64_t guid)
             m_streamStatusCb_toXPC(guid, true, int(stopRes.error()));
         }
         return std::unexpected(DaemonCoreError::StreamStopFailure);
+    }
+
+    // Phase 1: Unbind provider from SHM, then reset the ring counters
+    m_logger->debug("Phase 1: Unbinding provider from SHM and resetting ring...");
+    {
+        std::lock_guard lk(m_streamsMutex);
+        auto it = m_activeProviders.find(guid);
+        if (it != m_activeProviders.end()) {
+            auto* isochProvider = dynamic_cast<Isoch::IsochPacketProvider*>(it->second);
+            if (isochProvider) {
+                isochProvider->unbindSharedMemory();
+                
+                // Reset ring buffer indices so the ring is "empty" next time
+                if (m_shmControlBlock) {
+                    RTShmRing::WriteIndexProxy(*m_shmControlBlock)
+                        .store(0, std::memory_order_relaxed);
+                    RTShmRing::ReadIndexProxy(*m_shmControlBlock)
+                        .store(0, std::memory_order_relaxed);
+                    // Reset counters as well for clean state
+                    RTShmRing::OverrunCountProxy(*m_shmControlBlock)
+                        .store(0, std::memory_order_relaxed);
+                    RTShmRing::UnderrunCountProxy(*m_shmControlBlock)
+                        .store(0, std::memory_order_relaxed);
+                    m_logger->debug("SHM ring buffer indices reset for GUID 0x{:x}", guid);
+                }
+                
+                m_logger->debug("Provider unbound and SHM reset for GUID 0x{:x}", guid);
+            }
+            m_activeProviders.erase(it);
+        }
     }
 
     m_logger->info("Audio streams stopped successfully for GUID 0x{:x}", guid);
@@ -511,21 +571,36 @@ void DaemonCore::ensureStreamsStoppedForDevice(
         }
     }
     
-    // Stop data flow first
+    // Stop device streams first if device is still available
+    if (dev) {
+        dev->stopStreams();
+        m_logger->debug("Stopped streams for disconnected device GUID: 0x{:x}", guid);
+    }
+    
+    // Unbind from SHM and reset ring buffer
     {
         std::lock_guard lk(m_streamsMutex);
         auto it = m_activeProviders.find(guid);
         if (it != m_activeProviders.end()) {
-            m_shmManager.setPacketProvider(nullptr);
+            auto* isochProvider = dynamic_cast<Isoch::IsochPacketProvider*>(it->second);
+            if (isochProvider) {
+                isochProvider->unbindSharedMemory();
+                
+                // Reset ring buffer indices for clean state
+                if (m_shmControlBlock) {
+                    RTShmRing::WriteIndexProxy(*m_shmControlBlock)
+                        .store(0, std::memory_order_relaxed);
+                    RTShmRing::ReadIndexProxy(*m_shmControlBlock)
+                        .store(0, std::memory_order_relaxed);
+                    RTShmRing::OverrunCountProxy(*m_shmControlBlock)
+                        .store(0, std::memory_order_relaxed);
+                    RTShmRing::UnderrunCountProxy(*m_shmControlBlock)
+                        .store(0, std::memory_order_relaxed);
+                }
+            }
             m_activeProviders.erase(it);
-            m_logger->debug("Cleared data flow for disconnected device GUID: 0x{:x}", guid);
+            m_logger->debug("Cleared SHM binding and reset ring for disconnected device GUID: 0x{:x}", guid);
         }
-    }
-    
-    // Stop device streams if device is still available
-    if (dev) {
-        dev->stopStreams();
-        m_logger->debug("Stopped streams for disconnected device GUID: 0x{:x}", guid);
     }
 }
 
@@ -565,6 +640,10 @@ void DaemonCore::invokeLogCallbackToXpc(
     }
 }
 
+// bool DaemonCore::isLogCallbackToXpcSet() const {
+//     return m_logCb_toXPC != nullptr;
+// }
+
 // -----------------------------------------------------------------------------
 //  Driver‐presence / SHM name
 // -----------------------------------------------------------------------------
@@ -590,6 +669,49 @@ void DaemonCore::setStreamStatusCallback(StreamStatusToXPC_Cb cb) {
 
 void DaemonCore::setDriverPresenceCallback(DriverPresenceNotificationToXPC_Cb cb) {
     m_driverPresenceCb_toXPC = std::move(cb);
+}
+
+// Add this method to DaemonCore.cpp:
+void DaemonCore::cleanupSharedMemory() {
+    if (m_shmRawPtr) {
+        if (munmap(m_shmRawPtr, m_shmSize) != 0) {
+            m_logger->error("munmap failed: {} ({})", errno, std::strerror(errno));
+        }
+        m_shmRawPtr = nullptr;
+    }
+    
+    if (m_shmFd != -1) {
+        close(m_shmFd);
+        m_shmFd = -1;
+    }
+    
+    if (m_shmInitialized) {
+        if (shm_unlink(m_shmName.c_str()) == 0) {
+            m_logger->info("Unlinked shared memory '{}'", m_shmName);
+        } else {
+            m_logger->error("Failed to unlink shared memory '{}': {}", m_shmName, strerror(errno));
+        }
+    }
+    
+    m_shmControlBlock = nullptr;
+    m_shmRingArray = nullptr;
+    m_shmSize = 0;
+    m_shmInitialized = false;
+}
+
+std::expected<void,DaemonCoreError> DaemonCore::validateSharedMemoryFormat() {
+    if (!m_shmControlBlock) {
+        return std::unexpected(DaemonCoreError::SharedMemoryValidationFailure);
+    }
+    
+    if (!RTShmRing::ValidateFormat(*m_shmControlBlock)) {
+        m_logger->error("SHM format validation failed: ABI={}, sampleRate={}, channels={}, bytesPerFrame={}",
+                       m_shmControlBlock->abiVersion, m_shmControlBlock->sampleRateHz,
+                       m_shmControlBlock->channelCount, m_shmControlBlock->bytesPerFrame);
+        return std::unexpected(DaemonCoreError::SharedMemoryValidationFailure);
+    }
+    
+    return {};
 }
 
 } // namespace FWA

@@ -257,8 +257,8 @@ std::expected<void, IOKitError> IsoStreamHandler::start() {
     if (provider) {
         // ShmIsochBridge::instance().start(provider); // Pass the provider pointer
         // We are using RingBufferManager instead of ShmIsochBridge
-        RingBufferManager::instance().setPacketProvider(provider);
-        m_logger->info("IsoStreamHandler: RingBufferManager started with Packet Provider.");
+        // RingBufferManager::instance().setPacketProvider(provider);
+        m_logger->warn("IsoStreamHandler: THIS SHOULD NOT HAPPEN! ShmIsochBridge is not used anymore, RingBufferManager is used instead.");
     } else {
         m_logger->error("IsoStreamHandler: Failed to get Packet Provider from output stream! RingBufferManager NOT started.");
         // Decide if this is fatal? Probably should be.

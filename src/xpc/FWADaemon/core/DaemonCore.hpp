@@ -1,4 +1,4 @@
-// DaemonCore.hpp
+// DaemonCore.hpp - Direct SHM Management (Complete Updated Header)
 #pragma once
 
 #include <string>
@@ -27,11 +27,11 @@
 #include "FWA/IOKitFireWireDeviceDiscovery.h"
 #include "FWA/Error.h"
 
+// Direct SHM structures
+#include "shared/SharedMemoryStructures.hpp"
+
 // Isochronous transmitter interface
 #include "Isoch/interfaces/ITransmitPacketProvider.hpp"
-
-// Shared‐memory reader / FireWire pump
-#include "xpc/FWAXPC/RingBufferManager.hpp"
 
 namespace FWA {
 
@@ -48,9 +48,12 @@ enum class DaemonCoreError {
     StreamStopFailure,
     SharedMemoryFailure,
     SharedMemoryTruncateFailure,
+    SharedMemoryMappingFailure,
+    SharedMemoryValidationFailure,
     ThreadCreationFailed,
     NoTransmitProvider,
     DataFlowConfigurationFailure,
+    ProviderBindingFailure,
     InvalidParameter
 };
 
@@ -111,7 +114,6 @@ public:
                                 const std::string& source);
 
 private:
-    int m_shmFd = -1; // SHM file descriptor, owned by DaemonCore
     // Controller thread / run loop
     void controllerThreadRunLoopFunc();
     std::thread    m_controllerThread;
@@ -124,8 +126,13 @@ private:
     std::shared_ptr<spdlog::logger> m_logger;
     std::shared_ptr<DeviceController> m_deviceController;
 
-    // SHM + FireWire pump
-    RingBufferManager& m_shmManager = RingBufferManager::instance();
+    // REMOVED: RingBufferManager m_shmManager
+    // NEW: Direct SHM Management
+    int m_shmFd = -1;                                    // SHM file descriptor
+    void* m_shmRawPtr = nullptr;                         // Raw mmap pointer for cleanup
+    size_t m_shmSize = 0;                                // Mapped size for munmap
+    RTShmRing::ControlBlock_POD* m_shmControlBlock = nullptr;  // Direct control block pointer
+    RTShmRing::AudioChunk_POD* m_shmRingArray = nullptr;       // Direct ring array pointer
 
     // Callbacks to XPC
     DeviceNotificationToXPC_Cb    m_deviceNotificationCb_toXPC;
@@ -143,6 +150,8 @@ private:
 
     // Private helper methods
     std::expected<void,DaemonCoreError> setupDriverSharedMemory();
+    void cleanupSharedMemory();
+    std::expected<void,DaemonCoreError> validateSharedMemoryFormat();
     std::expected<void,DaemonCoreError> configureDataFlow(uint64_t guid, std::shared_ptr<AudioDevice> device);
     void ensureStreamsStoppedForDevice(uint64_t guid,
                                       std::shared_ptr<AudioDevice> dev = nullptr);
