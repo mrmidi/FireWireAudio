@@ -15,6 +15,14 @@ namespace Isoch {
 
 // --- Configuration ---
 
+
+enum class TransmissionType {
+    NonBlocking, // Represents the current AmdtpTransmitter SYT behavior (uses FDF=0xFF for SYT placeholders)
+    Blocking     // Implements UniversalTransmitter-style SYT/NO_DATA logic
+};
+
+
+
 /**
  * @brief Configuration parameters for the AmdtpTransmitter.
  */
@@ -45,6 +53,9 @@ struct TransmitterConfig {
 
     // Timing & Sync (Potentially add more later)
     uint32_t numStartupCycleMatchBits{0}; ///< For cycle-matching start (0 usually sufficient for transmitter).
+
+    // NEW: Transmission Type
+    TransmissionType transmissionType{TransmissionType::NonBlocking}; // Default to current behavior
 };
 
 // --- Messages & Callbacks ---

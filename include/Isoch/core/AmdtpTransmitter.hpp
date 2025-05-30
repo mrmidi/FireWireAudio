@@ -73,10 +73,30 @@ private:
 
      // CIP Header/Timing generation logic
      void initializeCIPState();
-     void prepareCIPHeader(CIPHeader* outHeader); // Fills header based on state
-     
-     // Helper to send messages to the client
-     void notifyMessage(TransmitterMessage msg, uint32_t p1 = 0, uint32_t p2 = 0);
+     void generateCIPHeaderContent(CIPHeader* outHeader,
+                                   uint8_t current_dbc_state,
+                                   bool previous_wasNoData_state,
+                                   bool first_dcl_callback_occurred_state,
+                                   uint8_t& next_dbc_for_state,
+                                   bool& next_wasNoData_for_state);
+
+     // --- Helper for the "Blocking" (UniversalTransmitter-style) SYT logic ---
+     struct BlockingSytParams {
+         bool isNoData;
+         uint16_t syt_value;
+     };
+     BlockingSytParams calculateBlockingSyt();
+
+     // --- Helper for the "NonBlocking" (current AmdtpTransmitter) SYT logic ---
+     struct NonBlockingSytParams {
+         bool isNoData;
+         uint16_t syt_value;
+         // Potentially other outputs specific to this strategy's state updates
+     };
+     NonBlockingSytParams calculateNonBlockingSyt(uint8_t current_dbc_state, bool previous_wasNoData_state);
+
+    // Helper to send messages to the client
+    void notifyMessage(TransmitterMessage msg, uint32_t p1 = 0, uint32_t p2 = 0);
 
     // Configuration & Logger
     TransmitterConfig config_;
@@ -102,8 +122,18 @@ private:
      bool wasNoData_{true}; // Start assuming previous was NoData
      uint16_t sytOffset_{0};
      uint32_t sytPhase_{0}; // For 44.1kHz calculation
-     bool firstDCLCallbackOccurred_{false};
+     std::atomic<bool> firstDCLCallbackOccurred_{false};
      uint32_t expectedTimeStampCycle_{0}; // For timestamp checking
+
+    // --- NEW: State variables specifically for "Blocking" (UniversalTransmitter-style) SYT ---
+    uint16_t sytOffset_blocking_{TICKS_PER_CYCLE};
+    uint32_t sytPhase_blocking_{0};
+
+    // --- Constants for "Blocking" SYT (distinct from NonBlocking) ---
+    static constexpr uint32_t SYT_PHASE_MOD_BLOCKING = 147;
+    static constexpr uint32_t SYT_PHASE_RESET_BLOCKING = 1470;
+    static constexpr uint32_t BASE_TICKS_BLOCKING = 1386;
+    // TICKS_PER_CYCLE is already defined
 
     // Client Callbacks
     MessageCallback messageCallback_{nullptr};

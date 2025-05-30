@@ -95,7 +95,14 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
             );
 
             // --- 2c. Prepare CIP Header (Initial State) ---
-            prepareCIPHeader(cipHdrTarget);
+            // Directly set a minimal NO_DATA header for initial prep
+            cipHdrTarget->sid_byte = 0; // Will be set by HW or Port later
+            cipHdrTarget->dbs = 2;      // AM824 Stereo
+            cipHdrTarget->fn_qpc_sph_rsv = 0;
+            cipHdrTarget->fmt_eoh1 = (0x10 << 2) | 0x01; // FMT=0x10 (AM824), EOH=1
+            cipHdrTarget->fdf = 0xFF; // NO_DATA
+            cipHdrTarget->syt = OSSwapHostToBigInt16(0xFFFF); // NO_INFO
+            cipHdrTarget->dbc = 0; // Initial DBC
 
             // --- 2d. Prepare Isoch Header Template ---
             // Set the channel, tag, tcode in the template memory
@@ -331,32 +338,26 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         uint32_t absolutePacketIndex = fillGroupIndex * config_.packetsPerGroup + p;
 
         // --- 4a. Get Buffer Pointers ---
-        // Pointers to where we write the headers in DMA memory
         auto isochHdrPtrExp = bufferManager_->getPacketIsochHeaderPtr(fillGroupIndex, p);
         auto cipHdrPtrExp = bufferManager_->getPacketCIPHeaderPtr(fillGroupIndex, p);
-        // Pointer to where the *provider* writes audio data in DMA memory
         uint8_t* audioDataTargetPtr = nullptr;
-         if(bufferManager_->getClientAudioBufferPtr() && bufferManager_->getClientAudioBufferSize() > 0) {
+        if(bufferManager_->getClientAudioBufferPtr() && bufferManager_->getClientAudioBufferSize() > 0) {
             audioDataTargetPtr = bufferManager_->getClientAudioBufferPtr()
-                           + (absolutePacketIndex * bufferManager_->getAudioPayloadSizePerPacket()) % bufferManager_->getClientAudioBufferSize();
-         }
+                + (absolutePacketIndex * bufferManager_->getAudioPayloadSizePerPacket()) % bufferManager_->getClientAudioBufferSize();
+        }
 
         if (!isochHdrPtrExp || !cipHdrPtrExp || !audioDataTargetPtr) {
             logger_->error("handleDCLComplete: Failed to get buffer pointers for G={}, P={}. Skipping packet.", fillGroupIndex, p);
-            continue; // Skip this packet
+            continue;
         }
-        
+
         IsochHeaderData* isochHdrTarget = reinterpret_cast<IsochHeaderData*>(isochHdrPtrExp.value());
         CIPHeader* cipHdrTarget = reinterpret_cast<CIPHeader*>(cipHdrPtrExp.value());
         size_t audioPayloadTargetSize = bufferManager_->getAudioPayloadSizePerPacket();
 
-
         // --- 4b. Prepare TransmitPacketInfo ---
-        // Estimate timing for this future packet (basic estimation for now)
-        // TODO: Integrate with PLL/Timing module for accurate prediction
-        uint64_t estimatedHostTimeNano = 0; // Placeholder
-        uint32_t estimatedFirewireTimestamp = 0; // Placeholder
-
+        uint64_t estimatedHostTimeNano = 0;
+        uint32_t estimatedFirewireTimestamp = 0;
         TransmitPacketInfo packetInfo = {
             .segmentIndex = fillGroupIndex,
             .packetIndexInGroup = p,
@@ -365,40 +366,33 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
             .firewireTimestamp = estimatedFirewireTimestamp
         };
 
-
-        // --- 4c. Fill Audio Data ---
-        // Ask provider to fill the audio data directly into the DMA buffer slot
+        // --- 4c. Fill Audio Data (ask provider) ---
         PreparedPacketData packetDataStatus = packetProvider_->fillPacketData(
             audioDataTargetPtr,
             audioPayloadTargetSize,
             packetInfo
         );
 
-        // Handle Underrun Notification
-        if (packetDataStatus.generatedSilence) {
-            // Notify client about underrun for this specific packet
-             // Throttle notification?
-             // logger_->warn("handleDCLComplete: Underrun preparing G={}, P={}", fillGroupIndex, p);
-            notifyMessage(TransmitterMessage::BufferUnderrun, fillGroupIndex, p);
-        }
+        // --- 4d. Prepare CIP Header Content (using the new centralized method) ---
+        uint8_t next_dbc_val_for_state_update;
+        bool next_wasNoData_val_for_state_update;
+        generateCIPHeaderContent(cipHdrTarget,                // Output: where to write the header
+                                 this->dbc_count_,            // Input: current DBC state from member
+                                 this->wasNoData_,            // Input: previous packet type state from member
+                                 this->firstDCLCallbackOccurred_.load(), // Input: current atomic bool state
+                                 next_dbc_val_for_state_update,    // Output: by reference
+                                 next_wasNoData_val_for_state_update // Output: by reference
+                                );
+        // Update transmitter's persistent state AFTER generating the header for *this* packet
+        this->dbc_count_ = next_dbc_val_for_state_update;
+        this->wasNoData_ = next_wasNoData_val_for_state_update;
 
-
-        // --- 4d. Prepare CIP Header ---
-        // Generate the CIP header content (with updated DBC, SYT=0xFFFF for now)
-        // and write it directly into the DMA buffer slot.
-        prepareCIPHeader(cipHdrTarget); // NEW - Function now calculates isNoData internally
-
-
-        // --- 4e. Update Isoch Header ---
-        // Update Isoch header template with appropriate data_length, channel, etc.
+        // --- 4e. Update Isoch Header (based on whether it's a NO_DATA packet from CIP gen) ---
         uint8_t fwChannel = portChannelManager_->getActiveChannel().value_or(config_.initialChannel & 0x3F);
-        isochHdrTarget->data_length = OSSwapHostToBigInt16(kTransmitCIPHeaderSize + packetDataStatus.dataLength);
         isochHdrTarget->tag_channel = (1 << 6) | (fwChannel & 0x3F);
-        isochHdrTarget->tcode_sy = (0xA << 4) | 0; // TCode=0xA (Isoch Data Block)
+        isochHdrTarget->tcode_sy = (0xA << 4) | 0;
 
-
-        // --- 4f. Update DCL Ranges (if needed) ---
-        // Determine the correct number of ranges based on data availability
+        // --- 4f. Update DCL Ranges (crucial change here) ---
         IOVirtualRange ranges[2];
         uint32_t numRanges = 0;
 
@@ -407,34 +401,25 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         ranges[0].length = kTransmitCIPHeaderSize;
         numRanges++;
 
-        // Range 1: Audio Data (Only if data is available/not NO_DATA packet)
-        if (!packetDataStatus.generatedSilence && packetDataStatus.dataLength > 0) {
-             // Ensure the length matches what the provider gave, even if it generated silence (length would be targetSize)
-             // But we only add the range if !generatedSilence (meaning it's real data or intended silence padding)
-             // And dataLength should match audioPayloadTargetSize unless something went wrong.
+        // Determine if we are sending audio data based on the FDF field of the *just generated* CIP header
+        bool sendAudioPayload = (cipHdrTarget->fdf != 0xFF);
+
+        if (sendAudioPayload) {
             ranges[1].address = reinterpret_cast<IOVirtualAddress>(audioDataTargetPtr);
-            ranges[1].length = packetDataStatus.dataLength; // Use length from provider status
+            ranges[1].length = packetDataStatus.dataLength;
             numRanges++;
-        } else if (packetDataStatus.generatedSilence) {
-             // It's a NO_DATA packet conceptually, but we might still need to send
-             // the zeroed buffer if hardware requires fixed packet sizes.
-             // OR we tell the DCL to only send the CIP header.
-             // Let's assume for now we send only CIP for NO_DATA (FDF=0xFF).
-             numRanges = 1; // Only send CIP header range for NO_DATA packets
-             logger_->trace("handleDCLComplete: Setting numRanges=1 for NO_DATA G={}, P={}", fillGroupIndex, p);
+            isochHdrTarget->data_length = OSSwapHostToBigInt16(kTransmitCIPHeaderSize + packetDataStatus.dataLength);
+        } else {
+            numRanges = 1;
+            isochHdrTarget->data_length = OSSwapHostToBigInt16(kTransmitCIPHeaderSize);
+            // logger_->trace("handleDCLComplete: Setting numRanges=1 for SYT-driven NO_DATA G={}, P={}", fillGroupIndex, p);
         }
 
-        // Update the DCL command's ranges *if* the number of ranges changed
-        // (e.g., switching between NO_DATA and data)
-        // TODO: Need a way to get the *current* range count from the DCL to compare.
-        // For now, let's call update unconditionally, assuming SetDCLRanges handles it.
         auto updateExp = dclManager_->updateDCLPacket(fillGroupIndex, p, ranges, numRanges, nullptr);
         if (!updateExp) {
-             logger_->error("handleDCLComplete: Failed to update DCL packet ranges for G={}, P={}: {}",
-                           fillGroupIndex, p, iokit_error_category().message(static_cast<int>(updateExp.error())));
-             // Decide how to handle this error - skip packet? stop stream?
+            logger_->error("handleDCLComplete: Failed to update DCL packet ranges for G={}, P={}: {}",
+                fillGroupIndex, p, iokit_error_category().message(static_cast<int>(updateExp.error())));
         }
-
     } // --- End packet loop (p) ---
 
 
@@ -611,115 +596,182 @@ void AmdtpTransmitter::notifyMessage(TransmitterMessage msg, uint32_t p1, uint32
 void AmdtpTransmitter::initializeCIPState() {
      logger_->debug("AmdtpTransmitter::initializeCIPState");
      dbc_count_ = 0;
-     wasNoData_ = true; // Start assuming previous was NoData
+     wasNoData_ = true; // Start assuming previous was NoData for both modes initially
 
-     // --- Initialize SYT state ---
-     // Start offset >= TICKS_PER_CYCLE to ensure first packets are NO_DATA
-     // until the first callback establishes real timing.
-     sytOffset_ = TICKS_PER_CYCLE; // Initialize to 3072
-     sytPhase_ = 0;
-     // --- End Initialize SYT state ---
+    // Initialize state for "NonBlocking" (current) AmdtpTransmitter SYT logic
+    sytOffset_ = TICKS_PER_CYCLE;
+    sytPhase_ = 0;
+
+    // Initialize state for "Blocking" (UniversalTransmitter-style) SYT logic
+    sytOffset_blocking_ = TICKS_PER_CYCLE;
+    sytPhase_blocking_ = 0;
 
      firstDCLCallbackOccurred_ = false;
      expectedTimeStampCycle_ = 0;
 }
 
-// prepareCIPHeader
-void AmdtpTransmitter::prepareCIPHeader(CIPHeader* outHeader) {
-    // logger_->trace("AmdtpTransmitter::prepareCIPHeader()");
-    if (!outHeader || !portChannelManager_ || !bufferManager_) { /* error */ return; }
 
-    // --- Get Node ID, SFC, Set static fields ---
-    uint16_t nodeID = portChannelManager_->getLocalNodeID().value_or(0x3F); // Default to local node ID
 
-    // --- Determine SFC from config ---
-    uint8_t sfc = 0x00; // Default 32kHz
-    if (config_.sampleRate == 44100.0) sfc = 0x01;      // SFC for 44.1kHz
-    else if (config_.sampleRate == 48000.0) sfc = 0x02; // SFC for 48kHz
-    else if (config_.sampleRate == 88200.0) sfc = 0x03; // SFC for 88.2kHz
-    else if (config_.sampleRate == 96000.0) sfc = 0x04; // SFC for 96kHz
-    else if (config_.sampleRate == 176400.0) sfc = 0x05; // SFC for 176.4kHz
-    else if (config_.sampleRate == 192000.0) sfc = 0x06; // SFC for 192kHz
-    else {
-        logger_->warn("prepareCIPHeader: Unsupported sample rate {:.1f}Hz, using SFC for 48kHz.", config_.sampleRate);
-        sfc = 0x02; // Fallback
-    }
-
-    // --- Set static fields ---
-    outHeader->sid_byte = 0; // Assuming HW/Port sets SID correctly
-    outHeader->dbs = 2;      // AM824 Stereo (8 bytes/4 = 2)
-    outHeader->fn_qpc_sph_rsv = 0; // Usually 0 for AMDTP
-    outHeader->fmt_eoh1 = (0x10 << 2) | 0x01; // FMT=0x10 (AM824), EOH=1
-
-    // --- Calculate SYT and isNoData for 44.1kHz ---
-    bool calculated_isNoData = false;
-    uint16_t calculated_sytVal = 0xFFFF;
+AmdtpTransmitter::NonBlockingSytParams AmdtpTransmitter::calculateNonBlockingSyt(
+    uint8_t current_dbc_state, bool previous_wasNoData_state) {
+    NonBlockingSytParams params;
 
     if (!firstDCLCallbackOccurred_) {
-        // Before first callback, timing is unknown, force NO_DATA
-        calculated_isNoData = true;
-        // sytOffset_ remains >= TICKS_PER_CYCLE from initialization
+        params.isNoData = true;
+        params.syt_value = 0xFFFF;
     } else {
-        // Apply 44.1kHz SYT offset logic based on decompiled code
         if (sytOffset_ >= TICKS_PER_CYCLE) {
-            // Was NO_DATA previously, or just wrapped. Reset offset within the cycle.
             sytOffset_ -= TICKS_PER_CYCLE;
         } else {
-            // Normal increment logic for 44.1kHz
             uint32_t phase = sytPhase_ % SYT_PHASE_MOD;
-            bool addExtra = (phase && !(phase & 3)) || (sytPhase_ == (SYT_PHASE_RESET - 1)); // Adjusted phase check
-            sytOffset_ += BASE_TICKS; // Add ~1386
+            bool addExtra = (phase && !(phase & 3)) || (sytPhase_ == (SYT_PHASE_RESET - 1));
+            sytOffset_ += BASE_TICKS;
             if (addExtra) {
-                sytOffset_ += 1; // Add occasional extra tick
+                sytOffset_ += 1;
             }
-
-            // Increment and wrap phase accumulator
             if (++sytPhase_ >= SYT_PHASE_RESET) {
                 sytPhase_ = 0;
             }
         }
 
-        // Check if the *new* offset exceeds the cycle boundary
         if (sytOffset_ >= TICKS_PER_CYCLE) {
-            calculated_isNoData = true; // Will send NO_DATA this time
+            params.isNoData = true;
+            params.syt_value = 0xFFFF;
         } else {
-            calculated_isNoData = false; // Will send valid data
-            calculated_sytVal = static_cast<uint16_t>(sytOffset_);
+            params.isNoData = false;
+            params.syt_value = static_cast<uint16_t>(sytOffset_);
         }
     }
-    // --- End SYT Calculation ---
 
-    // --- Set Dynamic Fields (FDF, SYT, DBC) ---
-    if (calculated_isNoData) {
-        outHeader->fdf = 0xFF; // FDF for NO_DATA
-        outHeader->syt = OSSwapHostToBigInt16(0xFFFF); // SYT for NO_DATA
-        // DBC: Repeat the previous DBC value if sending NO_DATA
-        outHeader->dbc = dbc_count_;
-    } else {
-        outHeader->fdf = sfc; // FDF for the specific sample rate
-        outHeader->syt = OSSwapHostToBigInt16(calculated_sytVal); // Calculated SYT value
-        // DBC: Increment only if the *previous* packet was *not* NO_DATA
-        uint8_t blocksPerPacket = bufferManager_->getAudioPayloadSizePerPacket() / 8; // 64/8 = 8 blocks typically
-        uint8_t increment = blocksPerPacket;
-        // Use wasNoData_ (state *before* this packet)
-        uint8_t next_dbc = wasNoData_ ? dbc_count_ : (dbc_count_ + increment);
-        outHeader->dbc = next_dbc & 0xFF;
-    }
-    // --- End Set Dynamic Fields ---
-
-    // --- Update State for *Next* Call ---
-    dbc_count_ = outHeader->dbc;    // Store the DBC we *just* put in the header
-    wasNoData_ = calculated_isNoData; // Store the type of packet we *just* prepared
-    // Note: sytOffset_ and sytPhase_ were already updated during calculation
+    return params;
 }
 
+// Constants for SFC (Sample Frequency Code)
 
-// bool AmdtpTransmitter::pushAudioData(const void* data, size_t size) {
-//     // TODO: Implement actual audio data handling
-//     return true;
-// }
+constexpr uint8_t SFC_44K1HZ = 0x01;
+constexpr uint8_t SFC_48KHZ  = 0x02;
 
+void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
+                                              uint8_t current_dbc_state,
+                                              bool previous_wasNoData_state,
+                                              bool first_dcl_callback_occurred_state_param,
+                                              uint8_t& next_dbc_for_state,
+                                              bool& next_wasNoData_for_state) {
+    // Check preconditions
+    if (!outHeader || !portChannelManager_ || !this->bufferManager_) {
+        if (logger_) logger_->error("generateCIPHeaderContent: Preconditions not met (null pointers).");
+        if (outHeader) {
+            outHeader->fdf = 0xFF;
+            outHeader->syt = OSSwapHostToBigInt16(0xFFFF);
+            outHeader->dbc = current_dbc_state;
+        }
+        next_dbc_for_state = current_dbc_state;
+        next_wasNoData_for_state = true;
+        return;
+    }
 
+    // --- Get Node ID, Set static fields ---
+    uint16_t nodeID = portChannelManager_->getLocalNodeID().value_or(0x3F);
+    outHeader->sid_byte = static_cast<uint8_t>(nodeID & 0x3F);
+    outHeader->dbs = 2;
+    outHeader->fn_qpc_sph_rsv = 0;
+    outHeader->fmt_eoh1 = (0x10 << 2) | 0x01;
+
+    // Local variables for this function's calculations
+    bool calculated_isNoData_for_this_packet = true;
+    uint16_t calculated_sytVal_for_this_packet = 0xFFFF;
+    uint8_t sfc_for_this_packet = SFC_48KHZ;
+
+    // Determine SFC based on config
+    if (config_.sampleRate == 44100.0) sfc_for_this_packet = SFC_44K1HZ;
+    else if (config_.sampleRate == 48000.0) sfc_for_this_packet = SFC_48KHZ;
+    else {
+        if (logger_) logger_->warn("generateCIPHeaderContent: Unsupported sample rate {:.1f}Hz, using SFC for 48kHz as fallback.", config_.sampleRate);
+    }
+
+    // --- Call Strategy-Specific SYT Calculation ---
+    switch (config_.transmissionType) {
+        case TransmissionType::Blocking: {
+            BlockingSytParams sytParams = calculateBlockingSyt();
+            calculated_isNoData_for_this_packet = sytParams.isNoData;
+            calculated_sytVal_for_this_packet = sytParams.syt_value;
+            break;
+        }
+        case TransmissionType::NonBlocking:
+        default: {
+            NonBlockingSytParams sytParams = calculateNonBlockingSyt(current_dbc_state, previous_wasNoData_state);
+            calculated_isNoData_for_this_packet = sytParams.isNoData;
+            calculated_sytVal_for_this_packet = sytParams.syt_value;
+            break;
+        }
+    }
+
+    // --- Set Dynamic Fields (FDF, SYT, DBC) ---
+    if (calculated_isNoData_for_this_packet) {
+        outHeader->fdf = 0xFF;
+        outHeader->syt = OSSwapHostToBigInt16(0xFFFF);
+        outHeader->dbc = current_dbc_state;
+    } else {
+        outHeader->fdf = sfc_for_this_packet;
+        outHeader->syt = OSSwapHostToBigInt16(calculated_sytVal_for_this_packet);
+
+        uint8_t blocksPerPacket = this->bufferManager_->getAudioPayloadSizePerPacket() / 8;
+        if (blocksPerPacket == 0 && !calculated_isNoData_for_this_packet) {
+            blocksPerPacket = 1;
+        }
+
+        if (previous_wasNoData_state) {
+            outHeader->dbc = current_dbc_state;
+        } else {
+            outHeader->dbc = (current_dbc_state + blocksPerPacket) & 0xFF;
+        }
+    }
+
+    // --- Update state for the *next* call (via output parameters) ---
+    next_dbc_for_state = outHeader->dbc;
+    next_wasNoData_for_state = calculated_isNoData_for_this_packet;
+}
+
+AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() { // <<<< DEFINITION
+    BlockingSytParams params;
+
+    if (!this->firstDCLCallbackOccurred_) { // Access plain bool member
+        params.isNoData = true;
+        params.syt_value = 0xFFFF;
+        return params;
+    }
+
+    // Logic copied and adapted from UniversalTransmitter::calculatePacketParams()
+    // Uses this->sytOffset_blocking_ and this->sytPhase_blocking_
+    // Uses constants like SYT_PHASE_MOD_BLOCKING, BASE_TICKS_BLOCKING, TICKS_PER_CYCLE
+
+    // Use the correct constants for the Blocking mode:
+    // If you have SYT_PHASE_MOD_BLOCKING, etc., use those.
+    // If you decided to use common constants like SYT_PHASE_MOD_44K1, use those.
+    // Let's assume you defined specific _BLOCKING constants as in the header.
+    if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
+        sytOffset_blocking_ -= TICKS_PER_CYCLE;
+    } else {
+        uint32_t phase = sytPhase_blocking_ % SYT_PHASE_MOD_BLOCKING;
+        bool addExtra = (phase && !(phase & 3)) || (sytPhase_blocking_ == (SYT_PHASE_RESET_BLOCKING - 1));
+        sytOffset_blocking_ += BASE_TICKS_BLOCKING;
+        if (addExtra) {
+            sytOffset_blocking_ += 1;
+        }
+        if (++sytPhase_blocking_ >= SYT_PHASE_RESET_BLOCKING) {
+            sytPhase_blocking_ = 0;
+        }
+    }
+
+    if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
+        params.isNoData = true;
+        params.syt_value = 0xFFFF;
+    } else {
+        params.isNoData = false;
+        params.syt_value = static_cast<uint16_t>(sytOffset_blocking_);
+    }
+    return params;
+}
 
 } // namespace Isoch
 } // namespace FWA

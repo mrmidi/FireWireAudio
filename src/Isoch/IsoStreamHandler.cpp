@@ -210,6 +210,7 @@ std::expected<void, IOKitError> IsoStreamHandler::start() {
         transmitProviderBufferSize, // Buffer size for the internal provider
         m_interface
     );
+    // If you want to set transmissionType here, modify AudioDeviceStream::createTransmitterForDevicePlug to accept and forward it.
 
     if (!outputStreamResult) {
         m_logger->error("IsoStreamHandler: Failed to create output stream: {}",
