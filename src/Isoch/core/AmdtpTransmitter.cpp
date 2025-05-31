@@ -4,10 +4,10 @@
 #include "Isoch/core/IsochTransmitDCLManager.hpp"
 #include "Isoch/core/IsochTransportManager.hpp"
 #include "Isoch/core/IsochPacketProvider.hpp"
-#include <mach/mach_time.h> // For mach_absolute_time
+#include <mach/mach_time.h>        // For mach_absolute_time
 #include <CoreServices/CoreServices.h> // For endian swap
 #include <vector>
-#include <chrono> // For timing/sleep 
+#include <chrono>                  // For timing/sleep
 #include <os/log.h>
 
 namespace FWA {
@@ -35,7 +35,7 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
     MessageCallback callback_to_notify = nullptr;
     void* refcon_to_notify = nullptr;
     IOKitError error_code = IOKitError::Success; // Use a status variable
-    
+
     { // --- Start Scope for stateMutex_ ---
         std::lock_guard<std::mutex> lock(stateMutex_);
         if (!initialized_) {
@@ -68,9 +68,10 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
             // --- 2a. Get Buffer Pointers ---
             auto cipHdrPtrExp = bufferManager_->getPacketCIPHeaderPtr(g, p);
             uint8_t* audioDataTargetPtr = nullptr;
-            if(bufferManager_->getClientAudioBufferPtr() && bufferManager_->getClientAudioBufferSize() > 0) {
-               audioDataTargetPtr = bufferManager_->getClientAudioBufferPtr()
-                               + (absPktIdx * bufferManager_->getAudioPayloadSizePerPacket()) % bufferManager_->getClientAudioBufferSize();
+            if (bufferManager_->getClientAudioBufferPtr() && bufferManager_->getClientAudioBufferSize() > 0) {
+                audioDataTargetPtr = bufferManager_->getClientAudioBufferPtr()
+                                   + (absPktIdx * bufferManager_->getAudioPayloadSizePerPacket())
+                                        % bufferManager_->getClientAudioBufferSize();
             }
             auto isochHdrPtrExp = bufferManager_->getPacketIsochHeaderPtr(g, p); // For template update
 
@@ -87,7 +88,11 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
 
             // --- 2b. Fill Audio Payload (Initial Silence) ---
             // Ask provider to fill - it should generate silence if its buffer is empty.
-            TransmitPacketInfo dummyInfo = { .segmentIndex = g, .packetIndexInGroup = p, .absolutePacketIndex = absPktIdx };
+            TransmitPacketInfo dummyInfo = {
+                .segmentIndex        = g,
+                .packetIndexInGroup  = p,
+                .absolutePacketIndex = absPktIdx
+            };
             PreparedPacketData packetDataStatus = packetProvider_->fillPacketData(
                 audioDataTargetPtr,
                 audioPayloadTargetSize,
@@ -96,29 +101,30 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
 
             // --- 2c. Prepare CIP Header (Initial State) ---
             // Directly set a minimal NO_DATA header for initial prep
-            cipHdrTarget->sid_byte = 0; // Will be set by HW or Port later
-            cipHdrTarget->dbs = 2;      // AM824 Stereo
+            cipHdrTarget->sid_byte       = 0; // Will be set by HW or Port later
+            cipHdrTarget->dbs            = 2; // AM824 Stereo
             cipHdrTarget->fn_qpc_sph_rsv = 0;
-            cipHdrTarget->fmt_eoh1 = (0x10 << 2) | 0x01; // FMT=0x10 (AM824), EOH=1
-            cipHdrTarget->fdf = 0xFF; // NO_DATA
-            cipHdrTarget->syt = OSSwapHostToBigInt16(0xFFFF); // NO_INFO
-            cipHdrTarget->dbc = 0; // Initial DBC
+            cipHdrTarget->fmt_eoh1       = (0x10 << 2) | 0x01; // FMT=0x10 (AM824), EOH=1
+            cipHdrTarget->fdf           = 0xFF;                // NO_DATA
+            cipHdrTarget->syt           = OSSwapHostToBigInt16(0xFFFF); // NO_INFO
+            cipHdrTarget->dbc           = 0;                   // Initial DBC
 
             // --- 2d. Prepare Isoch Header Template ---
             // Set the channel, tag, tcode in the template memory
-            uint8_t fwChannel = portChannelManager_->getActiveChannel().value_or(config_.initialChannel & 0x3F);
+            uint8_t fwChannel = portChannelManager_->getActiveChannel()
+                                    .value_or(config_.initialChannel & 0x3F);
             // Calculate expected data_length (CIP + Payload, even if payload is silence for now)
             uint16_t dataLength = kTransmitCIPHeaderSize + audioPayloadTargetSize;
-            isochHdrTarget->data_length = OSSwapHostToBigInt16(dataLength); // HW might overwrite if ranges differ
-            isochHdrTarget->tag_channel = (1 << 6) | (fwChannel & 0x3F); // Tag=1
-            isochHdrTarget->tcode_sy = (0xA << 4) | 0; // TCode=A, Sy=0
+            isochHdrTarget->data_length  = OSSwapHostToBigInt16(dataLength);
+            isochHdrTarget->tag_channel  = (1 << 6) | (fwChannel & 0x3F); // Tag=1
+            isochHdrTarget->tcode_sy     = (0xA << 4) | 0;              // TCode=A, Sy=0
         } // End initial prep loop
-        
+
         // Check for error from the loop
         if (error_code != IOKitError::Success) {
             return std::unexpected(error_code);
         }
-        
+
         logger_->debug("Initial memory preparation complete.");
 
         // --- 3. Fixup DCL Jumps ---
@@ -138,39 +144,40 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
             }
         }
 
-            // --- PLACE DCL PROGRAM DUMP HERE (Attempt 1) ---
-            // At this point, the DCLs should be created, linked, and their initial content prepared.
-            // The IsochPortChannelManager should also have its nuDCLPool_ if dclManager_ got it.
-            if (portChannelManager_) { // Ensure portChannelManager_ exists
-                IOFireWireLibNuDCLPoolRef dclPool = portChannelManager_->getNuDCLPool();
-                if (dclPool) {
+        // --- PLACE DCL PROGRAM DUMP HERE (Attempt 1) ---
+        // At this point, the DCLs should be created, linked, and their initial content prepared.
+        // The IsochPortChannelManager should also have its nuDCLPool_ if dclManager_ got it.
+        if (portChannelManager_) { // Ensure portChannelManager_ exists
+            IOFireWireLibNuDCLPoolRef dclPool = portChannelManager_->getNuDCLPool();
+            if (dclPool) {
+                CFArrayRef dclArray = (*dclPool)->GetDCLs(dclPool);
+                if (dclArray) {
+                    CFIndex dclCount = CFArrayGetCount(dclArray);
+                    os_log(OS_LOG_DEFAULT,
+                           "AmdtpTransmitter::startTransmit: NuDCLPool GetDCLs reports %ld DCLs.",
+                           dclCount);
 
-                    CFArrayRef dclArray = (*dclPool)->GetDCLs(dclPool);
-                    if (dclArray) {
-                        CFIndex dclCount = CFArrayGetCount(dclArray);
-                        os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::startTransmit: NuDCLPool GetDCLs reports %ld DCLs.", dclCount);
+                    // You can optionally iterate and log the DCLRef pointers for more detail
+                    // for (CFIndex i = 0; i < dclCount; ++i) {
+                    //     NuDCLRef dcl = (NuDCLRef)CFArrayGetValueAtIndex(dclArray, i);
+                    //     logger_->trace("  DCL[{}]: {:p}", i, (void*)dcl);
+                    // }
 
-                        // You can optionally iterate and log the DCLRef pointers for more detail
-                        // for (CFIndex i = 0; i < dclCount; ++i) {
-                        //     NuDCLRef dcl = (NuDCLRef)CFArrayGetValueAtIndex(dclArray, i);
-                        //     logger_->trace("  DCL[{}]: {:p}", i, (void*)dcl);
-                        // }
-                        
-                        CFRelease(dclArray); // IMPORTANT: Release the CFArrayRef
-                    }
-
-
-                    // logger_->info("--- DUMPING DCL PROGRAM (TRANSMIT) BEFORE TRANSPORT START ---");
-                    os_log(OS_LOG_DEFAULT, "--- DUMPING DCL PROGRAM (TRANSMIT) BEFORE TRANSPORT START ---");
-                    (*dclPool)->PrintProgram(dclPool); // Call PrintProgram
-                    logger_->info("--- END DCL PROGRAM DUMP (TRANSMIT) ---");
-                } else {
-                    logger_->error("AmdtpTransmitter::startTransmit: NuDCLPool is null from portChannelManager_, cannot dump DCL program.");
-                    os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::startTransmit: NuDCLPool is null from portChannelManager_, cannot dump DCL program.");
+                    CFRelease(dclArray); // IMPORTANT: Release the CFArrayRef
                 }
+
+                os_log(OS_LOG_DEFAULT, "--- DUMPING DCL PROGRAM (TRANSMIT) BEFORE TRANSPORT START ---");
+                (*dclPool)->PrintProgram(dclPool); // Call PrintProgram
+                logger_->info("--- END DCL PROGRAM DUMP (TRANSMIT) ---");
             } else {
-                os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::startTransmit: portChannelManager_ is null, cannot get NuDCLPool to dump DCL program.");
+                logger_->error("AmdtpTransmitter::startTransmit: NuDCLPool is null from portChannelManager_, cannot dump DCL program.");
+                os_log(OS_LOG_DEFAULT,
+                       "AmdtpTransmitter::startTransmit: NuDCLPool is null from portChannelManager_, cannot dump DCL program.");
             }
+        } else {
+            os_log(OS_LOG_DEFAULT,
+                   "AmdtpTransmitter::startTransmit: portChannelManager_ is null, cannot get NuDCLPool to dump DCL program.");
+        }
 
         // --- 4. Start Transport (only if no error so far) ---
         if (error_code == IOKitError::Success) {
@@ -182,7 +189,7 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
                 auto startResult = transportManager_->start(channel);
                 if (!startResult) {
                     logger_->error("startTransmit: Failed to start transport manager: {}",
-                                 iokit_error_category().message(static_cast<int>(startResult.error())));
+                                   iokit_error_category().message(static_cast<int>(startResult.error())));
                     error_code = startResult.error(); // Store error
                 }
             }
@@ -190,16 +197,15 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
 
         // --- 5. Update State (only if no error so far) ---
         if (error_code == IOKitError::Success) {
-            running_ = true;
+            running_                 = true;
             firstDCLCallbackOccurred_ = false; // Reset for timing measurements
             logger_->info("AmdtpTransmitter transmit started successfully.");
 
             // -- Read callback info while lock is held --
-            callback_to_notify = messageCallback_;
-            refcon_to_notify = messageCallbackRefCon_;
+            callback_to_notify  = messageCallback_;
+            refcon_to_notify    = messageCallbackRefCon_;
             // -----------------------------------------
         }
-        
     } // --- End Scope for stateMutex_ --- lock is released here
 
     // --- Handle return/notification outside the lock ---
@@ -246,13 +252,13 @@ std::expected<void, IOKitError> AmdtpTransmitter::stopTransmit() {
 
     // Stop the transport manager
     auto stopResult = transportManager_->stop(channel);
-    
+
     logger_->info("AmdtpTransmitter transmit stopped.");
     notifyMessage(TransmitterMessage::StreamStopped); // Notify client
 
     if (!stopResult) {
         logger_->error("stopTransmit: TransportManager failed to stop cleanly: {}. State set to stopped, but resources might leak.",
-                     iokit_error_category().message(static_cast<int>(stopResult.error())));
+                       iokit_error_category().message(static_cast<int>(stopResult.error())));
         // Return the error from stop so caller knows it wasn't clean
         return std::unexpected(stopResult.error());
     }
@@ -274,7 +280,7 @@ void AmdtpTransmitter::handleDCLOverrun() {
     auto stopExp = stopTransmit();
     if (!stopExp) {
         logger_->error("Failed to stop stream cleanly during overrun handling: {}",
-                     iokit_error_category().message(static_cast<int>(stopExp.error())));
+                       iokit_error_category().message(static_cast<int>(stopExp.error())));
         // At this point, state might be inconsistent.
     }
 }
@@ -317,20 +323,17 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         // logger_->trace("Completed Group {}: HW Timestamp = {:#010x}", completedGroupIndex, completionTimestamp);
         // TODO: Use this timestamp for PLL/rate estimation later
     } else {
-         logger_->warn("Could not get completion timestamp for group {}", completedGroupIndex);
+        logger_->warn("Could not get completion timestamp for group {}", completedGroupIndex);
     }
-
 
     // --- 3. Determine Next Segment to Fill ---
     // We need to fill the segment that the hardware will encounter *after*
     // the currently executing segments. With a callback interval of 1,
     // when group N completes, the hardware might be starting group N+1.
-    // We should prepare group N+2. If the interval is larger, adjust accordingly.
-    // For simplicity and robustness (double buffering), let's prepare the group
-    // immediately following the completed one in the ring.
-    uint32_t fillGroupIndex = (completedGroupIndex + 1) % config_.numGroups;
-    // logger_->trace("handleDCLComplete: Completed Group = {}, Preparing Group = {}", completedGroupIndex, fillGroupIndex);
-
+    // We should prepare group N+2 to ensure double buffering.
+    uint32_t fillGroupIndex = (completedGroupIndex + 2) % config_.numGroups;
+    logger_->debug("handleDCLComplete: Completed Group = {}, Preparing Group = {}",
+                   completedGroupIndex, fillGroupIndex);
 
     // --- 4. Prepare Next Segment Loop ---
     // Iterate through all packets within the 'fillGroupIndex' segment
@@ -339,11 +342,12 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
 
         // --- 4a. Get Buffer Pointers ---
         auto isochHdrPtrExp = bufferManager_->getPacketIsochHeaderPtr(fillGroupIndex, p);
-        auto cipHdrPtrExp = bufferManager_->getPacketCIPHeaderPtr(fillGroupIndex, p);
+        auto cipHdrPtrExp   = bufferManager_->getPacketCIPHeaderPtr(fillGroupIndex, p);
         uint8_t* audioDataTargetPtr = nullptr;
-        if(bufferManager_->getClientAudioBufferPtr() && bufferManager_->getClientAudioBufferSize() > 0) {
+        if (bufferManager_->getClientAudioBufferPtr() && bufferManager_->getClientAudioBufferSize() > 0) {
             audioDataTargetPtr = bufferManager_->getClientAudioBufferPtr()
-                + (absolutePacketIndex * bufferManager_->getAudioPayloadSizePerPacket()) % bufferManager_->getClientAudioBufferSize();
+                               + (absolutePacketIndex * bufferManager_->getAudioPayloadSizePerPacket())
+                                    % bufferManager_->getClientAudioBufferSize();
         }
 
         if (!isochHdrPtrExp || !cipHdrPtrExp || !audioDataTargetPtr) {
@@ -352,18 +356,18 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         }
 
         IsochHeaderData* isochHdrTarget = reinterpret_cast<IsochHeaderData*>(isochHdrPtrExp.value());
-        CIPHeader* cipHdrTarget = reinterpret_cast<CIPHeader*>(cipHdrPtrExp.value());
-        size_t audioPayloadTargetSize = bufferManager_->getAudioPayloadSizePerPacket();
+        CIPHeader*       cipHdrTarget   = reinterpret_cast<CIPHeader*>(cipHdrPtrExp.value());
+        size_t           audioPayloadTargetSize = bufferManager_->getAudioPayloadSizePerPacket();
 
         // --- 4b. Prepare TransmitPacketInfo ---
-        uint64_t estimatedHostTimeNano = 0;
+        uint64_t estimatedHostTimeNano    = 0;
         uint32_t estimatedFirewireTimestamp = 0;
         TransmitPacketInfo packetInfo = {
-            .segmentIndex = fillGroupIndex,
-            .packetIndexInGroup = p,
+            .segmentIndex        = fillGroupIndex,
+            .packetIndexInGroup  = p,
             .absolutePacketIndex = absolutePacketIndex,
-            .hostTimestampNano = estimatedHostTimeNano,
-            .firewireTimestamp = estimatedFirewireTimestamp
+            .hostTimestampNano   = estimatedHostTimeNano,
+            .firewireTimestamp   = estimatedFirewireTimestamp
         };
 
         // --- 4c. Fill Audio Data (ask provider) ---
@@ -375,22 +379,23 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
 
         // --- 4d. Prepare CIP Header Content (using the new centralized method) ---
         uint8_t next_dbc_val_for_state_update;
-        bool next_wasNoData_val_for_state_update;
-        generateCIPHeaderContent(cipHdrTarget,                // Output: where to write the header
-                                 this->dbc_count_,            // Input: current DBC state from member
-                                 this->wasNoData_,            // Input: previous packet type state from member
+        bool    next_wasNoData_val_for_state_update;
+        generateCIPHeaderContent(cipHdrTarget,                       // Output: where to write the header
+                                 this->dbc_count_,                   // Input: current DBC state from member
+                                 this->wasNoData_,                   // Input: previous packet type state from member
                                  this->firstDCLCallbackOccurred_.load(), // Input: current atomic bool state
                                  next_dbc_val_for_state_update,    // Output: by reference
                                  next_wasNoData_val_for_state_update // Output: by reference
-                                );
+        );
         // Update transmitter's persistent state AFTER generating the header for *this* packet
         this->dbc_count_ = next_dbc_val_for_state_update;
         this->wasNoData_ = next_wasNoData_val_for_state_update;
 
         // --- 4e. Update Isoch Header (based on whether it's a NO_DATA packet from CIP gen) ---
-        uint8_t fwChannel = portChannelManager_->getActiveChannel().value_or(config_.initialChannel & 0x3F);
+        uint8_t fwChannel = portChannelManager_->getActiveChannel()
+                                .value_or(config_.initialChannel & 0x3F);
         isochHdrTarget->tag_channel = (1 << 6) | (fwChannel & 0x3F);
-        isochHdrTarget->tcode_sy = (0xA << 4) | 0;
+        isochHdrTarget->tcode_sy    = (0xA << 4) | 0;
 
         // --- 4f. Update DCL Ranges (crucial change here) ---
         IOVirtualRange ranges[2];
@@ -398,7 +403,7 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
 
         // Range 0: CIP Header (Always present)
         ranges[0].address = reinterpret_cast<IOVirtualAddress>(cipHdrTarget);
-        ranges[0].length = kTransmitCIPHeaderSize;
+        ranges[0].length  = kTransmitCIPHeaderSize;
         numRanges++;
 
         // Determine if we are sending audio data based on the FDF field of the *just generated* CIP header
@@ -406,9 +411,10 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
 
         if (sendAudioPayload) {
             ranges[1].address = reinterpret_cast<IOVirtualAddress>(audioDataTargetPtr);
-            ranges[1].length = packetDataStatus.dataLength;
+            ranges[1].length  = packetDataStatus.dataLength;
             numRanges++;
-            isochHdrTarget->data_length = OSSwapHostToBigInt16(kTransmitCIPHeaderSize + packetDataStatus.dataLength);
+            isochHdrTarget->data_length = OSSwapHostToBigInt16(
+                kTransmitCIPHeaderSize + packetDataStatus.dataLength);
         } else {
             numRanges = 1;
             isochHdrTarget->data_length = OSSwapHostToBigInt16(kTransmitCIPHeaderSize);
@@ -418,18 +424,19 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         auto updateExp = dclManager_->updateDCLPacket(fillGroupIndex, p, ranges, numRanges, nullptr);
         if (!updateExp) {
             logger_->error("handleDCLComplete: Failed to update DCL packet ranges for G={}, P={}: {}",
-                fillGroupIndex, p, iokit_error_category().message(static_cast<int>(updateExp.error())));
+                fillGroupIndex, p,
+                iokit_error_category().message(static_cast<int>(updateExp.error())));
         }
     } // --- End packet loop (p) ---
-
 
     // --- 5. Notify Hardware of Memory Updates ---
     // Tell the hardware that the *memory content* (CIP headers, audio data)
     // for the 'fillGroupIndex' has been updated and needs to be re-read before execution.
     auto notifyContentExp = dclManager_->notifySegmentUpdate(localPort, fillGroupIndex);
-     if (!notifyContentExp) {
-         logger_->error("handleDCLComplete: Failed to notify segment content update for G={}: {}",
-                       fillGroupIndex, iokit_error_category().message(static_cast<int>(notifyContentExp.error())));
+    if (!notifyContentExp) {
+        logger_->error("handleDCLComplete: Failed to notify segment content update for G={}: {}",
+                       fillGroupIndex,
+                       iokit_error_category().message(static_cast<int>(notifyContentExp.error())));
         // Handle error - might lead to hardware sending stale data.
     }
 
@@ -440,22 +447,22 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
     // --- 7. Performance Monitoring (Optional) ---
     uint64_t callbackExitTime = mach_absolute_time();
     uint64_t callbackDuration = callbackExitTime - callbackEntryTime;
-    
+
     // Convert to milliseconds (this is a simple approximation)
     static mach_timebase_info_data_t timebase;
     if (timebase.denom == 0) {
         mach_timebase_info(&timebase);
     }
-    
+
     uint64_t durationNanos = callbackDuration * timebase.numer / timebase.denom;
-    double durationMs = static_cast<double>(durationNanos) / 1000000.0;
-    
+    double   durationMs    = static_cast<double>(durationNanos) / 1000000.0;
+
     // Log if duration exceeds threshold (e.g., 1ms for real-time audio)
     static const double kWarningThresholdMs = 1.0; // 1ms is quite strict for real-time audio
-//    if (durationMs > kWarningThresholdMs) {
-//        logger_->warn("handleDCLComplete: Long processing time for G={}: {:.3f}ms", 
-//                     completedGroupIndex, durationMs);
-//    }
+    // if (durationMs > kWarningThresholdMs) {
+    //     logger_->warn("handleDCLComplete: Long processing time for G={}: {:.3f}ms",
+    //                   completedGroupIndex, durationMs);
+    // }
 }
 
 // --- Static Callbacks ---
@@ -474,12 +481,10 @@ void AmdtpTransmitter::TransportFinalize_Helper(void* refCon) {
     // if (self) self->handleFinalize(); // If finalize handling is needed
 }
 
-
-
-
 // Constructor
 AmdtpTransmitter::AmdtpTransmitter(const TransmitterConfig& config)
- : config_(config), logger_(config.logger ? config.logger : spdlog::default_logger()) {
+    : config_(config),
+      logger_(config.logger ? config.logger : spdlog::default_logger()) {
     logger_->info("AmdtpTransmitter constructing...");
     // Initialize other members if necessary
 }
@@ -487,11 +492,11 @@ AmdtpTransmitter::AmdtpTransmitter(const TransmitterConfig& config)
 // Destructor
 AmdtpTransmitter::~AmdtpTransmitter() {
     logger_->info("AmdtpTransmitter destructing...");
-     if (running_.load()) {
+    if (running_.load()) {
         // Attempt to stop, log errors but don't throw from destructor
         auto result = stopTransmit();
-        if(!result) logger_->error("stopTransmit failed during destruction");
-     }
+        if (!result) logger_->error("stopTransmit failed during destruction");
+    }
     cleanup();
 }
 
@@ -504,62 +509,68 @@ void AmdtpTransmitter::cleanup() noexcept {
     portChannelManager_.reset();
     bufferManager_.reset();
     initialized_ = false;
-    running_ = false;
-    logger_->debug("AmdtpTransmitter cleanup finished.");
+    running_     = false;
+    logger_->debug("AmdtpTransmitter cleanup finished."); 
 }
 
 // setupComponents
 std::expected<void, IOKitError> AmdtpTransmitter::setupComponents(IOFireWireLibNubRef interface) {
     logger_->debug("AmdtpTransmitter::setupComponents - STUB");
     // Create instances...
-     bufferManager_ = std::make_unique<IsochTransmitBufferManager>(logger_);
-     portChannelManager_ = std::make_unique<IsochPortChannelManager>(logger_, interface, runLoopRef_, true /*isTalker*/);
-     dclManager_ = std::make_unique<IsochTransmitDCLManager>(logger_);
-     transportManager_ = std::make_unique<IsochTransportManager>(logger_);
-     // old one
-    //  packetProvider_ = std::make_unique<IsochPacketProvider>(logger_, config_.clientBufferSize);
+    bufferManager_      = std::make_unique<IsochTransmitBufferManager>(logger_);
+    portChannelManager_ = std::make_unique<IsochPortChannelManager>(logger_, interface,
+                                                                      runLoopRef_, true /*isTalker*/);
+    dclManager_        = std::make_unique<IsochTransmitDCLManager>(logger_);
+    transportManager_  = std::make_unique<IsochTransportManager>(logger_);
+    // Old one:
+    // packetProvider_ = std::make_unique<IsochPacketProvider>(logger_, config_.clientBufferSize);
     packetProvider_ = std::make_unique<IsochPacketProvider>(logger_);
 
-     // Initialize... (Error checking omitted for brevity in stub)
-     bufferManager_->setupBuffers(config_);
-     portChannelManager_->initialize();
-     auto dclPool = portChannelManager_->getNuDCLPool();
-     if (!dclPool) return std::unexpected(IOKitError::NotReady);
-     auto dclProgResult = dclManager_->createDCLProgram(config_, dclPool, *bufferManager_);
-     if (!dclProgResult) return std::unexpected(dclProgResult.error());
-      DCLCommand* dclProgramHandle = dclProgResult.value();
-     portChannelManager_->setupLocalPortAndChannel(dclProgramHandle, bufferManager_->getBufferRange());
-     dclManager_->setDCLCompleteCallback(DCLCompleteCallback_Helper, this); // Set internal callback forwarder
-     dclManager_->setDCLOverrunCallback(DCLOverrunCallback_Helper, this);
+    // Initialize... (Error checking omitted for brevity in stub)
+    bufferManager_->setupBuffers(config_);
+    portChannelManager_->initialize();
+    auto dclPool = portChannelManager_->getNuDCLPool();
+    if (!dclPool) return std::unexpected(IOKitError::NotReady);
+
+    auto dclProgResult = dclManager_->createDCLProgram(config_, dclPool, *bufferManager_);
+    if (!dclProgResult) return std::unexpected(dclProgResult.error());
+    DCLCommand* dclProgramHandle = dclProgResult.value();
+
+    portChannelManager_->setupLocalPortAndChannel(dclProgramHandle,
+                                                 bufferManager_->getBufferRange());
+    dclManager_->setDCLCompleteCallback(DCLCompleteCallback_Helper, this); // Set internal callback forwarder
+    dclManager_->setDCLOverrunCallback(DCLOverrunCallback_Helper, this);
 
     return {};
 }
 
 // initialize
 std::expected<void, IOKitError> AmdtpTransmitter::initialize(IOFireWireLibNubRef interface) {
-     logger_->debug("AmdtpTransmitter::initialize");
-     std::lock_guard<std::mutex> lock(stateMutex_);
-     if (initialized_) return std::unexpected(IOKitError::Busy);
-     if (!interface) return std::unexpected(IOKitError::BadArgument);
-     runLoopRef_ = CFRunLoopGetCurrent(); // Assign runloop
+    logger_->debug("AmdtpTransmitter::initialize");
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (initialized_) return std::unexpected(IOKitError::Busy);
+    if (!interface)  return std::unexpected(IOKitError::BadArgument);
 
-     auto setupResult = setupComponents(interface); // Call setup
-     if (!setupResult) {
-          cleanup();
-          return setupResult;
-     }
-     initialized_ = true;
-     return {};
+    runLoopRef_ = CFRunLoopGetCurrent(); // Assign runloop
+
+    auto setupResult = setupComponents(interface); // Call setup
+    if (!setupResult) {
+        cleanup();
+        return setupResult;
+    }
+    initialized_ = true;
+    return {};
 }
 
 // configure
 std::expected<void, IOKitError> AmdtpTransmitter::configure(IOFWSpeed speed, uint32_t channel) {
     logger_->debug("AmdtpTransmitter::configure(Speed={}, Channel={})", (int)speed, channel);
     std::lock_guard<std::mutex> lock(stateMutex_);
-    if (!initialized_) return std::unexpected(IOKitError::NotReady);
-    if (running_) return std::unexpected(IOKitError::Busy);
-    if (!portChannelManager_) return std::unexpected(IOKitError::NotReady);
-    config_.initialSpeed = speed;
+    if (!initialized_)               return std::unexpected(IOKitError::NotReady);
+    if (running_)                    return std::unexpected(IOKitError::Busy);
+    if (!portChannelManager_)        return std::unexpected(IOKitError::NotReady);
+
+    config_.initialSpeed   = speed;
     config_.initialChannel = channel;
     return portChannelManager_->configure(speed, channel);
 }
@@ -575,58 +586,56 @@ bool AmdtpTransmitter::pushAudioData(const void* buffer, size_t bufferSizeInByte
 void AmdtpTransmitter::setMessageCallback(MessageCallback callback, void* refCon) {
     logger_->debug("AmdtpTransmitter::setMessageCallback");
     std::lock_guard<std::mutex> lock(stateMutex_);
-    messageCallback_ = callback;
+    messageCallback_      = callback;
     messageCallbackRefCon_ = refCon;
 }
 
 // notifyMessage
 void AmdtpTransmitter::notifyMessage(TransmitterMessage msg, uint32_t p1, uint32_t p2) {
-     // logger_->trace("AmdtpTransmitter::notifyMessage ({})", static_cast<uint32_t>(msg));
-     MessageCallback callback = nullptr;
-     void* refCon = nullptr;
-     {
+    // logger_->trace("AmdtpTransmitter::notifyMessage ({})", static_cast<uint32_t>(msg));
+    MessageCallback callback = nullptr;
+    void* refCon             = nullptr;
+    {
         std::lock_guard<std::mutex> lock(stateMutex_);
         callback = messageCallback_;
-        refCon = messageCallbackRefCon_;
-     }
-     if (callback) {
+        refCon   = messageCallbackRefCon_;
+    }
+    if (callback) {
         callback(static_cast<uint32_t>(msg), p1, p2, refCon);
-     }
+    }
 }
 
 // initializeCIPState
 void AmdtpTransmitter::initializeCIPState() {
-     logger_->debug("AmdtpTransmitter::initializeCIPState");
-     dbc_count_ = 0;
-     wasNoData_ = true; // Start assuming previous was NoData for both modes initially
+    logger_->debug("AmdtpTransmitter::initializeCIPState");
+    dbc_count_   = 0;
+    wasNoData_   = true; // Start assuming previous was NoData for both modes initially
 
     // Initialize state for "NonBlocking" (current) AmdtpTransmitter SYT logic
-    sytOffset_ = TICKS_PER_CYCLE;
-    sytPhase_ = 0;
+    sytOffset_   = TICKS_PER_CYCLE;
+    sytPhase_    = 0;
 
     // Initialize state for "Blocking" (UniversalTransmitter-style) SYT logic
     sytOffset_blocking_ = TICKS_PER_CYCLE;
-    sytPhase_blocking_ = 0;
+    sytPhase_blocking_  = 0;
 
-     firstDCLCallbackOccurred_ = false;
-     expectedTimeStampCycle_ = 0;
+    firstDCLCallbackOccurred_ = false;
+    expectedTimeStampCycle_   = 0;
 }
-
-
 
 AmdtpTransmitter::NonBlockingSytParams AmdtpTransmitter::calculateNonBlockingSyt(
     uint8_t current_dbc_state, bool previous_wasNoData_state) {
     NonBlockingSytParams params;
 
     if (!firstDCLCallbackOccurred_) {
-        params.isNoData = true;
-        params.syt_value = 0xFFFF;
+        params.isNoData   = true;
+        params.syt_value  = 0xFFFF;
     } else {
         if (sytOffset_ >= TICKS_PER_CYCLE) {
             sytOffset_ -= TICKS_PER_CYCLE;
         } else {
-            uint32_t phase = sytPhase_ % SYT_PHASE_MOD;
-            bool addExtra = (phase && !(phase & 3)) || (sytPhase_ == (SYT_PHASE_RESET - 1));
+            uint32_t phase    = sytPhase_ % SYT_PHASE_MOD;
+            bool     addExtra = (phase && !(phase & 3)) || (sytPhase_ == (SYT_PHASE_RESET - 1));
             sytOffset_ += BASE_TICKS;
             if (addExtra) {
                 sytOffset_ += 1;
@@ -637,10 +646,10 @@ AmdtpTransmitter::NonBlockingSytParams AmdtpTransmitter::calculateNonBlockingSyt
         }
 
         if (sytOffset_ >= TICKS_PER_CYCLE) {
-            params.isNoData = true;
+            params.isNoData  = true;
             params.syt_value = 0xFFFF;
         } else {
-            params.isNoData = false;
+            params.isNoData  = false;
             params.syt_value = static_cast<uint16_t>(sytOffset_);
         }
     }
@@ -649,16 +658,15 @@ AmdtpTransmitter::NonBlockingSytParams AmdtpTransmitter::calculateNonBlockingSyt
 }
 
 // Constants for SFC (Sample Frequency Code)
-
 constexpr uint8_t SFC_44K1HZ = 0x01;
 constexpr uint8_t SFC_48KHZ  = 0x02;
 
 void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
-                                              uint8_t current_dbc_state,
-                                              bool previous_wasNoData_state,
-                                              bool first_dcl_callback_occurred_state_param,
-                                              uint8_t& next_dbc_for_state,
-                                              bool& next_wasNoData_for_state) {
+                                                uint8_t current_dbc_state,
+                                                bool previous_wasNoData_state,
+                                                bool first_dcl_callback_occurred_state_param,
+                                                uint8_t& next_dbc_for_state,
+                                                bool& next_wasNoData_for_state) {
     // Check preconditions
     if (!outHeader || !portChannelManager_ || !this->bufferManager_) {
         if (logger_) logger_->error("generateCIPHeaderContent: Preconditions not met (null pointers).");
@@ -667,28 +675,33 @@ void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
             outHeader->syt = OSSwapHostToBigInt16(0xFFFF);
             outHeader->dbc = current_dbc_state;
         }
-        next_dbc_for_state = current_dbc_state;
+        next_dbc_for_state      = current_dbc_state;
         next_wasNoData_for_state = true;
         return;
     }
 
     // --- Get Node ID, Set static fields ---
-    uint16_t nodeID = portChannelManager_->getLocalNodeID().value_or(0x3F);
-    outHeader->sid_byte = static_cast<uint8_t>(nodeID & 0x3F);
-    outHeader->dbs = 2;
+    uint16_t nodeID   = portChannelManager_->getLocalNodeID().value_or(0x3F);
+    outHeader->sid_byte       = static_cast<uint8_t>(nodeID & 0x3F);
+    outHeader->dbs            = 2;
     outHeader->fn_qpc_sph_rsv = 0;
-    outHeader->fmt_eoh1 = (0x10 << 2) | 0x01;
+    outHeader->fmt_eoh1       = (0x10 << 2) | 0x01;
 
     // Local variables for this function's calculations
-    bool calculated_isNoData_for_this_packet = true;
+    bool   calculated_isNoData_for_this_packet  = true;
     uint16_t calculated_sytVal_for_this_packet = 0xFFFF;
-    uint8_t sfc_for_this_packet = SFC_48KHZ;
+    uint8_t  sfc_for_this_packet                = SFC_48KHZ;
 
     // Determine SFC based on config
-    if (config_.sampleRate == 44100.0) sfc_for_this_packet = SFC_44K1HZ;
-    else if (config_.sampleRate == 48000.0) sfc_for_this_packet = SFC_48KHZ;
-    else {
-        if (logger_) logger_->warn("generateCIPHeaderContent: Unsupported sample rate {:.1f}Hz, using SFC for 48kHz as fallback.", config_.sampleRate);
+    if (config_.sampleRate == 44100.0) {
+        sfc_for_this_packet = SFC_44K1HZ;
+    } else if (config_.sampleRate == 48000.0) {
+        sfc_for_this_packet = SFC_48KHZ;
+    } else {
+        if (logger_) {
+            logger_->warn("generateCIPHeaderContent: Unsupported sample rate {:.1f}Hz, using SFC for 48kHz as fallback.",
+                          config_.sampleRate);
+        }
     }
 
     // --- Call Strategy-Specific SYT Calculation ---
@@ -696,14 +709,15 @@ void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
         case TransmissionType::Blocking: {
             BlockingSytParams sytParams = calculateBlockingSyt();
             calculated_isNoData_for_this_packet = sytParams.isNoData;
-            calculated_sytVal_for_this_packet = sytParams.syt_value;
+            calculated_sytVal_for_this_packet   = sytParams.syt_value;
             break;
         }
         case TransmissionType::NonBlocking:
         default: {
-            NonBlockingSytParams sytParams = calculateNonBlockingSyt(current_dbc_state, previous_wasNoData_state);
+            NonBlockingSytParams sytParams = calculateNonBlockingSyt(current_dbc_state,
+                                                                      previous_wasNoData_state);
             calculated_isNoData_for_this_packet = sytParams.isNoData;
-            calculated_sytVal_for_this_packet = sytParams.syt_value;
+            calculated_sytVal_for_this_packet   = sytParams.syt_value;
             break;
         }
     }
@@ -730,7 +744,7 @@ void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
     }
 
     // --- Update state for the *next* call (via output parameters) ---
-    next_dbc_for_state = outHeader->dbc;
+    next_dbc_for_state       = outHeader->dbc;
     next_wasNoData_for_state = calculated_isNoData_for_this_packet;
 }
 
@@ -738,7 +752,7 @@ AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() { /
     BlockingSytParams params;
 
     if (!this->firstDCLCallbackOccurred_) { // Access plain bool member
-        params.isNoData = true;
+        params.isNoData  = true;
         params.syt_value = 0xFFFF;
         return params;
     }
@@ -755,7 +769,7 @@ AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() { /
         sytOffset_blocking_ -= TICKS_PER_CYCLE;
     } else {
         uint32_t phase = sytPhase_blocking_ % SYT_PHASE_MOD_BLOCKING;
-        bool addExtra = (phase && !(phase & 3)) || (sytPhase_blocking_ == (SYT_PHASE_RESET_BLOCKING - 1));
+        bool     addExtra = (phase && !(phase & 3)) || (sytPhase_blocking_ == (SYT_PHASE_RESET_BLOCKING - 1));
         sytOffset_blocking_ += BASE_TICKS_BLOCKING;
         if (addExtra) {
             sytOffset_blocking_ += 1;
@@ -766,10 +780,10 @@ AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() { /
     }
 
     if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
-        params.isNoData = true;
+        params.isNoData  = true;
         params.syt_value = 0xFFFF;
     } else {
-        params.isNoData = false;
+        params.isNoData  = false;
         params.syt_value = static_cast<uint16_t>(sytOffset_blocking_);
     }
     return params;

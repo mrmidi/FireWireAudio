@@ -193,6 +193,13 @@ OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
                                         void* ioMainBuffer,
                                         void* ioSecondaryBuffer)
 {
+    static uint64_t g_frameCounter = 0;
+    if ((g_frameCounter++ & 0xFFF) == 0) {
+        os_log(OS_LOG_DEFAULT,
+            "%sIO cycle %llu  opID=%u  frames=%u",
+            LogPrefix, g_frameCounter, operationID, ioBufferFrameSize);
+    }
+
     // Only handle WriteMix and ReadInput
     if (operationID == kAudioServerPlugInIOOperationWriteMix)
     {

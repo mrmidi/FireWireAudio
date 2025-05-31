@@ -53,6 +53,9 @@ public:
 
     ITransmitPacketProvider* getPacketProvider() const;
 
+    inline PreparedPacketData safeFillAudio(uint8_t* dst, size_t len,
+                                                         const TransmitPacketInfo& inf);
+
 
 private:
     // Private constructor for factory

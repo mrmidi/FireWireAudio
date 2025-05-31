@@ -175,6 +175,8 @@ std::expected<std::shared_ptr<AudioDeviceStream>, IOKitError> AudioDeviceStream:
                 txConfig.initialSpeed = speed;
                 // --- Set transmission type for refactor testing ---
                 txConfig.transmissionType = Isoch::TransmissionType::Blocking; // Or NonBlocking
+                // test non-blocking behavior
+                // txConfig.transmissionType = Isoch::TransmissionType::NonBlocking; // Default to current behavior
                 // txConfig.transmissionType = Isoch::TransmissionType::NonBlocking;
 
                 // Create the transmitter

@@ -49,8 +49,11 @@ std::shared_ptr<aspl::Driver> CreateDriver()
        streamParams.Format = {
            .mSampleRate = 44100,
            .mFormatID = kAudioFormatLinearPCM,
-           .mFormatFlags = kAudioFormatFlagIsSignedInteger | // 24-bit signed integer
-                           kAudioFormatFlagIsAlignedHigh,
+        //    .mFormatFlags = kAudioFormatFlagIsSignedInteger | // 24-bit signed integer
+        //                    kAudioFormatFlagIsAlignedHigh,
+            .mFormatFlags = kAudioFormatFlagIsSignedInteger,
+                           
+                           
            .mBitsPerChannel = 24,
            .mChannelsPerFrame = 2,
            .mBytesPerFrame = 8,

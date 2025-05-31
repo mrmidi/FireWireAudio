@@ -81,8 +81,31 @@ void FWADriverHandler::TeardownSharedMemory() {
 
 bool FWADriverHandler::PushToSharedMemory(const AudioBufferList* src, const AudioTimeStamp& ts, uint32_t frames, uint32_t bytesPerFrame) {
     if (!controlBlock_ || !ringBuffer_) return false;
+
+    // ----------------------------------------------
+    // ➊ if ring full *and* streams not yet active →
+    //    advance rd one slot (overwrite oldest)
+    // ----------------------------------------------
+    if (controlBlock_->streamActive == 0) {
+        auto wr = RTShmRing::WriteIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+        auto rd = RTShmRing::ReadIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+        if (wr - rd >= controlBlock_->capacity) {
+            // Drop the oldest chunk to make room
+            RTShmRing::ReadIndexProxy(*controlBlock_)
+                .store(rd + 1, std::memory_order_release);
+        }
+    }
+
     bool success = RTShmRing::push(*controlBlock_, ringBuffer_, src, ts, frames, bytesPerFrame);
-    if (!success) {
+    
+    // Log only after streams are active
+    if (!success && controlBlock_->streamActive) {
+        auto wr = RTShmRing::WriteIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+        auto rd = RTShmRing::ReadIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+        os_log_error(OS_LOG_DEFAULT,
+            "%sPUSH FAIL  wr=%llu rd=%llu used=%llu  frames=%u bytesPerFrame=%u",
+            LogPrefix, wr, rd, wr-rd, frames, bytesPerFrame);
+        
         localOverrunCounter_++;
         if ((localOverrunCounter_ & 0xFF) == 0) {
             os_log_error(OS_LOG_DEFAULT, "%sPushToSharedMemory: Ring buffer OVERRUN! Count: %u", LogPrefix, localOverrunCounter_);

@@ -170,6 +170,8 @@ std::expected<void,DaemonCoreError> DaemonCore::setupDriverSharedMemory() {
     m_shmControlBlock->sampleRateHz = 44100;    // Default, driver may override
     m_shmControlBlock->channelCount = 2;        // Default stereo
     m_shmControlBlock->bytesPerFrame = 8;       // 2 channels * 4 bytes (24-bit in 32-bit)
+    m_shmControlBlock->streamActive = 0;        // Start in idle state
+    m_shmControlBlock->reserved = 0;            // Zero reserved field
     
     // Initialize atomic indices
     RTShmRing::WriteIndexProxy(*m_shmControlBlock).store(0, std::memory_order_relaxed);
@@ -442,6 +444,13 @@ DaemonCore::startAudioStreams(uint64_t guid)
     }
 
     m_logger->info("Audio streams and data flow configured successfully for GUID 0x{:x}", guid);
+    
+    // Tell driver it's safe to overwrite no more!
+    if (m_shmControlBlock) {
+        m_shmControlBlock->streamActive = 1;
+        m_logger->debug("Set streamActive=1 for GUID 0x{:x}", guid);
+    }
+    
     if (m_streamStatusCb_toXPC) {
         m_streamStatusCb_toXPC(guid, true, 0);
     }
@@ -500,6 +509,12 @@ std::expected<void,DaemonCoreError>
 DaemonCore::stopAudioStreams(uint64_t guid)
 {
     m_logger->info("Stopping audio streams for device GUID: 0x{:x}", guid);
+    
+    // First, set streamActive=0 to allow overwrites again
+    if (m_shmControlBlock) {
+        m_shmControlBlock->streamActive = 0;
+        m_logger->debug("Set streamActive=0 for GUID 0x{:x}", guid);
+    }
     
     auto deviceRes = getDeviceByGuid(guid);
     if (!deviceRes) return std::unexpected(deviceRes.error());

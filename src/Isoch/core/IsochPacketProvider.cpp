@@ -60,6 +60,13 @@ bool IsochPacketProvider::bindSharedMemory(RTShmRing::ControlBlock_POD* controlB
     
     shmControlBlock_ = controlBlock;
     shmRingArray_ = ringArray;
+    
+    // *** Reset indices for a clean start ***
+    RTShmRing::WriteIndexProxy(*controlBlock).store(0, std::memory_order_relaxed);
+    RTShmRing::ReadIndexProxy(*controlBlock).store(0, std::memory_order_relaxed);
+    
+    controlBlock->streamActive = 0;        // stays idle until startAudioStreams()
+    
     // Clear any leftover chunk-cache or stats
     currentChunk_.invalidate();
     reset();  // Reset bytesConsumed_, popCount_, etc. for fresh state
@@ -134,6 +141,16 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
     uint8_t* writePtr = targetBuffer;
     size_t remaining = targetBufferSize;
     bool gotAllData = true;
+
+    // Periodic logging for debugging
+    static thread_local uint32_t statsTicks = 0;
+    if (++statsTicks == 8000) { // ~1 s at 8 kHz bus irqs
+        auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
+        auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
+        logger_->info("POP rd={} wr={} used={}  curChunkLeft={}B  copyThisCall={}B",
+                      rd, wr, wr-rd, currentChunk_.remainingBytes(), targetBufferSize);
+        statsTicks = 0;
+    }
 
     // Fill target buffer from SHM chunks
     while (remaining > 0) {
@@ -224,8 +241,15 @@ bool IsochPacketProvider::isReadyForStreaming() const {
         return false;
     }
     
-    uint32_t fillLevel = getCurrentShmFillLevel();
-    return fillLevel >= INITIAL_FILL_TARGET_PERCENT;
+    auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+    auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+    
+    if (shmControlBlock_->capacity == 0) {
+        return false;
+    }
+    
+    uint32_t fill = static_cast<uint32_t>((wr - rd) * 100 / shmControlBlock_->capacity);
+    return fill >= INITIAL_FILL_TARGET_PERCENT;   // e.g. 25 %
 }
 
 void IsochPacketProvider::reset() {

@@ -11,7 +11,7 @@ constexpr std::size_t kMaxFramesPerChunk = 512;
 constexpr std::size_t kMaxChannels       = 2;
 constexpr std::size_t kMaxBytesPerSample = 4;
 constexpr std::size_t kMaxBytesPerFrame  = kMaxChannels * kMaxBytesPerSample;
-constexpr std::size_t kRingCapacityPow2  = 256;
+constexpr std::size_t kRingCapacityPow2  = 128; // TEST
 static_assert((kRingCapacityPow2 & (kRingCapacityPow2 - 1)) == 0);
 constexpr std::size_t kAudioDataBytes = kMaxFramesPerChunk * kMaxBytesPerFrame;
 constexpr uint32_t    kShmVersion     = 2;
@@ -47,6 +47,8 @@ struct alignas(kDestructiveCL) ControlBlock_POD {
     char     pad1[kDestructiveCL - sizeof(uint64_t)];
     uint32_t overrunCount;
     uint32_t underrunCount;
+    uint32_t streamActive;    // 0 = idle, 1 = running
+    uint32_t reserved;        // keep 64-byte alignment
 };
 static_assert(sizeof(ControlBlock_POD) % kDestructiveCL == 0);
 
@@ -136,11 +138,16 @@ inline bool pop(ControlBlock_POD&       cb,           // CHANGED: remove const
                 const std::byte*&       audioPtrOut) noexcept
 {
     if (!ValidateFormat(cb)) return false;
+
+
     
     // CRITICAL FIX: Use WriteIndexProxy for wr, not ReadIndexProxy!
     const uint64_t wr = WriteIndexProxy(cb).load(std::memory_order_acquire);
     const uint64_t rd = ReadIndexProxy(cb).load(std::memory_order_relaxed);
-    if (rd == wr) return false;
+    if (rd == wr) {
+        UnderrunCountProxy(cb).fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
 
     const uint64_t slot = rd & (cb.capacity - 1);
     AudioChunk_POD& c = ring[slot];
