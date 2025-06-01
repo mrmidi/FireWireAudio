@@ -105,102 +105,122 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
     size_t targetBufferSize,
     const TransmitPacketInfo& info)
 {
+    // static thread_local bool inUnderrun = false;
     auto startTime = std::chrono::high_resolution_clock::now();
     
     PreparedPacketData result;
-    result.dataPtr = targetBuffer;
-    result.dataLength = 0;
+    result.dataPtr       = targetBuffer;
+    result.dataLength    = 0;
     result.generatedSilence = true;
 
-    // Validate parameters
+    // === 0. Early parameter checks ===
     if (!targetBuffer || targetBufferSize == 0) {
         if (logger_) {
-            logger_->error("fillPacketData: Invalid target buffer");
+            logger_->error("fillPacketData: Invalid target buffer or size");
         }
         return result;
     }
 
-    // Check SHM binding
+    // === 1. Check for any underruns logged in SHM and clear the counter ===
+    if (shmControlBlock_) {
+        // Atomically read & clear the underrun counter
+        uint32_t underruns = RTShmRing::UnderrunCountProxy(*shmControlBlock_)
+                                .exchange(0, std::memory_order_relaxed);
+        if (underruns && logger_) {
+            logger_->warn("Audio underrun x{}", underruns);
+        }
+    }
+
+    // === 2. Check SHM binding ===
     if (!shmControlBlock_ || !shmRingArray_) {
         if (logger_) {
-            logger_->error("fillPacketData: SHM not bound");
+            logger_->error("fillPacketData: SHM not bound; filling silence");
         }
         std::memset(targetBuffer, 0, targetBufferSize);
         result.dataLength = targetBufferSize;
         return result;
     }
 
-    // Validate SHM format periodically
+    // === 3. Validate SHM format once in a while ===
     if (!validateShmFormat()) {
         formatValidationErrors_++;
+        if (logger_) {
+            logger_->error("fillPacketData: SHM format invalid; filling silence");
+        }
         std::memset(targetBuffer, 0, targetBufferSize);
         result.dataLength = targetBufferSize;
         return result;
     }
 
+    // === 4. Copy from SHM ring into targetBuffer ===
     uint8_t* writePtr = targetBuffer;
-    size_t remaining = targetBufferSize;
-    bool gotAllData = true;
+    size_t   remaining = targetBufferSize;
+    bool     gotAllData = true;
 
-    // Periodic logging for debugging
+    // Optional periodic stats logging
     static thread_local uint32_t statsTicks = 0;
-    if (++statsTicks == 8000) { // ~1 s at 8 kHz bus irqs
-        auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
-        auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
-        logger_->info("POP rd={} wr={} used={}  curChunkLeft={}B  copyThisCall={}B",
-                      rd, wr, wr-rd, currentChunk_.remainingBytes(), targetBufferSize);
+    if (++statsTicks == 8000) { // ~1 s at 8 kHz IRQ rate
+        auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_)
+                      .load(std::memory_order_relaxed);
+        auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_)
+                      .load(std::memory_order_relaxed);
+        if (logger_) {
+            logger_->info("POP rd={} wr={} used={}  curChunkLeft={}B  copyThisCall={}B",
+                          rd, wr, wr - rd,
+                          currentChunk_.remainingBytes(),
+                          targetBufferSize);
+        }
         statsTicks = 0;
     }
 
-    // Fill target buffer from SHM chunks
     while (remaining > 0) {
-        // Ensure we have a current chunk with data
+        // If current chunk is exhausted, try to pop next one
         if (currentChunk_.remainingBytes() == 0) {
             if (!popNextChunk()) {
-                // Underrun - no more data available
+                // Underrun: no more valid audio chunks
                 gotAllData = false;
                 break;
             }
         }
 
-        // Copy as much as possible from current chunk
         uint32_t availableInChunk = currentChunk_.remainingBytes();
-        size_t toCopy = std::min(remaining, static_cast<size_t>(availableInChunk));
+        size_t   toCopy           = std::min(remaining, static_cast<size_t>(availableInChunk));
 
-        // FIXED: Only count as partial if we're consuming part of chunk
-        bool wasPartialConsumption = (currentChunk_.consumedBytes == 0 && 
+        // Only count as “partial” if we're consuming < full chunk on first access
+        bool wasPartialConsumption = (currentChunk_.consumedBytes == 0 &&
                                       toCopy < currentChunk_.totalBytes);
 
-        std::memcpy(writePtr, 
-                   currentChunk_.audioDataPtr + currentChunk_.consumedBytes,
-                   toCopy);
+        std::memcpy(
+            writePtr,
+            currentChunk_.audioDataPtr + currentChunk_.consumedBytes,
+            toCopy
+        );
 
         writePtr += toCopy;
         remaining -= toCopy;
         currentChunk_.consumedBytes += static_cast<uint32_t>(toCopy);
         totalBytesConsumed_ += toCopy;
 
-        // FIXED: Only increment counter for actual partial consumption
         if (wasPartialConsumption) {
             partialChunkConsumptions_++;
         }
     }
 
+    // === 5. If we got a full buffer, convert in-place to AM824; else zero-fill & note underrun ===
     if (gotAllData && remaining == 0) {
-        // Successfully filled buffer - format to AM824 in place
         formatToAM824InPlace(targetBuffer, targetBufferSize);
         result.generatedSilence = false;
     } else {
-        // Partial underrun - fill remainder with silence
+        // Partial or complete underrun: fill remainder with silence
         if (remaining > 0) {
             std::memset(writePtr, 0, remaining);
         }
         handleUnderrun(info);
     }
-    
+
     result.dataLength = targetBufferSize;
 
-    // Update performance timing
+    // === 6. Update performance timing ===
     auto endTime = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime);
     fillPacketCallCount_++;

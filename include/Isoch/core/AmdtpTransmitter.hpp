@@ -58,6 +58,14 @@ public:
 
 
 private:
+
+        // --- LOGGING/DIAGNOSTICS ---
+    std::atomic<uint64_t> dataPacketsSent_{0};
+    std::atomic<uint64_t> noDataPacketsSent_{0};
+
+    // We’ll also keep a timestamp so we only log once per second:
+    std::chrono::steady_clock::time_point lastPacketLogTime_{ std::chrono::steady_clock::now() };
+
     // Private constructor for factory
     explicit AmdtpTransmitter(const TransmitterConfig& config);
 

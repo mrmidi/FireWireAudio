@@ -139,15 +139,21 @@ inline bool pop(ControlBlock_POD&       cb,           // CHANGED: remove const
 {
     if (!ValidateFormat(cb)) return false;
 
+    static thread_local bool inUnderrun = false;
 
     
     // CRITICAL FIX: Use WriteIndexProxy for wr, not ReadIndexProxy!
     const uint64_t wr = WriteIndexProxy(cb).load(std::memory_order_acquire);
     const uint64_t rd = ReadIndexProxy(cb).load(std::memory_order_relaxed);
     if (rd == wr) {
-        UnderrunCountProxy(cb).fetch_add(1, std::memory_order_relaxed);
+        // only bump once per contiguous underrun run
+        if (!inUnderrun) {
+            UnderrunCountProxy(cb).fetch_add(1, std::memory_order_relaxed);
+            inUnderrun = true;
+        }
         return false;
     }
+    inUnderrun = false;            // we have data again
 
     const uint64_t slot = rd & (cb.capacity - 1);
     AudioChunk_POD& c = ring[slot];

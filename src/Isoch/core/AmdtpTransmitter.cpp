@@ -388,6 +388,13 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
                                  next_wasNoData_val_for_state_update // Output: by reference
         );
         // Update transmitter's persistent state AFTER generating the header for *this* packet
+
+        if (cipHdrTarget->fdf == 0xFF) {
+           noDataPacketsSent_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            dataPacketsSent_.fetch_add(1, std::memory_order_relaxed);
+        }
+
         this->dbc_count_ = next_dbc_val_for_state_update;
         this->wasNoData_ = next_wasNoData_val_for_state_update;
 
@@ -463,6 +470,17 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
     //     logger_->warn("handleDCLComplete: Long processing time for G={}: {:.3f}ms",
     //                   completedGroupIndex, durationMs);
     // }
+
+
+    // Log the number of packets sent in the last second
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastPacketLogTime_);
+    if (elapsed.count() >= 1) {
+        uint64_t dCnt = dataPacketsSent_.exchange(0, std::memory_order_relaxed);
+        uint64_t nCnt = noDataPacketsSent_.exchange(0, std::memory_order_relaxed);
+        logger_->info("Packets last second: data={}  no_data={}", dCnt, nCnt);
+        lastPacketLogTime_ = now;
+    }
 }
 
 // --- Static Callbacks ---

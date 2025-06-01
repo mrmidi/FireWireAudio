@@ -54,6 +54,7 @@ public:
     void resetDiagnostics();
 
 private:
+
     // --- SHM Cursor State ---
     RTShmRing::ControlBlock_POD* shmControlBlock_ {nullptr};
     RTShmRing::AudioChunk_POD*   shmRingArray_    {nullptr};
