@@ -44,16 +44,11 @@ std::shared_ptr<aspl::Driver> CreateDriver()
     //     .mBytesPerPacket = 8,
     // };
 
-    // NB Working for packed streams:
        streamParams.StartingChannel = 1;                 // Explicitly set starting channel
        streamParams.Format = {
            .mSampleRate = 44100,
            .mFormatID = kAudioFormatLinearPCM,
-        //    .mFormatFlags = kAudioFormatFlagIsSignedInteger | // 24-bit signed integer
-        //                    kAudioFormatFlagIsAlignedHigh,
-            .mFormatFlags = kAudioFormatFlagIsSignedInteger,
-                           
-                           
+           .mFormatFlags = kAudioFormatFlagIsSignedInteger, 
            .mBitsPerChannel = 24,
            .mChannelsPerFrame = 2,
            .mBytesPerFrame = 8,

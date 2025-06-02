@@ -128,7 +128,7 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
                                 .exchange(0, std::memory_order_relaxed);
         if (underruns && logger_) {
             // silence for now - too much noise
-//            logger_->warn("Audio underrun x{}", underruns);
+           logger_->warn("Audio underrun x{}", underruns);
         }
     }
 

@@ -1,13 +1,13 @@
 // SharedMemoryStructures.hpp (refactored)
 #pragma once
-#include <CoreAudio/AudioServerPlugIn.h>
+#include <CoreAudio/AudioServerPlugIn.h> 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 
 constexpr std::size_t kDestructiveCL     = 64;
-constexpr std::size_t kMaxFramesPerChunk = 512;
+constexpr std::size_t kMaxFramesPerChunk = 1024;
 constexpr std::size_t kMaxChannels       = 2;
 constexpr std::size_t kMaxBytesPerSample = 4;
 constexpr std::size_t kMaxBytesPerFrame  = kMaxChannels * kMaxBytesPerSample;
