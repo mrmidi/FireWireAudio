@@ -38,7 +38,7 @@ actor EngineService {
     // --- State ---
     @Published private(set) var isRunning: Bool = false
     @Published private(set) var devices: [UInt64: DeviceInfo] = [:]
-    private(set) var deviceJsons: [UInt64: String] = [:]
+    @Published private(set) var deviceJsons: [UInt64: String] = [:]
 
     // --- XPC Manager for daemon communication ---
     private weak var xpcManager: XPCManager?
@@ -48,6 +48,7 @@ actor EngineService {
     // --- Combine Integration ---
     var isRunningPublisher: AnyPublisher<Bool, Never> { $isRunning.eraseToAnyPublisher() }
     var devicesPublisher: AnyPublisher<[UInt64: DeviceInfo], Never> { $devices.eraseToAnyPublisher() }
+    var deviceJsonsPublisher: AnyPublisher<[UInt64: String], Never> { $deviceJsons.eraseToAnyPublisher() }
 
     // Simplified init - no longer failable since we don't create C engine here
     init() {
@@ -225,12 +226,14 @@ actor EngineService {
                 if self.devices.removeValue(forKey: guid) != nil { 
                     logger.info("Removed device GUID 0x\(String(format: "%llX", guid)) due to mapping fail.") 
                 }
+                self.deviceJsons.removeValue(forKey: guid) // Also remove JSON on mapping failure
             }
         } catch {
             logger.error("JSON Decode Error GUID 0x\(String(format: "%llX", guid)): \(error)")
             if self.devices.removeValue(forKey: guid) != nil { 
                 logger.info("Removed device GUID 0x\(String(format: "%llX", guid)) due to decode fail.") 
             }
+            self.deviceJsons.removeValue(forKey: guid) // Also remove JSON on decode failure
         }
     }
 

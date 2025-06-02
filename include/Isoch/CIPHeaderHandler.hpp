@@ -24,7 +24,7 @@ constexpr uint32_t SYT_PHASE_RESET = 147;       ///< Reset phase after this many
  */
 constexpr uint8_t IEC61883_FMT_AMDTP = 0x10;          ///< AMDTP format identifier
 constexpr uint8_t IEC61883_FDF_NODATA = 0xFF;         ///< No data format
-constexpr uint8_t IEC61883_FDF_SFC_44K1HZ = 0x00;     ///< 44.1kHz sample rate
+constexpr uint8_t IEC61883_FDF_SFC_44K1HZ = 0x01;     ///< 44.1kHz sample rate
 constexpr uint8_t IEC61883_FDF_SFC_48KHZ = 0x02;      ///< 48kHz sample rate
 
 /**

@@ -258,9 +258,7 @@ set(SWIFT_VIEW_SOURCES
   FWA-Control/LogConsoleView.swift
   FWA-Control/AudioSubunitDetailsView.swift
   FWA-Control/DeviceBasicInfoView.swift
-  FWA-Control/DeviceRefreshButton.swift
   FWA-Control/DeviceStatusIndicatorView.swift
-  FWA-Control/ExpandableSectionView.swift
   FWA-Control/HexDumpView.swift
   FWA-Control/InfoBlockDetailView.swift
   FWA-Control/MusicSubunitDetailsView.swift
@@ -270,6 +268,15 @@ set(SWIFT_VIEW_SOURCES
   FWA-Control/UnitInfoSectionView.swift
   # streams view
   FWA-Control/StreamsView.swift
+  # Views subdirectory
+  FWA-Control/Views/DevicePickerView.swift
+  FWA-Control/Views/DeviceOverviewCard.swift
+  FWA-Control/Views/AudioConfigurationSection.swift
+  FWA-Control/Views/PlugMatrixSection.swift
+  FWA-Control/Views/SubunitDetailsSection.swift
+  FWA-Control/Views/TechnicalSpecsSection.swift
+  FWA-Control/Views/SharedOverviewComponents.swift
+  FWA-Control/Views/EmptyDeviceStateView.swift
 )
 
 set(SWIFT_VIEWMODEL_SOURCES
@@ -282,12 +289,8 @@ set(SWIFT_SERVICE_SOURCES
   FWA-Control/LogStore.swift
   FWA-Control/DeviceDataMapper.swift
   FWA-Control/DriverInstallService.swift
-  FWA-Control/DriverInstallerService.swift
-  FWA-Control/HardwareInterface.swift
-  FWA-Control/CAPICallbackHandler.swift
   FWA-Control/XPCManager.swift
   FWA-Control/DaemonServiceManager.swift
-  FWA-Control/FWAManagerBridge.swift
   FWA-Control/PermissionManager.swift
   # FWA-Control/DriverInstaller.swift
 )
@@ -295,7 +298,6 @@ set(SWIFT_SERVICE_SOURCES
 set(SWIFT_APP_CONFIG_SOURCES
   FWA-Control/FWControlApp.swift
   FWA-Control/AppLoggers.swift
-  FWA-Control/Test.swift
 )
 
 set(SWIFT_LOGGING_SOURCES

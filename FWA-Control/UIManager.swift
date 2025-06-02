@@ -13,7 +13,7 @@ final class UIManager: ObservableObject {
     // --- Published Properties for UI State ---
     @Published var isRunning: Bool = false // Engine running state
     @Published var devices: [UInt64: DeviceInfo] = [:] // Discovered device info
-    private(set) var deviceJsons: [UInt64: String] = [:] // Final JSON per device
+    @Published var deviceJsons: [UInt64: String] = [:] // Final JSON per device
 
     // Connection & System Status (Reflects state from SystemServicesManager)
     @Published var isDaemonConnected = false
@@ -72,6 +72,18 @@ final class UIManager: ObservableObject {
                     if self.devices != deviceMap {
                         self.devices = deviceMap
                         self.logger.debug("UIManager received updated Devices map (count: \(deviceMap.count))")
+                    }
+                }
+                .store(in: &cancellables)
+
+            // Add subscription for deviceJsons
+            await service.$deviceJsons
+                .receive(on: RunLoop.main)
+                .sink { [weak self] (jsonMap: [UInt64: String]) in
+                    guard let self = self else { return }
+                    if self.deviceJsons != jsonMap {
+                        self.deviceJsons = jsonMap
+                        self.logger.debug("UIManager received updated DeviceJsons map (count: \(jsonMap.count))")
                     }
                 }
                 .store(in: &cancellables)
@@ -206,11 +218,12 @@ final class UIManager: ObservableObject {
             logger.error("Cannot start streams: EngineService is nil.")
             return
         }
-        guard isRunning else {
-            logger.warning("Cannot start streams: Engine is not running.")
-            // Optionally show an alert to the user
-            return
-        }
+        // now not required to check isRunning here, as streams can be started regardless of engine state
+        // guard isRunning else {
+        //     logger.warning("Cannot start streams: Engine is not running.")
+        //     // Optionally show an alert to the user
+        //     return
+        // }
         Task {
             let success = await engineService.startStreams(guid: guid)
             logger.info("UIManager: EngineService startStreams(guid: 0x\(String(format: "%llX", guid))) returned: \(success)")

@@ -20,7 +20,7 @@ constexpr uint32_t SYT_PHASE_RESET = 147;       // Reset phase after this many c
 // IEC61883 format constants
 constexpr uint8_t IEC61883_FMT_AMDTP = 0x10;
 constexpr uint8_t IEC61883_FDF_NODATA = 0xFF;
-constexpr uint8_t IEC61883_FDF_SFC_44K1HZ = 0x00;
+constexpr uint8_t IEC61883_FDF_SFC_44K1HZ = 0x01;
 constexpr uint8_t IEC61883_FDF_SFC_48KHZ = 0x02;
 
 /**

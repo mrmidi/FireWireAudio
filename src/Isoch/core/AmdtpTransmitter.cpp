@@ -106,7 +106,7 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
             cipHdrTarget->fn_qpc_sph_rsv = 0;
             cipHdrTarget->fmt_eoh1       = (0x10 << 2) | 0x01; // FMT=0x10 (AM824), EOH=1
             cipHdrTarget->fdf           = 0xFF;                // NO_DATA
-            cipHdrTarget->syt           = OSSwapHostToBigInt16(0xFFFF); // NO_INFO
+            cipHdrTarget->syt           = 0xFFFF; // NO_INFO
             cipHdrTarget->dbc           = 0;                   // Initial DBC
 
             // --- 2d. Prepare Isoch Header Template ---
@@ -457,7 +457,7 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         uint8_t fwChannel = portChannelManager_->getActiveChannel()
                                 .value_or(config_.initialChannel & 0x3F);
         isochHdrTarget->tag_channel = (1 << 6) | (fwChannel & 0x3F);
-        isochHdrTarget->tcode_sy    = (0xA << 4) | 0;
+        isochHdrTarget->tcode_sy    = (0xA << 4) | 0; 
 
         // --- 4f. Update DCL Ranges (crucial change here) ---
         IOVirtualRange ranges[2];
@@ -752,7 +752,7 @@ void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
         if (logger_) logger_->error("generateCIPHeaderContent: Preconditions not met (null pointers).");
         if (outHeader) {
             outHeader->fdf = 0xFF;
-            outHeader->syt = OSSwapHostToBigInt16(0xFFFF);
+            outHeader->syt = 0xFFFF;
             outHeader->dbc = current_dbc_state;
         }
         next_dbc_for_state      = current_dbc_state;
@@ -805,7 +805,7 @@ void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
     // --- Set Dynamic Fields (FDF, SYT, DBC) ---
     if (calculated_isNoData_for_this_packet) {
         outHeader->fdf = 0xFF;
-        outHeader->syt = OSSwapHostToBigInt16(0xFFFF);
+        outHeader->syt = 0xFFFF; // NO NEED TO CONVERT ENDIANESS FOR 0xFFFF!
         outHeader->dbc = current_dbc_state;
     } else {
         outHeader->fdf = sfc_for_this_packet;

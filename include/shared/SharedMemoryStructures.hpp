@@ -7,7 +7,7 @@
 #include <cstring>
 
 constexpr std::size_t kDestructiveCL     = 64;
-constexpr std::size_t kMaxFramesPerChunk = 1024;
+constexpr std::size_t kMaxFramesPerChunk = 1024; 
 constexpr std::size_t kMaxChannels       = 2;
 constexpr std::size_t kMaxBytesPerSample = 4;
 constexpr std::size_t kMaxBytesPerFrame  = kMaxChannels * kMaxBytesPerSample;

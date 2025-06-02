@@ -344,15 +344,49 @@ void IsochPacketProvider::handleUnderrun(const TransmitPacketInfo& info) {
     }
 }
 
-void IsochPacketProvider::formatToAM824InPlace(uint8_t* buffer, size_t bufferSize) const {
-    int32_t* samplesPtr = reinterpret_cast<int32_t*>(buffer);
-    size_t numSamples = bufferSize / sizeof(int32_t);
+// void IsochPacketProvider::formatToAM824InPlace(uint8_t* buffer, size_t bufferSize) const {
+//     int32_t* samplesPtr = reinterpret_cast<int32_t*>(buffer);
+//     size_t numSamples = bufferSize / sizeof(int32_t);
 
-    for (size_t i = 0; i < numSamples; ++i) {
-        int32_t sample = samplesPtr[i];
-        sample &= 0x00FFFFFF;  // Mask to 24-bit
-        uint32_t am824Sample = (AM824_LABEL << LABEL_SHIFT) | sample;
-        samplesPtr[i] = OSSwapHostToBigInt32(am824Sample);
+//     for (size_t i = 0; i < numSamples; ++i) {
+//         int32_t sample = samplesPtr[i];
+//         sample &= 0x00FFFFFF;  // Mask to 24-bit
+//         uint32_t am824Sample = (AM824_LABEL << LABEL_SHIFT) | sample;
+//         samplesPtr[i] = OSSwapHostToBigInt32(am824Sample);
+//     }
+// }
+
+void IsochPacketProvider::formatToAM824InPlace(uint8_t* buffer, size_t bufferSize) const {
+    // Assuming buffer contains interleaved SInt32 samples,
+    // where each SInt32 holds an MSB-aligned 24-bit audio sample.
+    int32_t* samplesPtr = reinterpret_cast<int32_t*>(buffer);
+    size_t numInt32Samples = bufferSize / sizeof(int32_t); // Total L,R,L,R... samples
+
+    for (size_t i = 0; i < numInt32Samples; ++i) {
+        int32_t msb_aligned_sint24_in_sint32 = samplesPtr[i];
+
+        // 1. Extract the 24 significant MSB bits by right-shifting.
+        //    Cast to uint32_t first to ensure logical right shift (zeros fill from left)
+        //    if msb_aligned_sint24_in_sint32 was negative.
+        //    This results in a 24-bit value, effectively LSB-aligned in a uint32_t.
+        uint32_t audio_data_24bit = (static_cast<uint32_t>(msb_aligned_sint24_in_sint32) >> 8);
+        
+        // 2. Mask to ensure it's purely 24-bit (good practice, though the shift should achieve this
+        //    if the lower 8 bits of the original msb_aligned_sint24_in_sint32 were indeed zero
+        //    or correctly sign-extended).
+        audio_data_24bit &= 0x00FFFFFF;
+
+        // 3. Construct the 32-bit AM824 word in host endian:
+        //    [AM824_LABEL (8 MSBs)] [audio_data_24bit (24 LSBs)]
+        uint32_t am824_word_host_endian = (AM824_LABEL << 24) | audio_data_24bit;
+        // Note: If LABEL_SHIFT was 24, your original `(AM824_LABEL << LABEL_SHIFT) | sample_lsb_24bit`
+        // also achieved this structure, but `sample_lsb_24bit` must be correctly derived.
+
+        // 4. Convert the full AM824 word to Big Endian for FireWire transmission
+        //    and write it back in place.
+        samplesPtr[i] = OSSwapHostToBigInt32(am824_word_host_endian);
+        // Or, using C++23:
+        // samplesPtr[i] = static_cast<int32_t>(std::byteswap(am824_word_host_endian));
     }
 }
 

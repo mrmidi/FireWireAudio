@@ -1,8 +1,7 @@
-// RootView.swift
+// === FWA-Control/ContentView.swift (Updated Toolbar) ===
 
 import SwiftUI
 import UniformTypeIdentifiers
-
 
 struct ContentView: View {
     @EnvironmentObject var uiManager: UIManager
@@ -69,6 +68,7 @@ struct ContentView: View {
     }
 
     @ToolbarContentBuilder private func mainToolbar() -> some ToolbarContent {
+        // Export functionality
         ToolbarItemGroup {
             if uiManager.devices.first?.value != nil {
                 Button {
@@ -83,26 +83,83 @@ struct ContentView: View {
                 } label: {
                     Label("Export JSON", systemImage: "square.and.arrow.up")
                 }
-                .help("Export original device JSON (first device)")
+                .help("Export device configuration as JSON")
             }
         }
-        ToolbarItemGroup {
-            Button { uiManager.startEngine() } label: { Label("Start", systemImage: "play.fill") }
-                .help("Start Engine Service")
-                .disabled(uiManager.isRunning)
-            Button { uiManager.stopEngine() }  label: { Label("Stop", systemImage: "stop.fill") }
-                .disabled(!uiManager.isRunning)
-        }
+        
+        // Refresh functionality - only for views that need it
         ToolbarItemGroup {
             if selectedTab == 0 || selectedTab == 1 || selectedTab == 4 {
                 Button {
                     logger.info("User requested refresh all devices.")
                     uiManager.refreshAllDevices()
-                } label: { Label("Refresh Devices", systemImage: "arrow.clockwise") }
-                .disabled(!uiManager.isRunning)
+                } label: {
+                    Label("Refresh Devices", systemImage: "arrow.clockwise")
+                }
+                .disabled(!uiManager.isDaemonConnected)
                 .help("Refresh data for all connected devices")
             }
         }
+        
+        // System status indicators
+        ToolbarItemGroup {
+            // Connection status indicator
+            connectionStatusIndicator
+            
+            // Settings access
+            Button {
+                openSettings()
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+            .help("Open application settings")
+        }
+    }
+    
+    @ViewBuilder
+    private var connectionStatusIndicator: some View {
+        HStack(spacing: 8) {
+            // Daemon status
+            HStack(spacing: 4) {
+                Image(systemName: uiManager.isDaemonConnected ? "bolt.fill" : "bolt.slash.fill")
+                    .foregroundColor(uiManager.isDaemonConnected ? .green : .orange)
+                    .font(.caption)
+                
+                Text("Daemon")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .help("Daemon connection status: \(uiManager.isDaemonConnected ? "Connected (Engine auto-started)" : "Disconnected")")
+            
+            // Driver status
+            HStack(spacing: 4) {
+                Image(systemName: uiManager.isDriverConnected ? "puzzlepiece.extension.fill" : "puzzlepiece.extension")
+                    .foregroundColor(uiManager.isDriverConnected ? .green : .red)
+                    .font(.caption)
+                
+                Text("Driver")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .help("Driver status: \(uiManager.isDriverConnected ? "Installed" : "Not installed")")
+            
+            // Device count
+            if !uiManager.devices.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "hifispeaker.2.fill")
+                        .foregroundColor(.blue)
+                        .font(.caption)
+                    
+                    Text("\(uiManager.devices.count)")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                }
+                .help("\(uiManager.devices.count) device\(uiManager.devices.count == 1 ? "" : "s") connected")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.regularMaterial, in: Capsule())
     }
 
     @ViewBuilder private func driverAlertActions() -> some View {
@@ -142,10 +199,6 @@ struct ContentView: View {
         if isShowing { logger.info("Presenting daemon installation prompt.") }
         else { logger.debug("Daemon installation prompt dismissed.") }
     }
-
-    private func showExportLogs() {
-        // This function can be implemented to trigger log export in LogConsoleView
-    }
 }
 
 // Helper for JSON file export
@@ -161,34 +214,5 @@ struct JsonDocument: FileDocument {
     }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         return FileWrapper(regularFileWithContents: content.data(using: .utf8)!)
-    }
-}
-
-// MARK: - Preview
-struct ContentView_Previews: PreviewProvider {
-    static var previews: some View {
-        // --- FIX: Robust UIManager preview initialization ---
-        let previewUIManager: UIManager = {
-            let engine = EngineService() // No longer failable
-            let permManager = PermissionManager()
-            let daemonManager = DaemonServiceManager()
-            let systemServices = SystemServicesManager(
-                engineService: engine,
-                permissionManager: permManager,
-                daemonServiceManager: daemonManager
-            )
-            let logStore = LogStore()
-            let uiManager = UIManager(
-                engineService: engine,
-                systemServicesManager: systemServices,
-                logStore: logStore
-            )
-            // Optionally set preview state:
-            // uiManager.isRunning = true
-            // uiManager.showDriverInstallPrompt = true
-            return uiManager
-        }()
-        return ContentView()
-            .environmentObject(previewUIManager)
     }
 }

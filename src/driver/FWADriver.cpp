@@ -44,23 +44,61 @@ std::shared_ptr<aspl::Driver> CreateDriver()
     //     .mBytesPerPacket = 8,
     // };
 
-       streamParams.StartingChannel = 1;                 // Explicitly set starting channel
-       streamParams.Format = {
-           .mSampleRate = 44100,
-           .mFormatID = kAudioFormatLinearPCM,
-           .mFormatFlags = kAudioFormatFlagIsSignedInteger, 
-           .mBitsPerChannel = 24,
-           .mChannelsPerFrame = 2,
-           .mBytesPerFrame = 8,
-           .mFramesPerPacket = 1,
-           .mBytesPerPacket = 8,                  
-       };
+            streamParams.StartingChannel = 1;                 // Explicitly set starting channel
+            // streamParams.Format = {
+            //     .mSampleRate = 44100,
+            //     .mFormatID = kAudioFormatLinearPCM,
+            //     .mFormatFlags = kAudioFormatFlagIsSignedInteger, 
+            //     .mBitsPerChannel = 24,
+            //     .mChannelsPerFrame = 2,
+            //     .mBytesPerFrame = 8,
+            //     .mFramesPerPacket = 1,
+            //     .mBytesPerPacket = 8,                  
+            // };
+
+
+    streamParams.Format = {
+        .mSampleRate       = 44100.0,
+        .mFormatID         = kAudioFormatLinearPCM,
+        .mFormatFlags      = kAudioFormatFlagIsSignedInteger   |
+                            kAudioFormatFlagIsAlignedHigh     |   // 24 valid bits in 32-bit word
+                            kAudioFormatFlagsNativeEndian,
+        .mBitsPerChannel   = 24,      // 24 valid bits
+        .mChannelsPerFrame = 2,
+        .mBytesPerFrame    = 8,       // 4 bytes × 2 channels
+        .mFramesPerPacket  = 1,
+        .mBytesPerPacket   = 8
+    };
+
+    // streamParams.Format = {
+    //     .mSampleRate       = 44100,
+    //     .mFormatID         = kAudioFormatLinearPCM,
+    //     .mFormatFlags      = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+    //     .mBitsPerChannel   = 24,
+    //     .mChannelsPerFrame = 2,
+    //     .mBytesPerFrame    = 6,      // 3 bytes * 2 channels
+    //     .mFramesPerPacket  = 1,
+    //     .mBytesPerPacket   = 6
+    // };
+
+//    streamParams.Format = {
+//        .mSampleRate       = 44100,
+//        .mFormatID         = kAudioFormatLinearPCM,
+//        .mFormatFlags      = kAudioFormatFlagIsSignedInteger |
+//                            kAudioFormatFlagIsBigEndian,
+//        .mBitsPerChannel   = 24,
+//        .mChannelsPerFrame = 2,
+//        .mBytesPerFrame    = 8,     // 4 bytes × 2 chn
+//        .mFramesPerPacket  = 1,
+//        .mBytesPerPacket   = 8,
+//    };
 
     auto device = std::make_shared<FWADriverDevice>(context, deviceParams);
     device->AddStreamWithControlsAsync(streamParams);
     auto handler = std::make_shared<FWADriverHandler>();
     device->SetControlHandler(handler);
     device->SetIOHandler(handler);
+
 
     auto plugin = std::make_shared<aspl::Plugin>(context);
     plugin->AddDevice(device);
