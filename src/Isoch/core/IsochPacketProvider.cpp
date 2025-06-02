@@ -1,4 +1,4 @@
-// IsochPacketProvider.cpp - Direct SHM Implementation
+// IsochPacketProvider.cpp - Direct SHM Implementation with Safety Margin
 #include "Isoch/core/IsochPacketProvider.hpp"
 #include <CoreServices/CoreServices.h>
 #include <cstring>
@@ -16,9 +16,10 @@ IsochPacketProvider::IsochPacketProvider(std::shared_ptr<spdlog::logger> logger)
     
     currentChunk_.invalidate();
     lastStatsTime_ = std::chrono::steady_clock::now();
+    lastSafetyAdjustTime_ = std::chrono::steady_clock::now();
     
     if (logger_) {
-        logger_->debug("IsochPacketProvider created in direct SHM mode");
+        logger_->debug("IsochPacketProvider created in direct SHM mode with safety margin support");
     }
     
     reset();
@@ -72,9 +73,9 @@ bool IsochPacketProvider::bindSharedMemory(RTShmRing::ControlBlock_POD* controlB
     reset();  // Reset bytesConsumed_, popCount_, etc. for fresh state
     
     if (logger_) {
-        logger_->info("SHM bound successfully: {} Hz, {} channels, {} bytes/frame, capacity: {}",
+        logger_->info("SHM bound successfully: {} Hz, {} channels, {} bytes/frame, capacity: {}, initial safety margin: {}",
                      controlBlock->sampleRateHz, controlBlock->channelCount, 
-                     controlBlock->bytesPerFrame, controlBlock->capacity);
+                     controlBlock->bytesPerFrame, controlBlock->capacity, safetyMarginChunks_.load());
     }
     
     return true;
@@ -105,7 +106,6 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
     size_t targetBufferSize,
     const TransmitPacketInfo& info)
 {
-    // static thread_local bool inUnderrun = false;
     auto startTime = std::chrono::high_resolution_clock::now();
     
     PreparedPacketData result;
@@ -127,7 +127,8 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
         uint32_t underruns = RTShmRing::UnderrunCountProxy(*shmControlBlock_)
                                 .exchange(0, std::memory_order_relaxed);
         if (underruns && logger_) {
-            logger_->warn("Audio underrun x{}", underruns);
+            // silence for now - too much noise
+//            logger_->warn("Audio underrun x{}", underruns);
         }
     }
 
@@ -152,7 +153,23 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
         return result;
     }
 
-    // === 4. Copy from SHM ring into targetBuffer ===
+    // === NEW 4. Safety Margin Check - Proactive Silence Generation ===
+    if (!hasMinimumFillLevel()) {
+        generateProactiveSilence(targetBuffer, targetBufferSize, result, info);
+        
+        // Update performance timing and return early
+        auto endTime = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime);
+        fillPacketCallCount_++;
+        totalFillPacketTimeNs_ += duration.count();
+        
+        return result;
+    }
+
+    // === NEW 5. Adaptive Safety Margin Adjustment ===
+    adjustSafetyMargin();
+
+    // === 6. Copy from SHM ring into targetBuffer (PRESERVED EXISTING LOGIC) ===
     uint8_t* writePtr = targetBuffer;
     size_t   remaining = targetBufferSize;
     bool     gotAllData = true;
@@ -165,10 +182,11 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
         auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_)
                       .load(std::memory_order_relaxed);
         if (logger_) {
-            logger_->info("POP rd={} wr={} used={}  curChunkLeft={}B  copyThisCall={}B",
+            logger_->info("POP rd={} wr={} used={}  curChunkLeft={}B  copyThisCall={}B  safetyMargin={}",
                           rd, wr, wr - rd,
                           currentChunk_.remainingBytes(),
-                          targetBufferSize);
+                          targetBufferSize,
+                          safetyMarginChunks_.load());
         }
         statsTicks = 0;
     }
@@ -186,7 +204,7 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
         uint32_t availableInChunk = currentChunk_.remainingBytes();
         size_t   toCopy           = std::min(remaining, static_cast<size_t>(availableInChunk));
 
-        // Only count as “partial” if we're consuming < full chunk on first access
+        // Only count as "partial" if we're consuming < full chunk on first access
         bool wasPartialConsumption = (currentChunk_.consumedBytes == 0 &&
                                       toCopy < currentChunk_.totalBytes);
 
@@ -206,7 +224,7 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
         }
     }
 
-    // === 5. If we got a full buffer, convert in-place to AM824; else zero-fill & note underrun ===
+    // === 7. If we got a full buffer, convert in-place to AM824; else zero-fill & note underrun ===
     if (gotAllData && remaining == 0) {
         formatToAM824InPlace(targetBuffer, targetBufferSize);
         result.generatedSilence = false;
@@ -220,7 +238,7 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
 
     result.dataLength = targetBufferSize;
 
-    // === 6. Update performance timing ===
+    // === 8. Update performance timing ===
     auto endTime = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime);
     fillPacketCallCount_++;
@@ -231,6 +249,19 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
 
 bool IsochPacketProvider::popNextChunk() {
     if (!shmControlBlock_ || !shmRingArray_) {
+        return false;
+    }
+
+    // === NEW: Secondary Safety Check (Defense in Depth) ===
+    if (!hasMinimumFillLevel()) {
+        if (logger_) {
+            // Throttled logging to avoid spam
+            static thread_local uint32_t logCounter = 0;
+            if ((logCounter++ % 1000) == 0) {
+                logger_->debug("popNextChunk called when below safety margin (count: {})", logCounter);
+            }
+        }
+        currentChunk_.invalidate();
         return false;
     }
 
@@ -268,8 +299,12 @@ bool IsochPacketProvider::isReadyForStreaming() const {
         return false;
     }
     
-    uint32_t fill = static_cast<uint32_t>((wr - rd) * 100 / shmControlBlock_->capacity);
-    return fill >= INITIAL_FILL_TARGET_PERCENT;   // e.g. 25 %
+    // === NEW: Align startup condition with safety margin ===
+    uint64_t available = (wr >= rd) ? (wr - rd) : 0;
+    uint32_t safetyMargin = safetyMarginChunks_.load();
+    uint32_t startupBuffer = safetyMargin + 2; // Safety margin plus small priming buffer
+    
+    return available > startupBuffer;
 }
 
 void IsochPacketProvider::reset() {
@@ -283,8 +318,14 @@ void IsochPacketProvider::reset() {
     totalFillPacketTimeNs_ = 0;
     lastStatsTime_ = std::chrono::steady_clock::now();
     
+    // === NEW: Reset safety margin state ===
+    safetyMarginChunks_ = 4; // Reset to default
+    safetyMarginHolds_ = 0;
+    safetyMarginAdjustments_ = 0;
+    lastSafetyAdjustTime_ = std::chrono::steady_clock::now();
+    
     if (logger_) {
-        logger_->info("IsochPacketProvider reset (direct SHM mode)");
+        logger_->info("IsochPacketProvider reset (direct SHM mode with safety margin)");
     }
 }
 
@@ -294,10 +335,11 @@ void IsochPacketProvider::handleUnderrun(const TransmitPacketInfo& info) {
     // Log periodically to avoid spam
     if ((shmUnderrunCount_ % 100) == 1) {
         uint32_t fillLevel = getCurrentShmFillLevel();
+        uint32_t safetyMargin = safetyMarginChunks_.load();
         if (logger_) {
-            logger_->warn("SHM underrun detected at Seg={}, Pkt={}, AbsPkt={}. Total Count={}, SHM Fill={}%",
+            logger_->warn("SHM underrun detected at Seg={}, Pkt={}, AbsPkt={}. Total Count={}, SHM Fill={}%, Safety Margin={}",
                          info.segmentIndex, info.packetIndexInGroup, info.absolutePacketIndex, 
-                         shmUnderrunCount_.load(), fillLevel);
+                         shmUnderrunCount_.load(), fillLevel, safetyMargin);
         }
     }
 }
@@ -338,6 +380,114 @@ bool IsochPacketProvider::validateShmFormat() const {
     return RTShmRing::ValidateFormat(*shmControlBlock_);
 }
 
+// === NEW: Safety Margin Implementation ===
+
+bool IsochPacketProvider::hasMinimumFillLevel() const {
+    if (!shmControlBlock_) {
+        return false;
+    }
+    
+    auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+    auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
+    
+    uint64_t availableChunks = (wr >= rd) ? (wr - rd) : 0;
+    uint32_t safetyMargin = safetyMarginChunks_.load(std::memory_order_relaxed);
+    
+    // Core safety logic: we need MORE than safety margin available to consider it safe to pop
+    return availableChunks > safetyMargin;
+}
+
+void IsochPacketProvider::adjustSafetyMargin() {
+    if (!shmControlBlock_) {
+        return;
+    }
+    
+    // Only adjust periodically to avoid oscillation
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastSafetyAdjustTime_);
+    if (elapsed.count() < SAFETY_ADJUST_INTERVAL_MS) {
+        return;
+    }
+    lastSafetyAdjustTime_ = now;
+    
+    auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+    auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
+    
+    uint64_t currentFillChunks = (wr >= rd) ? (wr - rd) : 0;
+    uint32_t capacityChunks = shmControlBlock_->capacity;
+    
+    if (capacityChunks == 0) {
+        return; // Avoid division by zero
+    }
+    
+    uint32_t highWaterMark = (capacityChunks * HIGH_WATER_MARK_PERCENT) / 100;
+    uint32_t lowWaterMark = (capacityChunks * LOW_WATER_MARK_PERCENT) / 100;
+    uint32_t maxSafetyMargin = (capacityChunks * MAX_SAFETY_MARGIN_PERCENT) / 100;
+    
+    uint32_t currentSafety = safetyMarginChunks_.load();
+    uint32_t newSafety = currentSafety;
+    
+    // Increase safety margin if buffer is consistently full
+    if (currentFillChunks > highWaterMark && currentSafety < maxSafetyMargin) {
+        newSafety = std::min(maxSafetyMargin, currentSafety + 1);
+    }
+    // Decrease safety margin if buffer is running low (but not too low)
+    else if (currentFillChunks < lowWaterMark && currentSafety > MIN_SAFETY_MARGIN) {
+        newSafety = std::max(MIN_SAFETY_MARGIN, currentSafety - 1);
+    }
+    
+    if (newSafety != currentSafety) {
+        safetyMarginChunks_.store(newSafety);
+        safetyMarginAdjustments_++;
+        
+        if (logger_) {
+            // Throttled logging
+            static thread_local uint32_t adjustLogCounter = 0;
+            if ((adjustLogCounter++ % 10) == 0) {
+                logger_->info("Adjusted safety margin: {} -> {} chunks (fill: {}/{})", 
+                             currentSafety, newSafety, currentFillChunks, capacityChunks);
+            }
+        }
+    }
+}
+
+void IsochPacketProvider::generateProactiveSilence(uint8_t* targetBuffer, size_t targetBufferSize, 
+                                                   PreparedPacketData& result, const TransmitPacketInfo& info) {
+    safetyMarginHolds_++;
+    
+    // Generate silence
+    std::memset(targetBuffer, 0, targetBufferSize);
+    result.generatedSilence = true;
+    result.dataLength = targetBufferSize;
+    
+    // Throttled logging to avoid spam
+    static thread_local uint32_t holdLogCounter = 0;
+    if ((holdLogCounter++ % 1000) == 0) {
+        uint32_t fillLevel = getCurrentShmFillLevel();
+        uint32_t safetyMargin = safetyMarginChunks_.load();
+        if (logger_) {
+            logger_->debug("Safety margin hold: Seg={}, Pkt={}, Fill={}%, Safety={} chunks (count: {})",
+                          info.segmentIndex, info.packetIndexInGroup, fillLevel, safetyMargin, holdLogCounter);
+        }
+    }
+}
+
+void IsochPacketProvider::setSafetyMarginChunks(uint32_t chunks) {
+    uint32_t clampedChunks = std::max(MIN_SAFETY_MARGIN, chunks);
+    
+    // Optionally clamp to maximum based on current capacity
+    if (shmControlBlock_ && shmControlBlock_->capacity > 0) {
+        uint32_t maxAllowed = (shmControlBlock_->capacity * MAX_SAFETY_MARGIN_PERCENT) / 100;
+        clampedChunks = std::min(clampedChunks, maxAllowed);
+    }
+    
+    safetyMarginChunks_.store(clampedChunks);
+    
+    if (logger_) {
+        logger_->info("Safety margin set to {} chunks", clampedChunks);
+    }
+}
+
 IsochPacketProvider::DiagnosticStats IsochPacketProvider::getDiagnostics() const {
     DiagnosticStats stats;
     stats.totalBytesConsumed = totalBytesConsumed_.load();
@@ -346,6 +496,11 @@ IsochPacketProvider::DiagnosticStats IsochPacketProvider::getDiagnostics() const
     stats.formatValidationErrors = formatValidationErrors_.load();
     stats.partialChunkConsumptions = partialChunkConsumptions_.load();
     stats.currentShmFillPercent = getCurrentShmFillLevel();
+    
+    // === NEW: Safety margin diagnostics ===
+    stats.safetyMarginHolds = safetyMarginHolds_.load();
+    stats.currentSafetyMarginChunks = safetyMarginChunks_.load();
+    stats.safetyMarginAdjustments = safetyMarginAdjustments_.load();
     
     // Calculate average fill packet duration
     uint64_t totalCalls = fillPacketCallCount_.load();
@@ -365,6 +520,11 @@ void IsochPacketProvider::resetDiagnostics() {
     fillPacketCallCount_ = 0;
     totalFillPacketTimeNs_ = 0;
     lastStatsTime_ = std::chrono::steady_clock::now();
+    
+    // === NEW: Reset safety margin diagnostics ===
+    safetyMarginHolds_ = 0;
+    safetyMarginAdjustments_ = 0;
+    lastSafetyAdjustTime_ = std::chrono::steady_clock::now();
     
     if (logger_) {
         logger_->debug("IsochPacketProvider diagnostics reset");

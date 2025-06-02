@@ -14,5 +14,15 @@
     <string>15.0</string>
     <!-- Removed XPCService and MachServices keys -->
     <!-- Removed CFBundlePackageType or set to APPL -->
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ASAN_OPTIONS</key>
+        <string>log_path=/tmp/fwa_daemon_asan.log:detect_leaks=0:halt_on_error=1</string>
+        <key>UBSAN_OPTIONS</key>
+        <string>print_stacktrace=1:log_path=/tmp/fwa_daemon_ubsan.log:halt_on_error=1</string>
+        <!-- Add any other environment variables your daemon needs -->
+    </dict>
+
 </dict>
 </plist>

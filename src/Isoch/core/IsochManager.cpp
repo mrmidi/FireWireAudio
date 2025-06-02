@@ -349,7 +349,9 @@ std::expected<void, IOKitError> IsochManager::createIsochChannel() {
     }
     
     // Calculate packet size for IRM allocations - this should be determined based on audio needs
-    const uint32_t irmPacketSize = 72; // 64 bytes for samples + 8 bytes for CIP header
+    // const uint32_t irmPacketSize = 72; // 64 bytes for samples + 8 bytes for CIP header
+    // let's try 188 bytes for IRM
+    const uint32_t irmPacketSize = 188; // 188 bytes for IRM
     
     // Create the isoch channel
     isochChannel_ = (*interface_)->CreateIsochChannel(

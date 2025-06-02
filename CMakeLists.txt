@@ -52,34 +52,31 @@ endif()
 set(SANITIZER_FLAGS "")
 set(SANITIZER_LINK_FLAGS "")
 
-macro(append_flag var flag)
-  if(${var})
-    set(${var} "${${var}} ${flag}")
-  else()
-    set(${var} "${flag}")
-  endif()
-endmacro()
-
 if(ENABLE_ASAN)
   message(STATUS "ASan enabled")
-  append_flag(SANITIZER_FLAGS "-fsanitize=address")
-  append_flag(SANITIZER_FLAGS "-fno-omit-frame-pointer")
-  append_flag(SANITIZER_LINK_FLAGS "-fsanitize=address")
+  list(APPEND SANITIZER_COMPILE_FLAGS_LIST "-fsanitize=address")
+  list(APPEND SANITIZER_COMPILE_FLAGS_LIST "-fno-omit-frame-pointer") # This is a separate flag
+  list(APPEND SANITIZER_LINK_FLAGS_LIST "-fsanitize=address")
 endif()
 
 if(ENABLE_UBSAN)
   message(STATUS "UBSan enabled")
-  append_flag(SANITIZER_FLAGS "-fsanitize=undefined")
-  if(NOT ENABLE_ASAN)
-    append_flag(SANITIZER_FLAGS "-fno-omit-frame-pointer")
+  list(APPEND SANITIZER_COMPILE_FLAGS_LIST "-fsanitize=undefined")
+  # Add -fno-omit-frame-pointer if not already added by ASan (it's good for UBSan stack traces too)
+  if(NOT ("-fno-omit-frame-pointer" IN_LIST SANITIZER_COMPILE_FLAGS_LIST))
+    list(APPEND SANITIZER_COMPILE_FLAGS_LIST "-fno-omit-frame-pointer")
   endif()
-  append_flag(SANITIZER_LINK_FLAGS "-fsanitize=undefined")
+  list(APPEND SANITIZER_LINK_FLAGS_LIST "-fsanitize=undefined")
 endif()
 
 if(ENABLE_TSAN)
   message(STATUS "TSan enabled")
-  append_flag(SANITIZER_FLAGS "-fsanitize=thread")
-  append_flag(SANITIZER_LINK_FLAGS "-fsanitize=thread")
+  list(APPEND SANITIZER_COMPILE_FLAGS_LIST "-fsanitize=thread")
+  # TSan also requires/benefits from -fno-omit-frame-pointer
+  if(NOT ("-fno-omit-frame-pointer" IN_LIST SANITIZER_COMPILE_FLAGS_LIST))
+    list(APPEND SANITIZER_COMPILE_FLAGS_LIST "-fno-omit-frame-pointer")
+  endif()
+  list(APPEND SANITIZER_LINK_FLAGS_LIST "-fsanitize=thread")
 endif()
 
 # --- Dependencies via FetchContent ---
@@ -172,6 +169,7 @@ add_subdirectory(src/FWA)
 add_subdirectory(src/driver)
 add_subdirectory(src/xpc/FWAXPC)
 
+
 # --- XPC Service bundle ---
 set(XPC_SERVICE_NAME "FWADaemon")
 set(XPC_SERVICE_SOURCES
@@ -201,6 +199,15 @@ target_include_directories(${XPC_SERVICE_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include/shared
   ${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon
 )
+
+# add ASAN/UBSAN flags if enabled
+if(SANITIZER_COMPILE_FLAGS_LIST) # Check if the list is not empty
+  target_compile_options(${XPC_SERVICE_NAME} PRIVATE ${SANITIZER_COMPILE_FLAGS_LIST})
+endif()
+if(SANITIZER_LINK_FLAGS_LIST) # Check if the list is not empty
+  target_link_options(${XPC_SERVICE_NAME} PRIVATE ${SANITIZER_LINK_FLAGS_LIST}) # Use target_link_options for linker flags
+endif()
+
 target_link_libraries(${XPC_SERVICE_NAME} PRIVATE
   spdlog
   "-framework Foundation"
@@ -208,6 +215,8 @@ target_link_libraries(${XPC_SERVICE_NAME} PRIVATE
   FWAXPC
   FWAIsoch
   FWA
+  # Note: Linker flags from SANITIZER_LINK_FLAGS_LIST are applied via target_link_options,
+  # not directly in target_link_libraries unless they are actual library names like -lsomething
 )
 
 # Post-build copy of assets
@@ -217,15 +226,17 @@ add_custom_command(TARGET ${XPC_SERVICE_NAME} POST_BUILD
     $<TARGET_BUNDLE_CONTENT_DIR:${XPC_SERVICE_NAME}>/Resources/Assets.xcassets
 )
 
+
 # --- Standalone CLI daemon ---
 add_executable(FirewireAudioDaemon src/main.cpp)
+# ...
+if(SANITIZER_COMPILE_FLAGS_LIST)
+  target_compile_options(FirewireAudioDaemon PRIVATE ${SANITIZER_COMPILE_FLAGS_LIST})
+endif()
+if(SANITIZER_LINK_FLAGS_LIST)
+  target_link_options(FirewireAudioDaemon PRIVATE ${SANITIZER_LINK_FLAGS_LIST})
+endif()
 target_link_libraries(FirewireAudioDaemon PRIVATE FWA Shared FWAXPC FWAIsoch)
-if(SANITIZER_FLAGS)
-  target_compile_options(FirewireAudioDaemon PRIVATE ${SANITIZER_FLAGS})
-endif()
-if(SANITIZER_LINK_FLAGS)
-  target_link_options(FirewireAudioDaemon PRIVATE ${SANITIZER_LINK_FLAGS})
-endif()
 
 # --- FWA-Control Swift GUI app ---
 # Define Swift source files explicitly by group 

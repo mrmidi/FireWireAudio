@@ -142,13 +142,17 @@ private:
 
     // --- Constants for "Blocking" SYT (distinct from NonBlocking) ---
     static constexpr uint32_t SYT_PHASE_MOD_BLOCKING = 147;
-    static constexpr uint32_t SYT_PHASE_RESET_BLOCKING = 1470;
-    static constexpr uint32_t BASE_TICKS_BLOCKING = 1386;
+    static constexpr uint32_t SYT_PHASE_RESET_BLOCKING = 147;
+    // static constexpr uint32_t BASE_TICKS_BLOCKING = 1386;
+    static constexpr uint32_t BASE_TICKS_BLOCKING = 565;
     // TICKS_PER_CYCLE is already defined
 
     // Client Callbacks
     MessageCallback messageCallback_{nullptr};
     void* messageCallbackRefCon_{nullptr};
+
+    // Interface
+    IOFireWireLibNubRef interface_{nullptr}; // The FireWire nub interface
 
     // Static constants for SYT calc (44.1kHz)
     static constexpr uint32_t SYT_PHASE_MOD = 147;

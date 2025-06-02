@@ -35,5 +35,13 @@
     <!-- NO XPCService key -->
     <!-- Basic bundle keys like CFBundleIdentifier etc. are NOT needed here -->
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ASAN_OPTIONS</key>
+        <string>log_path=/tmp/fwa_daemon_asan.log:detect_leaks=0:halt_on_error=1:verbosity=1</string>
+        <key>UBSAN_OPTIONS</key>
+        <string>print_stacktrace=1:log_path=/tmp/fwa_daemon_ubsan.log:halt_on_error=1</string>
+    </dict>
+
 </dict>
 </plist>

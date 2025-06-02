@@ -181,9 +181,10 @@ std::expected<void, IOKitError> IsoStreamHandler::start() {
     // --- Create Output Stream (Transmitter) ---
     m_logger->info("IsoStreamHandler: Creating transmitter stream...");
 
-    // Use potentially different/appropriate config for transmitter if needed
-    const unsigned int txPacketsPerGroup = 8;
-    const unsigned int txNumGroups = 1;
+    // isochronous parameters for transmitter
+    // 256 callbacks per second
+    const unsigned int txPacketsPerGroup = 32;      
+    const unsigned int txNumGroups = 8;            
     const unsigned int txPacketDataSize = 64; // Audio payload size per packet
     unsigned int transmitProviderBufferSize = 2 * txNumGroups * txPacketsPerGroup * txPacketDataSize; // Example buffer size
 

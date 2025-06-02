@@ -162,18 +162,18 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
              // Set Timestamp Pointer (where hardware WRITES completion time)
              (*nuDCLPool_)->SetDCLTimeStampPtr(currentDCL, timestampPtr);
              // NOTE: Setting a non-NULL timestamp pointer might automatically set kFWNuDCLFlag_TimeStamp
+             
+            // Set Callback (Conditional)
+            bool isFirstPacketInGroup = (p == 0);  // Changed: first packet instead of last
+            bool isCallbackGroup = ((g + 1) % config_.callbackGroupInterval == 0);
 
-             // Set Callback (Conditional)
-             bool isLastPacketInGroup = (p == config_.packetsPerGroup - 1);
-             bool isCallbackGroup = ((g + 1) % config_.callbackGroupInterval == 0);
-
-             if (isLastPacketInGroup && isCallbackGroup) {
-                 (*nuDCLPool_)->SetDCLCallback(currentDCL, DCLComplete_Helper);
-                 (*nuDCLPool_)->SetDCLRefcon(currentDCL, &callbackInfos_[g]); // Pass group info struct addr
-                 logger_->trace("  Set callback for G={}, P={} (DCL {:p})", g, p, (void*)currentDCL);
-             } else {
-                 (*nuDCLPool_)->SetDCLRefcon(currentDCL, this); // Default refcon
-             }
+            if (isFirstPacketInGroup && isCallbackGroup) {  // Changed: use isFirstPacketInGroup
+                (*nuDCLPool_)->SetDCLCallback(currentDCL, DCLComplete_Helper);
+                (*nuDCLPool_)->SetDCLRefcon(currentDCL, &callbackInfos_[g]); // Pass group info struct addr
+                logger_->warn("  Set callback for G={}, P={} (DCL {:p})", g, p, (void*)currentDCL);
+            } else {
+                (*nuDCLPool_)->SetDCLRefcon(currentDCL, this); // Default refcon
+            }
 
              // Set Final Flags
              (*nuDCLPool_)->SetDCLFlags(currentDCL, dclFlags);

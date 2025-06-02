@@ -14,7 +14,7 @@ constexpr std::size_t kMaxBytesPerFrame  = kMaxChannels * kMaxBytesPerSample;
 constexpr std::size_t kRingCapacityPow2  = 128; // TEST
 static_assert((kRingCapacityPow2 & (kRingCapacityPow2 - 1)) == 0);
 constexpr std::size_t kAudioDataBytes = kMaxFramesPerChunk * kMaxBytesPerFrame;
-constexpr uint32_t    kShmVersion     = 2;
+constexpr uint32_t    kShmVersion     = 3;
 
 namespace RTShmRing {
 
@@ -33,23 +33,46 @@ static_assert(sizeof(AudioChunk_POD) % kDestructiveCL == 0);
 
 
 
+// struct alignas(kDestructiveCL) ControlBlock_POD {
+//     uint32_t abiVersion;      // = 2
+//     uint32_t capacity;        // ring length
+//     uint32_t sampleRateHz;    // e.g. 44100
+//     uint32_t channelCount;    // e.g. 2
+//     uint32_t bytesPerFrame;   // = channelCount * bytesPerSample
+//     uint64_t writeIndex;
+//     char     pad0[kDestructiveCL
+//                    - sizeof(uint32_t)*5
+//                    - sizeof(uint64_t)];
+//     uint64_t readIndex;
+//     char     pad1[kDestructiveCL - sizeof(uint64_t)];
+//     uint32_t overrunCount;
+//     uint32_t underrunCount;
+//     uint32_t streamActive;    // 0 = idle, 1 = running
+//     uint32_t reserved;        // keep 64-byte alignment
+// };
+
 struct alignas(kDestructiveCL) ControlBlock_POD {
-    uint32_t abiVersion;      // = 2
-    uint32_t capacity;        // ring length
-    uint32_t sampleRateHz;    // e.g. 44100
-    uint32_t channelCount;    // e.g. 2
-    uint32_t bytesPerFrame;   // = channelCount * bytesPerSample
-    uint64_t writeIndex;
-    char     pad0[kDestructiveCL
-                   - sizeof(uint32_t)*5
-                   - sizeof(uint64_t)];
-    uint64_t readIndex;
+    uint32_t abiVersion;      // 0
+    uint32_t capacity;        // 4
+    uint32_t sampleRateHz;    // 8
+    uint32_t channelCount;    // 12
+    uint32_t bytesPerFrame;   // 16
+    uint32_t _padWriteAlign;  // 20 - NEW: explicit padding
+    uint64_t writeIndex;      // 24 - now 8-byte aligned
+    char     pad0[kDestructiveCL - 6*sizeof(uint32_t) - sizeof(uint64_t)];
+    uint64_t readIndex;       // Already aligned due to cache line boundary
     char     pad1[kDestructiveCL - sizeof(uint64_t)];
     uint32_t overrunCount;
     uint32_t underrunCount;
-    uint32_t streamActive;    // 0 = idle, 1 = running
-    uint32_t reserved;        // keep 64-byte alignment
+    uint32_t streamActive;
+    uint32_t reserved;
 };
+
+// Add compile-time verification
+static_assert(offsetof(ControlBlock_POD, writeIndex) % 8 == 0, "writeIndex must be 8-byte aligned");
+static_assert(offsetof(ControlBlock_POD, readIndex) % 8 == 0, "readIndex must be 8-byte aligned");
+
+
 static_assert(sizeof(ControlBlock_POD) % kDestructiveCL == 0);
 
 struct alignas(kDestructiveCL) SharedRingBuffer_POD

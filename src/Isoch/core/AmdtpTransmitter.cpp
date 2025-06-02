@@ -288,6 +288,61 @@ void AmdtpTransmitter::handleDCLOverrun() {
 // --- IMPLEMENTATION OF handleDCLComplete (Instance Method) ---
 // This is the core real-time loop function called from the RunLoop via the static helper
 void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
+
+    // EVEN MORE DEBUG LOGGING
+    // --- Callback Rate Monitoring ---
+    static thread_local uint64_t callbackCountSinceLastLog = 0;
+    static thread_local auto lastRateLogTime = std::chrono::steady_clock::now();
+    static const auto loggingInterval = std::chrono::seconds(1); // Log roughly every second
+
+    callbackCountSinceLastLog++; // Increment for this current callback
+
+    auto nowForRateLog = std::chrono::steady_clock::now();
+    auto elapsedSinceLastRateLog = nowForRateLog - lastRateLogTime;
+
+    if (elapsedSinceLastRateLog >= loggingInterval) {
+        // Calculate the actual elapsed time in seconds (as a double for precision)
+        double elapsedSeconds = std::chrono::duration<double>(elapsedSinceLastRateLog).count();
+
+        // Calculate the rate
+        double callbacksPerSecond = 0.0;
+        if (elapsedSeconds > 0) { // Avoid division by zero if interval is tiny (unlikely but safe)
+            callbacksPerSecond = static_cast<double>(callbackCountSinceLastLog) / elapsedSeconds;
+        }
+
+        // Log the rate
+        // You can use logger_->info, logger_->debug, or os_log depending on preference
+        logger_->info("DCLComplete Rate: {:.2f} callbacks/sec ({} callbacks in {:.3f}s)",
+                    callbacksPerSecond,
+                    callbackCountSinceLastLog,
+                    elapsedSeconds);
+        // os_log(OS_LOG_DEFAULT, "DCLComplete Rate: %.2f callbacks/sec (%llu callbacks in %.3f s)",
+        //        callbacksPerSecond,
+        //        callbackCountSinceLastLog,
+        //        elapsedSeconds);
+
+
+        // Reset for the next logging interval
+        callbackCountSinceLastLog = 0;
+        lastRateLogTime = nowForRateLog; // Or just `lastRateLogTime = std::chrono::steady_clock::now();`
+    }
+    // --- End Callback Rate Monitoring ---
+
+    // DEBUG LOGGING
+    // uint32_t cycleTime;
+    // IOReturn result = (*interface_)->GetCycleTime(interface_, &cycleTime);
+    
+    // logger_->info("Callback: group={}, cycle={:08x}", completedGroupIndex, cycleTime);
+    
+    // // Check if we're being called too often
+    // static uint32_t lastCycle = 0;
+    // uint32_t cycleDiff = (cycleTime >> 12) - (lastCycle >> 12);
+    // if (cycleDiff == 0) {
+    //     // logger_->error("🚨 Multiple callbacks in same cycle!");
+    // }
+    // lastCycle = cycleTime;
+
+    
     // os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::handleDCLComplete FIRED");
     // logger_->critical("<<<<< AmdtpTransmitter::handleDCLComplete ENTERED for Group: {} >>>>>", completedGroupIndex);
     // --- 1. State Check ---
@@ -439,6 +494,11 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
     // --- 5. Notify Hardware of Memory Updates ---
     // Tell the hardware that the *memory content* (CIP headers, audio data)
     // for the 'fillGroupIndex' has been updated and needs to be re-read before execution.
+
+    // After updating all packet content, before notifying hardware:
+    std::atomic_thread_fence(std::memory_order_release);
+
+
     auto notifyContentExp = dclManager_->notifySegmentUpdate(localPort, fillGroupIndex);
     if (!notifyContentExp) {
         logger_->error("handleDCLComplete: Failed to notify segment content update for G={}: {}",
@@ -478,7 +538,7 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
     if (elapsed.count() >= 1) {
         uint64_t dCnt = dataPacketsSent_.exchange(0, std::memory_order_relaxed);
         uint64_t nCnt = noDataPacketsSent_.exchange(0, std::memory_order_relaxed);
-        logger_->info("Packets last second: data={}  no_data={}", dCnt, nCnt);
+        logger_->info("Packets last second: data={}  no_data={} total= {}", dCnt, nCnt, (dCnt + nCnt));
         lastPacketLogTime_ = now;
     }
 }
@@ -543,6 +603,8 @@ std::expected<void, IOKitError> AmdtpTransmitter::setupComponents(IOFireWireLibN
     // Old one:
     // packetProvider_ = std::make_unique<IsochPacketProvider>(logger_, config_.clientBufferSize);
     packetProvider_ = std::make_unique<IsochPacketProvider>(logger_);
+
+    interface_ = interface; // Store the interface reference
 
     // Initialize... (Error checking omitted for brevity in stub)
     bufferManager_->setupBuffers(config_);
@@ -766,44 +828,86 @@ void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
     next_wasNoData_for_state = calculated_isNoData_for_this_packet;
 }
 
-AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() { // <<<< DEFINITION
+// AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() { // <<<< DEFINITION
+//     BlockingSytParams params;
+
+//     if (!this->firstDCLCallbackOccurred_) { 
+//         params.isNoData  = true;
+//         params.syt_value = 0xFFFF;
+//         return params; 
+//     }
+
+//     // ** Step 1 of 3: Check for a full 3072‐tick cycle **
+//     if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
+//         // We've accumulated one full FireWire cycle → skip this callback entirely
+//         sytOffset_blocking_ -= TICKS_PER_CYCLE;
+//         return params;   // EARLY RETURN: no packet emitted this iteration
+//     }
+
+//     // ** Step 2 of 3: Otherwise, update offset by BASE_TICKS_BLOCKING (+ occasional +1) **
+//     uint32_t phase    = sytPhase_blocking_ % SYT_PHASE_MOD_BLOCKING;
+//     bool     addExtra = (phase && !(phase & 3)) 
+//                         || (sytPhase_blocking_ == (SYT_PHASE_RESET_BLOCKING - 1));
+//     sytOffset_blocking_ += BASE_TICKS_BLOCKING;
+//     if (addExtra) {
+//         sytOffset_blocking_ += 1;
+//     }
+//     if (++sytPhase_blocking_ >= SYT_PHASE_RESET_BLOCKING) {
+//         sytPhase_blocking_ = 0;
+//     }
+
+//     // ** Step 3 of 3: Now decide NO_DATA vs. data packet **
+//     if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
+//         params.isNoData  = true;
+//         params.syt_value = 0xFFFF;
+//     } else {
+//         params.isNoData  = false;
+//         params.syt_value = static_cast<uint16_t>(sytOffset_blocking_);
+//     }
+//     return params;
+// }
+
+AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() {
     BlockingSytParams params;
 
-    if (!this->firstDCLCallbackOccurred_) { // Access plain bool member
+    // 1) If we haven't had a DCL callback yet, hold off on sending data
+    if (!this->firstDCLCallbackOccurred_.load()) {
         params.isNoData  = true;
+        params.syt_value = 0xFFFF;   // no-data
+        return params;
+    }
+
+    // 2) If offset >= one full FireWire cycle (3072), subtract and emit NO_DATA
+    if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
+        sytOffset_blocking_ -= TICKS_PER_CYCLE;
+        params.isNoData  = true;     // mark no-data on that overflow
         params.syt_value = 0xFFFF;
         return params;
     }
 
-    // Logic copied and adapted from UniversalTransmitter::calculatePacketParams()
-    // Uses this->sytOffset_blocking_ and this->sytPhase_blocking_
-    // Uses constants like SYT_PHASE_MOD_BLOCKING, BASE_TICKS_BLOCKING, TICKS_PER_CYCLE
-
-    // Use the correct constants for the Blocking mode:
-    // If you have SYT_PHASE_MOD_BLOCKING, etc., use those.
-    // If you decided to use common constants like SYT_PHASE_MOD_44K1, use those.
-    // Let's assume you defined specific _BLOCKING constants as in the header.
-    if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
-        sytOffset_blocking_ -= TICKS_PER_CYCLE;
-    } else {
-        uint32_t phase = sytPhase_blocking_ % SYT_PHASE_MOD_BLOCKING;
-        bool     addExtra = (phase && !(phase & 3)) || (sytPhase_blocking_ == (SYT_PHASE_RESET_BLOCKING - 1));
-        sytOffset_blocking_ += BASE_TICKS_BLOCKING;
-        if (addExtra) {
-            sytOffset_blocking_ += 1;
-        }
-        if (++sytPhase_blocking_ >= SYT_PHASE_RESET_BLOCKING) {
-            sytPhase_blocking_ = 0;
-        }
+    // 3) Otherwise, advance by BASE_TICKS_BLOCKING + occasional “+1” jitter
+    uint32_t phase    = sytPhase_blocking_ % SYT_PHASE_MOD_BLOCKING;   // 0..146
+    bool     addExtra = (phase && !(phase & 3)) 
+                         || (sytPhase_blocking_ == (SYT_PHASE_RESET_BLOCKING - 1));
+    sytOffset_blocking_ += BASE_TICKS_BLOCKING;  // = 565 on each iteration
+    if (addExtra) {
+        sytOffset_blocking_ += 1;                // +1 every 4th iteration
+    }
+    if (++sytPhase_blocking_ >= SYT_PHASE_RESET_BLOCKING) {
+        sytPhase_blocking_ = 0;
     }
 
+    // 4) Now decide per-packet if it’s data or no-data
     if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
+        // overflow→no-data
         params.isNoData  = true;
         params.syt_value = 0xFFFF;
     } else {
+        // within cycle → data packet, embed the SYT
         params.isNoData  = false;
         params.syt_value = static_cast<uint16_t>(sytOffset_blocking_);
     }
+
     return params;
 }
 

@@ -51,6 +51,25 @@ int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSLog(@"[FWADaemon] Starting XPC service listener...");
 
+        // --- SANITIZER TRIGGER POINT ---
+//        NSLog(@"[FWADaemon] !!! INTENTIONALLY TRIGGERING ASAN (Use-After-Free) !!!");
+//        char *volatile x = (char*)malloc(10 * sizeof(char)); // Allocate a small buffer
+//        if (x) {
+//            strcpy(x, "test"); // Use it
+//            NSLog(@"[FWADaemon] ASan Test: x = %s", x);
+//            free(x);          // Free it
+//            // Now, use it after free:
+//            NSLog(@"[FWADaemon] ASan Test: Attempting to access x[0] after free. Expecting crash/report.");
+//            x[0] = 'A';       // <<<< ASAN SHOULD DETECT THIS USE-AFTER-FREE
+//            NSLog(@"[FWADaemon] ASan Test: If you see this, ASan did not halt on error or was not active.");
+//        } else {
+//            NSLog(@"[FWADaemon] ASan Test: malloc failed, cannot run use-after-free test.");
+//        }
+        // --- END SANITIZER TRIGGER POINT ---
+        // The program will likely terminate here if ASan is active and halt_on_error=1
+
+//        NSLog(@"[FWADaemon] Continuing after sanitizer test (should not happen if ASan halts).");
+
         // Use the correct service name string
         NSXPCListener *listener = [[NSXPCListener alloc] initWithMachServiceName:@"net.mrmidi.FWADaemon"];
         if (!listener) {

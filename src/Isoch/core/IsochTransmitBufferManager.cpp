@@ -104,10 +104,21 @@ std::expected<void, IOKitError> IsochTransmitBufferManager::setupBuffers(const T
     bzero(mainBuffer_, totalBufferSize_);
 
     // Assign pointers based on layout
+    // clientAudioArea_ = mainBuffer_;
+    // cipHeaderArea_ = clientAudioArea_ + clientBufferSize_aligned_;
+    // isochHeaderArea_ = cipHeaderArea_ + cipHeaderTotalSize_aligned_;
+    // timestampArea_ = reinterpret_cast<uint32_t*>(isochHeaderArea_ + isochHeaderTotalSize_aligned_);
+
+    // SANITY CHECKS
     clientAudioArea_ = mainBuffer_;
-    cipHeaderArea_ = clientAudioArea_ + clientBufferSize_aligned_;
+    cipHeaderArea_   = clientAudioArea_ + clientBufferSize_aligned_;
+    assert(reinterpret_cast<uintptr_t>(cipHeaderArea_) % 16 == 0); // Ensure CIP area is 16-byte aligned
+
     isochHeaderArea_ = cipHeaderArea_ + cipHeaderTotalSize_aligned_;
-    timestampArea_ = reinterpret_cast<uint32_t*>(isochHeaderArea_ + isochHeaderTotalSize_aligned_);
+    assert(reinterpret_cast<uintptr_t>(isochHeaderArea_) % 16 == 0); // Ensure Isoch header area is 16-byte aligned
+
+    timestampArea_   = reinterpret_cast<uint32_t*>(isochHeaderArea_ + isochHeaderTotalSize_aligned_);
+    assert(reinterpret_cast<uintptr_t>(timestampArea_) % sizeof(uint32_t) == 0); // Ensure Timestamp area is 4-byte aligned
 
     bufferRange_.address = reinterpret_cast<IOVirtualAddress>(mainBuffer_);
     bufferRange_.length = totalBufferSize_;
