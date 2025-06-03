@@ -107,10 +107,10 @@ private:
 
     // --- NEW: Safety Margin Constants ---
     static constexpr uint32_t MIN_SAFETY_MARGIN = 2;      // Absolute minimum safety margin
-    static constexpr uint32_t MAX_SAFETY_MARGIN_PERCENT = 25; // Max 25% of capacity as safety margin
+    static constexpr uint32_t MAX_SAFETY_MARGIN_PERCENT = 20; // Max 25% of capacity as safety margin
     static constexpr uint32_t SAFETY_ADJUST_INTERVAL_MS = 1000; // Adjust safety margin every 1 second
-    static constexpr uint32_t HIGH_WATER_MARK_PERCENT = 75;    // 75% full - increase safety
-    static constexpr uint32_t LOW_WATER_MARK_PERCENT = 25;     // 25% full - decrease safety
+    static constexpr uint32_t HIGH_WATER_MARK_PERCENT = 40;    // 75% full - increase safety
+    static constexpr uint32_t LOW_WATER_MARK_PERCENT = 20;     // 25% full - decrease safety
 
     // --- Helper Methods ---
     bool popNextChunk();
@@ -118,6 +118,29 @@ private:
     void formatToAM824InPlace(uint8_t* buffer, size_t bufferSize) const;
     uint32_t getCurrentShmFillLevel() const;
     bool validateShmFormat() const;
+
+    /**
+     * @brief Gets the number of bytes remaining to be consumed in the current cached audio chunk.
+     * @return Number of remaining bytes, or 0 if no valid chunk is cached or all bytes consumed.
+     */
+    inline uint32_t remainingBytesInCurrentChunk() const noexcept {
+        if (currentChunk_.valid && currentChunk_.totalBytes > currentChunk_.consumedBytes) {
+            return currentChunk_.totalBytes - currentChunk_.consumedBytes;
+        }
+        return 0;
+    }
+
+    /**
+     * @brief Gets a pointer to the current read position within the cached audio chunk's data.
+     * @return Pointer to the next byte to be consumed, or nullptr if no valid chunk or fully consumed.
+     */
+    inline const std::byte* currentChunkReadPtr() const noexcept {
+        if (currentChunk_.valid && currentChunk_.totalBytes > currentChunk_.consumedBytes) {
+            return currentChunk_.audioDataPtr + currentChunk_.consumedBytes;
+        }
+        return nullptr;
+    }
+
 
     // --- NEW: Safety Margin Helper Methods ---
     bool hasMinimumFillLevel() const;

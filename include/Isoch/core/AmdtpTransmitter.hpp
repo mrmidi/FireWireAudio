@@ -8,6 +8,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/firewire/IOFireWireLibIsoch.h>
 #include <spdlog/logger.h>
+#include <iomanip> // For std::setw, std::setfill
 
 #include "FWA/Error.h"
 #include "Isoch/core/TransmitterTypes.hpp"
@@ -159,7 +160,30 @@ private:
     static constexpr uint32_t SYT_PHASE_RESET = 1470;
     static constexpr uint32_t BASE_TICKS = 1386; // ~1/8 of TICKS_PER_CYCLE
     static constexpr uint32_t TICKS_PER_CYCLE = 3072;
+
+
+
+        // --- Packet Logging Helper ---
+    // Counter to decide when to log a packet
+    std::atomic<uint64_t> packetLogCounter_{0};
+    // How often to log a full packet dump (e.g., every 10000th generated packet)
+    static constexpr uint64_t PACKET_LOG_INTERVAL = 10000;
+
+    // Helper function to log packet details
+    void logPacketDetails(
+        uint32_t groupIndex,
+        uint32_t packetIndexInGroup,
+        const IsochHeaderData* isochHeader, // Pass the IsochHeader as well
+        const CIPHeader* cipHeader,
+        const uint8_t* audioPayload,
+        size_t audioPayloadSize,
+        const TransmitPacketInfo& packetInfo // For context
+    );
+
 };
+
+
+
 
 } // namespace Isoch
 } // namespace FWA

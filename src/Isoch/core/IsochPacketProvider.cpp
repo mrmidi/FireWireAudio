@@ -101,149 +101,181 @@ bool IsochPacketProvider::pushAudioData(const void* buffer, size_t bufferSizeInB
     return false;
 }
 
+// PreparedPacketData IsochPacketProvider::fillPacketData(
+//     uint8_t* targetBuffer,
+//     size_t targetBufferSize,
+//     const TransmitPacketInfo& info)
+// {
+//     auto startTime = std::chrono::high_resolution_clock::now();
+    
+//     PreparedPacketData result;
+//     result.dataPtr       = targetBuffer;
+//     result.dataLength    = 0;
+//     result.generatedSilence = true;
+
+//     // === 0. Early parameter checks ===
+//     if (!targetBuffer || targetBufferSize == 0) {
+//         if (logger_) {
+//             logger_->error("fillPacketData: Invalid target buffer or size");
+//         }
+//         return result;
+//     }
+
+//     // === 1. Check for any underruns logged in SHM and clear the counter ===
+//     if (shmControlBlock_) {
+//         // Atomically read & clear the underrun counter
+//         uint32_t underruns = RTShmRing::UnderrunCountProxy(*shmControlBlock_)
+//                                 .exchange(0, std::memory_order_relaxed);
+//         if (underruns && logger_) {
+//             // silence for now - too much noise
+//            logger_->warn("Audio underrun x{}", underruns);
+//         }
+//     }
+
+//     // === 2. Check SHM binding ===
+//     if (!shmControlBlock_ || !shmRingArray_) {
+//         if (logger_) {
+//             logger_->error("fillPacketData: SHM not bound; filling silence");
+//         }
+//         std::memset(targetBuffer, 0, targetBufferSize);
+//         result.dataLength = targetBufferSize;
+//         return result;
+//     }
+
+//     // === 3. Validate SHM format once in a while ===
+//     if (!validateShmFormat()) {
+//         formatValidationErrors_++;
+//         if (logger_) {
+//             logger_->error("fillPacketData: SHM format invalid; filling silence");
+//         }
+//         std::memset(targetBuffer, 0, targetBufferSize);
+//         result.dataLength = targetBufferSize;
+//         return result;
+//     }
+
+//     // === NEW 4. Safety Margin Check - Proactive Silence Generation ===
+//     if (!hasMinimumFillLevel()) {
+//         generateProactiveSilence(targetBuffer, targetBufferSize, result, info);
+        
+//         // Update performance timing and return early
+//         auto endTime = std::chrono::high_resolution_clock::now();
+//         auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime);
+//         fillPacketCallCount_++;
+//         totalFillPacketTimeNs_ += duration.count();
+        
+//         return result;
+//     }
+
+//     // === NEW 5. Adaptive Safety Margin Adjustment ===
+//     adjustSafetyMargin();
+
+//     // === 6. Copy from SHM ring into targetBuffer (PRESERVED EXISTING LOGIC) ===
+//     uint8_t* writePtr = targetBuffer;
+//     size_t   remaining = targetBufferSize;
+//     bool     gotAllData = true;
+
+//     // Optional periodic stats logging
+//     static thread_local uint32_t statsTicks = 0;
+//     if (++statsTicks == 8000) { // ~1 s at 8 kHz IRQ rate
+//         auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_)
+//                       .load(std::memory_order_relaxed);
+//         auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_)
+//                       .load(std::memory_order_relaxed);
+//         if (logger_) {
+//             logger_->info("POP rd={} wr={} used={}  curChunkLeft={}B  copyThisCall={}B  safetyMargin={}",
+//                           rd, wr, wr - rd,
+//                           currentChunk_.remainingBytes(),
+//                           targetBufferSize,
+//                           safetyMarginChunks_.load());
+//         }
+//         statsTicks = 0;
+//     }
+
+//     while (remaining > 0) {
+//         // If current chunk is exhausted, try to pop next one
+//         if (currentChunk_.remainingBytes() == 0) {
+//             if (!popNextChunk()) {
+//                 // Underrun: no more valid audio chunks
+//                 gotAllData = false;
+//                 break;
+//             }
+//         }
+
+//         uint32_t availableInChunk = currentChunk_.remainingBytes();
+//         size_t   toCopy           = std::min(remaining, static_cast<size_t>(availableInChunk));
+
+//         // Only count as "partial" if we're consuming < full chunk on first access
+//         bool wasPartialConsumption = (currentChunk_.consumedBytes == 0 &&
+//                                       toCopy < currentChunk_.totalBytes);
+
+//         std::memcpy(
+//             writePtr,
+//             currentChunk_.audioDataPtr + currentChunk_.consumedBytes,
+//             toCopy
+//         );
+
+//         writePtr += toCopy;
+//         remaining -= toCopy;
+//         currentChunk_.consumedBytes += static_cast<uint32_t>(toCopy);
+//         totalBytesConsumed_ += toCopy;
+
+//         if (wasPartialConsumption) {
+//             partialChunkConsumptions_++;
+//         }
+//     }
+
+//     // === 7. If we got a full buffer, convert in-place to AM824; else zero-fill & note underrun ===
+//     if (gotAllData && remaining == 0) {
+//         formatToAM824InPlace(targetBuffer, targetBufferSize);
+//         result.generatedSilence = false;
+//     } else {
+//         // Partial or complete underrun: fill remainder with silence
+//         if (remaining > 0) {
+//             std::memset(writePtr, 0, remaining);
+//         }
+//         handleUnderrun(info);
+//     }
+
+//     result.dataLength = targetBufferSize;
+
+//     // === 8. Update performance timing ===
+//     auto endTime = std::chrono::high_resolution_clock::now();
+//     auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime);
+//     fillPacketCallCount_++;
+//     totalFillPacketTimeNs_ += duration.count();
+
+//     return result;
+// }
+
+// MINIMAL - test for underrun and fill silence
 PreparedPacketData IsochPacketProvider::fillPacketData(
-    uint8_t* targetBuffer,
-    size_t targetBufferSize,
+    uint8_t*   targetBuffer,
+    size_t     targetBufferSize,
     const TransmitPacketInfo& info)
 {
-    auto startTime = std::chrono::high_resolution_clock::now();
-    
     PreparedPacketData result;
     result.dataPtr       = targetBuffer;
     result.dataLength    = 0;
-    result.generatedSilence = true;
+    result.generatedSilence = true;  
 
-    // === 0. Early parameter checks ===
-    if (!targetBuffer || targetBufferSize == 0) {
-        if (logger_) {
-            logger_->error("fillPacketData: Invalid target buffer or size");
-        }
-        return result;
-    }
-
-    // === 1. Check for any underruns logged in SHM and clear the counter ===
-    if (shmControlBlock_) {
-        // Atomically read & clear the underrun counter
-        uint32_t underruns = RTShmRing::UnderrunCountProxy(*shmControlBlock_)
-                                .exchange(0, std::memory_order_relaxed);
-        if (underruns && logger_) {
-            // silence for now - too much noise
-           logger_->warn("Audio underrun x{}", underruns);
-        }
-    }
-
-    // === 2. Check SHM binding ===
-    if (!shmControlBlock_ || !shmRingArray_) {
-        if (logger_) {
-            logger_->error("fillPacketData: SHM not bound; filling silence");
-        }
+    if (!popNextChunk()) {
+        // real underrun: zero‐fill + bump UnderrunCountProxy(cb)
         std::memset(targetBuffer, 0, targetBufferSize);
         result.dataLength = targetBufferSize;
+        handleUnderrun(info);  // increments underrun counter
         return result;
     }
 
-    // === 3. Validate SHM format once in a while ===
-    if (!validateShmFormat()) {
-        formatValidationErrors_++;
-        if (logger_) {
-            logger_->error("fillPacketData: SHM format invalid; filling silence");
-        }
-        std::memset(targetBuffer, 0, targetBufferSize);
-        result.dataLength = targetBufferSize;
-        return result;
-    }
-
-    // === NEW 4. Safety Margin Check - Proactive Silence Generation ===
-    if (!hasMinimumFillLevel()) {
-        generateProactiveSilence(targetBuffer, targetBufferSize, result, info);
-        
-        // Update performance timing and return early
-        auto endTime = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime);
-        fillPacketCallCount_++;
-        totalFillPacketTimeNs_ += duration.count();
-        
-        return result;
-    }
-
-    // === NEW 5. Adaptive Safety Margin Adjustment ===
-    adjustSafetyMargin();
-
-    // === 6. Copy from SHM ring into targetBuffer (PRESERVED EXISTING LOGIC) ===
-    uint8_t* writePtr = targetBuffer;
-    size_t   remaining = targetBufferSize;
-    bool     gotAllData = true;
-
-    // Optional periodic stats logging
-    static thread_local uint32_t statsTicks = 0;
-    if (++statsTicks == 8000) { // ~1 s at 8 kHz IRQ rate
-        auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_)
-                      .load(std::memory_order_relaxed);
-        auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_)
-                      .load(std::memory_order_relaxed);
-        if (logger_) {
-            logger_->info("POP rd={} wr={} used={}  curChunkLeft={}B  copyThisCall={}B  safetyMargin={}",
-                          rd, wr, wr - rd,
-                          currentChunk_.remainingBytes(),
-                          targetBufferSize,
-                          safetyMarginChunks_.load());
-        }
-        statsTicks = 0;
-    }
-
-    while (remaining > 0) {
-        // If current chunk is exhausted, try to pop next one
-        if (currentChunk_.remainingBytes() == 0) {
-            if (!popNextChunk()) {
-                // Underrun: no more valid audio chunks
-                gotAllData = false;
-                break;
-            }
-        }
-
-        uint32_t availableInChunk = currentChunk_.remainingBytes();
-        size_t   toCopy           = std::min(remaining, static_cast<size_t>(availableInChunk));
-
-        // Only count as "partial" if we're consuming < full chunk on first access
-        bool wasPartialConsumption = (currentChunk_.consumedBytes == 0 &&
-                                      toCopy < currentChunk_.totalBytes);
-
-        std::memcpy(
-            writePtr,
-            currentChunk_.audioDataPtr + currentChunk_.consumedBytes,
-            toCopy
-        );
-
-        writePtr += toCopy;
-        remaining -= toCopy;
-        currentChunk_.consumedBytes += static_cast<uint32_t>(toCopy);
-        totalBytesConsumed_ += toCopy;
-
-        if (wasPartialConsumption) {
-            partialChunkConsumptions_++;
-        }
-    }
-
-    // === 7. If we got a full buffer, convert in-place to AM824; else zero-fill & note underrun ===
-    if (gotAllData && remaining == 0) {
-        formatToAM824InPlace(targetBuffer, targetBufferSize);
-        result.generatedSilence = false;
-    } else {
-        // Partial or complete underrun: fill remainder with silence
-        if (remaining > 0) {
-            std::memset(writePtr, 0, remaining);
-        }
+    // We got a chunk: copy it, convert to AM824, done.
+    size_t toCopy = std::min(remainingInChunk(), targetBufferSize);
+    std::memcpy(targetBuffer, currentChunkData(), toCopy);
+    if (toCopy < targetBufferSize)
+        std::memset(targetBuffer + toCopy, 0, targetBufferSize - toCopy),
         handleUnderrun(info);
-    }
 
-    result.dataLength = targetBufferSize;
-
-    // === 8. Update performance timing ===
-    auto endTime = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime);
-    fillPacketCallCount_++;
-    totalFillPacketTimeNs_ += duration.count();
-
+    formatToAM824InPlace(targetBuffer, targetBufferSize);
+    result.dataLength    = targetBufferSize;
+    result.generatedSilence = false;
     return result;
 }
 
@@ -287,25 +319,32 @@ bool IsochPacketProvider::popNextChunk() {
     return true;
 }
 
+
+// simplified version of isReadyForStreaming - testing
 bool IsochPacketProvider::isReadyForStreaming() const {
-    if (!shmControlBlock_) {
-        return false;
-    }
-    
-    auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
-    auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
-    
-    if (shmControlBlock_->capacity == 0) {
-        return false;
-    }
-    
-    // === NEW: Align startup condition with safety margin ===
-    uint64_t available = (wr >= rd) ? (wr - rd) : 0;
-    uint32_t safetyMargin = safetyMarginChunks_.load();
-    uint32_t startupBuffer = safetyMargin + 2; // Safety margin plus small priming buffer
-    
-    return available > startupBuffer;
+    if (!shmControlBlock_) return false;
+    return StreamActiveProxy(*shmControlBlock_).load(std::memory_order_acquire) == 1;
 }
+
+// bool IsochPacketProvider::isReadyForStreaming() const {
+//     if (!shmControlBlock_) {
+//         return false;
+//     }
+    
+//     auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+//     auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+    
+//     if (shmControlBlock_->capacity == 0) {
+//         return false;
+//     }
+    
+//     // === NEW: Align startup condition with safety margin ===
+//     uint64_t available = (wr >= rd) ? (wr - rd) : 0;
+//     uint32_t safetyMargin = safetyMarginChunks_.load();
+//     uint32_t startupBuffer = safetyMargin + 2; // Safety margin plus small priming buffer
+    
+//     return available > startupBuffer;
+// }
 
 void IsochPacketProvider::reset() {
     currentChunk_.invalidate();

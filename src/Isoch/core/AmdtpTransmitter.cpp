@@ -9,6 +9,7 @@
 #include <vector>
 #include <chrono>                  // For timing/sleep
 #include <os/log.h>
+#include <spdlog/fmt/bin_to_hex.h> // For spdlog::to_hex
 
 namespace FWA {
 namespace Isoch {
@@ -458,6 +459,21 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
                                 .value_or(config_.initialChannel & 0x3F);
         isochHdrTarget->tag_channel = (1 << 6) | (fwChannel & 0x3F);
         isochHdrTarget->tcode_sy    = (0xA << 4) | 0; 
+
+
+        // --- NEW: Conditional Packet Logging ---
+        uint64_t currentPacketCount = packetLogCounter_.fetch_add(1, std::memory_order_relaxed);
+        if ((currentPacketCount % PACKET_LOG_INTERVAL) == 0) {
+            logPacketDetails(
+                fillGroupIndex,
+                p,
+                isochHdrTarget,       // Pointer to the prepared Isoch Header
+                cipHdrTarget,         // Pointer to the prepared CIP Header
+                audioDataTargetPtr,   // Pointer to the prepared audio payload
+                audioPayloadTargetSize, // Size of the audio payload for this packet
+                packetInfo            // The TransmitPacketInfo struct
+            );
+        }
 
         // --- 4f. Update DCL Ranges (crucial change here) ---
         IOVirtualRange ranges[2];
@@ -909,6 +925,95 @@ AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() {
     }
 
     return params;
+}
+
+// Helper function implementation
+void AmdtpTransmitter::logPacketDetails(
+    uint32_t groupIndex,
+    uint32_t packetIndexInGroup,
+    const IsochHeaderData* isochHeader,
+    const CIPHeader* cipHeader,
+    const uint8_t* audioPayload,
+    size_t audioPayloadSize,
+    const TransmitPacketInfo& packetInfo // For additional context if needed
+) {
+    if (!logger_ || !cipHeader || !audioPayload || !isochHeader) {
+        return;
+    }
+
+    logger_->info("---------- DETAILED PACKET DUMP (G:{}, P:{}, AbsPkt:{}) ----------",
+                  groupIndex, packetIndexInGroup, packetInfo.absolutePacketIndex);
+
+    // --- Log Isoch Header (Raw and Parsed) ---
+    // Assuming IsochHeaderData is a struct matching the on-wire format after endian swap
+    // If it's just a byte pointer, you'd cast and parse.
+    // For now, let's assume it's a struct that is already host-endian if needed for parsing,
+    // or we log its raw big-endian bytes.
+    std::vector<uint8_t> raw_isoch_header_bytes(kTransmitIsochHeaderSize);
+    std::memcpy(raw_isoch_header_bytes.data(), isochHeader, kTransmitIsochHeaderSize);
+    logger_->info("  Isoch Header (Big Endian Raw): {}", spdlog::to_hex(raw_isoch_header_bytes));
+
+    // You would parse fields from isochHeader similar to IsochPacketProcessor if needed,
+    // but for transmit, you mostly care about what you *set*.
+    // Example: (assuming IsochHeaderData has members data_length, tag_channel, tcode_sy)
+    logger_->info("    data_length (from IsochHdr): {}", OSSwapBigToHostInt16(isochHeader->data_length));
+    logger_->info("    tag_channel (from IsochHdr): {:#04x}", isochHeader->tag_channel); // Assuming it's already set for transmit
+    logger_->info("    tcode_sy    (from IsochHdr): {:#04x}", isochHeader->tcode_sy);
+
+    // --- Log CIP Header (Raw and Parsed) ---
+    // Your CIPHeader struct is byte-wise. We can log it directly.
+    std::vector<uint8_t> raw_cip_header_bytes(kTransmitCIPHeaderSize);
+    std::memcpy(raw_cip_header_bytes.data(), cipHeader, kTransmitCIPHeaderSize);
+    logger_->info("  CIP Header (Big Endian Raw):   {}", spdlog::to_hex(raw_cip_header_bytes));
+
+    // Parse and log human-readable CIP fields (already big-endian as per transmit prep)
+    // This assumes your CIPHeader struct directly maps to the byte layout
+    // and you want to interpret it as if it were on the wire (big-endian).
+    // The values inside cipHeader are already prepared for transmission.
+    uint16_t syt_be = cipHeader->syt; // Already big-endian from OSSwapHostToBigInt16
+    uint16_t syt_host = OSSwapBigToHostInt16(syt_be); // Swap back for logging if you want host value
+
+    logger_->info("    SID: {:#04x} (Source Node ID)", cipHeader->sid_byte & 0x3F);
+    logger_->info("    DBS: {} (Data Blocks in CIP payload, quadlets)", cipHeader->dbs);
+    // Further parsing of fn_qpc_sph_rsv if needed:
+    // uint8_t fn  = (cipHeader->fn_qpc_sph_rsv >> 6) & 0x03;
+    // uint8_t qpc = (cipHeader->fn_qpc_sph_rsv >> 3) & 0x07;
+    // uint8_t sph = (cipHeader->fn_qpc_sph_rsv >> 2) & 0x01;
+    // logger_->info("    FN: {}, QPC: {}, SPH: {}", fn, qpc, sph);
+    logger_->info("    FMT_EOH: {:#04x} (FMT should be 0x10<<2 for AM824)", cipHeader->fmt_eoh1);
+    logger_->info("    FDF: {:#04x} (SFC. 0xFF=NoData, 0x01=44.1k, 0x02=48k)", cipHeader->fdf);
+    logger_->info("    SYT: {:#06x} (Host Endian: {:#06x})", syt_be, syt_host);
+    logger_->info("    DBC: {:#04x} ({})", cipHeader->dbc, cipHeader->dbc);
+
+
+    // --- Log Audio Payload (First few AM824 samples) ---
+    if (cipHeader->fdf != 0xFF && audioPayloadSize > 0) { // If it's a DATA packet
+        logger_->info("  Audio Payload ({} bytes, AM824 formatted, Big Endian):", audioPayloadSize);
+        size_t bytesToLog = std::min(audioPayloadSize, (size_t)64); // Log up to 64 bytes
+        std::vector<uint8_t> payload_sample_bytes(audioPayload, audioPayload + bytesToLog);
+        logger_->info("    Raw Hex: {}", spdlog::to_hex(payload_sample_bytes));
+
+        // Log first few 32-bit AM824 words (as host endian for easier reading of sample values)
+        logger_->info("    First AM824 words (Host Endian, Label|Sample24):");
+        for (size_t i = 0; i < bytesToLog / 4 && i < 4; ++i) { // Log up to 4 AM824 words
+            uint32_t am824_word_be;
+            std::memcpy(&am824_word_be, audioPayload + i * 4, sizeof(uint32_t));
+            uint32_t am824_word_host = OSSwapBigToHostInt32(am824_word_be);
+            uint8_t label = (am824_word_host >> 24) & 0xFF;
+            int32_t sample_val_24bit = am824_word_host & 0x00FFFFFF;
+            // Sign extend if necessary (AM824 typically stores signed 24-bit)
+            if (sample_val_24bit & 0x00800000) { // if 24th bit (sign bit) is set
+                sample_val_24bit |= 0xFF000000; // sign extend to 32-bit
+            }
+            logger_->info("      Word {}: {:#010x} (Label: {:#04x}, Sample24: {:#08x} ({}) )",
+                          i, am824_word_host, label, (sample_val_24bit & 0x00FFFFFF), sample_val_24bit);
+        }
+    } else if (cipHeader->fdf == 0xFF) {
+        logger_->info("  Audio Payload: NO_DATA packet");
+    } else {
+        logger_->info("  Audio Payload: Zero length but FDF indicates data - unusual.");
+    }
+    logger_->info("---------- END DETAILED PACKET DUMP ----------");
 }
 
 } // namespace Isoch

@@ -11,7 +11,7 @@ constexpr std::size_t kMaxFramesPerChunk = 1024;
 constexpr std::size_t kMaxChannels       = 2;
 constexpr std::size_t kMaxBytesPerSample = 4;
 constexpr std::size_t kMaxBytesPerFrame  = kMaxChannels * kMaxBytesPerSample;
-constexpr std::size_t kRingCapacityPow2  = 128; // TEST
+constexpr std::size_t kRingCapacityPow2  = 512; // TEST
 static_assert((kRingCapacityPow2 & (kRingCapacityPow2 - 1)) == 0);
 constexpr std::size_t kAudioDataBytes = kMaxFramesPerChunk * kMaxBytesPerFrame;
 constexpr uint32_t    kShmVersion     = 3;
@@ -147,7 +147,7 @@ inline bool push(ControlBlock_POD&       cb,
     }
 
     std::atomic_thread_fence(std::memory_order_release);
-    SequenceProxy(c).store(wr+1, std::memory_order_relaxed);
+    SequenceProxy(c).store(wr+1, std::memory_order_release);
     WriteIndexProxy(cb).store(wr+1, std::memory_order_release);
     return true;
 }
@@ -190,6 +190,10 @@ inline bool pop(ControlBlock_POD&       cb,           // CHANGED: remove const
 
     ReadIndexProxy(cb).store(rd + 1, std::memory_order_release);
     return true;
+}
+
+inline std::atomic<uint32_t>& StreamActiveProxy(ControlBlock_POD& cb) noexcept {
+    return *reinterpret_cast<std::atomic<uint32_t>*>(&cb.streamActive);
 }
 
 } // namespace RTShmRing
