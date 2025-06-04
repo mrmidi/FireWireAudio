@@ -23,6 +23,22 @@ This project implements a FireWire audio device daemon that handles:
 - Audio subunit plugs
 - Stream format discovery
 
+## Branch Work Updates
+
+This branch introduces several architectural changes beyond the `main` branch:
+
+- **Daemon Separation**: Core FireWire interaction now runs in a standalone
+  daemon written in Objective‑C++/C++. The SwiftUI application communicates
+  with this daemon through XPC.
+- **SwiftUI Control App**: A new SwiftUI front‑end (`FWA-Control`) manages
+  devices using async `actor` based services (`EngineService` and
+  `SystemServicesManager`).
+- **Driver Installation Utilities**: Helper services can install the HAL driver
+  via AppleScript and manage the daemon's launch agent.
+- **Updated Documentation**: A `docs/ui.md` file contains a mermaid diagram of
+  the planned GUI and daemon architecture.
+
+
 ### Modern C++ Design
 
 - RAII principles
