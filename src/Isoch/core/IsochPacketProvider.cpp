@@ -2,26 +2,33 @@
 #include "Isoch/core/IsochPacketProvider.hpp"
 #include <CoreServices/CoreServices.h>
 #include <cstring>
-#include <algorithm>
+#include <algorithm> 
+
+// for min and max
+#include <limits>
 
 namespace FWA {
 namespace Isoch {
 
 IsochPacketProvider::IsochPacketProvider(std::shared_ptr<spdlog::logger> logger)
-    : logger_(std::move(logger))
+    : logger_(std::move(logger)),
+      fillLevelHistogram_(HISTOGRAM_MAX_BINS), // CORRECTED: Default constructs atomics to 0
+      fillLevelOverflowCount_(0)
 {
     if (!logger_) {
         logger_ = spdlog::default_logger();
     }
-    
+
     currentChunk_.invalidate();
     lastStatsTime_ = std::chrono::steady_clock::now();
     lastSafetyAdjustTime_ = std::chrono::steady_clock::now();
-    
+    lastHistogramLogTime_ = std::chrono::steady_clock::now();
+
     if (logger_) {
         logger_->debug("IsochPacketProvider created in direct SHM mode with safety margin support");
+        logger_->debug("IsochPacketProvider histogram initialized ({} bins)", HISTOGRAM_MAX_BINS);
     }
-    
+
     reset();
 }
 
@@ -253,57 +260,135 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
     size_t     targetBufferSize,
     const TransmitPacketInfo& info)
 {
-    PreparedPacketData result;
-    result.dataPtr       = targetBuffer;
-    result.dataLength    = 0;
-    result.generatedSilence = true;  
+    // --- Start: Performance Timing (Optional, but good to keep) ---
+    auto startTime = std::chrono::high_resolution_clock::now();
+    // --- End: Performance Timing ---
 
-    if (!popNextChunk()) {
-        // real underrun: zero‐fill + bump UnderrunCountProxy(cb)
+    // --- TELEMETRY: Record current fill level ---
+    if (shmControlBlock_) { // Ensure control block is valid
+        auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+        auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
+        uint64_t currentFill = (wr >= rd) ? (wr - rd) : 0; // Number of used/filled chunks
+
+        if (currentFill < HISTOGRAM_MAX_BINS) {
+            fillLevelHistogram_[static_cast<size_t>(currentFill)]
+                .fetch_add(1, std::memory_order_relaxed);
+        } else {
+            fillLevelOverflowCount_.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        // Periodically log the histogram
+        auto now = std::chrono::steady_clock::now();
+        if (now - lastHistogramLogTime_ > HISTOGRAM_LOG_INTERVAL) {
+            logFillLevelHistogram(); // Call helper to print
+            lastHistogramLogTime_ = now;
+        }
+    }
+
+    // --- END TELEMETRY ---
+
+     PreparedPacketData result;
+    result.dataPtr       = targetBuffer;
+    result.dataLength    = targetBufferSize; // We always "fill" the target buffer
+    result.generatedSilence = true;     // Assume silence until proven otherwise
+
+    if (!targetBuffer || targetBufferSize == 0 || !shmControlBlock_ || !shmRingArray_) {
+        if (logger_) logger_->error("fillPacketData: Preconditions failed (null buffers/SHM not bound). Generating silence.");
         std::memset(targetBuffer, 0, targetBufferSize);
-        result.dataLength = targetBufferSize;
-        handleUnderrun(info);  // increments underrun counter
+        // No need to call handleUnderrun here, it's a setup issue.
         return result;
     }
 
-    // We got a chunk: copy it, convert to AM824, done.
-    size_t toCopy = std::min(remainingInChunk(), targetBufferSize);
-    std::memcpy(targetBuffer, currentChunkData(), toCopy);
-    if (toCopy < targetBufferSize)
-        std::memset(targetBuffer + toCopy, 0, targetBufferSize - toCopy),
-        handleUnderrun(info);
+    // --- LEAKY BUCKET GUARD ---
+    if (!hasSufficientDataForPop()) {
+        // Not enough data in SHM above our minimum threshold.
+        // Generate silence for this FireWire packet, do NOT advance SHM read pointer.
+        std::memset(targetBuffer, 0, targetBufferSize);
+        result.generatedSilence = true; // Already true, but for clarity
+        
+        // This is not a "true" SHM underrun (rd == wr), but a proactive hold.
+        // You might want a separate counter for "proactive silence" vs "true underrun".
+        // For now, let's use handleUnderrun but be aware of its meaning.
+        // Or, create a new logging mechanism for "proactive_silence_due_to_low_fill"
+        // safetyMarginHolds_++; // If you had such a counter
+        if (logger_) {
+            static thread_local uint32_t holdLog = 0;
+            if ((holdLog++ % 1000) == 0) { // Throttle this log
+                 auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+                 auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
+                 logger_->debug("fillPacketData: Leaky bucket hold. Available: {}, Needed > {}. Generating silence.", 
+                               (wr >= rd ? wr-rd : 0), kMinChunksToPop);
+            }
+        }
+        // Important: We format even silence into AM824 NO_DATA, which still carries SYT
+        formatToAM824InPlace(targetBuffer, targetBufferSize); // Ensures FDF=0xFF
+        return result;
+    }
+    // --- END LEAKY BUCKET GUARD ---
+
+    // If we are here, hasSufficientDataForPop() was true.
+    // Attempt to get data.
+    // If current cached chunk is exhausted, try to pop a new one.
+    if (remainingBytesInCurrentChunk() == 0) {
+        if (!popNextChunk()) {
+            // popNextChunk failed. This means RTShmRing::pop() found rd == wr (true empty)
+            // OR if popNextChunk *still* had its own internal hasMinimumFillLevel check
+            // (which it shouldn't in this simplified model), it could fail there.
+            // Assuming popNextChunk now only fails on true empty.
+            std::memset(targetBuffer, 0, targetBufferSize);
+            handleUnderrun(info); // Log as a true SHM underrun
+            formatToAM824InPlace(targetBuffer, targetBufferSize); // Format silence
+            return result;
+        }
+    }
+
+    // We have a valid chunk (or part of it) in currentChunk_
+    size_t remaining_in_chunk_size_t = static_cast<size_t>(remainingBytesInCurrentChunk()); // Cast to size_t
+
+    size_t toCopy = std::min(remaining_in_chunk_size_t, targetBufferSize); 
+    const std::byte* srcDataForMemcpy = currentChunkReadPtr();
+
+    if (!srcDataForMemcpy || toCopy == 0) { // Should ideally not happen if remainingBytes > 0
+        logger_->error("fillPacketData: Logic error or empty chunk after successful pop. Generating silence.");
+        std::memset(targetBuffer, 0, targetBufferSize);
+        handleUnderrun(info); // Treat as underrun
+        formatToAM824InPlace(targetBuffer, targetBufferSize);
+        return result;
+    }
+
+    std::memcpy(targetBuffer, srcDataForMemcpy, toCopy);
+    currentChunk_.consumedBytes += static_cast<uint32_t>(toCopy);
+    totalBytesConsumed_ += toCopy;
+
+    if (toCopy < targetBufferSize) {
+        // Current SHM chunk didn't fill the entire FireWire packet.
+        std::memset(targetBuffer + toCopy, 0, targetBufferSize - toCopy);
+        handleUnderrun(info); // Log this partial fill as an underrun event
+        result.generatedSilence = true; // Since part of it is silence
+    } else {
+        result.generatedSilence = false; // Full data packet
+    }
 
     formatToAM824InPlace(targetBuffer, targetBufferSize);
-    result.dataLength    = targetBufferSize;
-    result.generatedSilence = false;
+    
     return result;
 }
 
+// without safety margin
 bool IsochPacketProvider::popNextChunk() {
     if (!shmControlBlock_ || !shmRingArray_) {
+        currentChunk_.invalidate(); // Ensure cache is invalid
         return false;
     }
 
-    // === NEW: Secondary Safety Check (Defense in Depth) ===
-    if (!hasMinimumFillLevel()) {
-        if (logger_) {
-            // Throttled logging to avoid spam
-            static thread_local uint32_t logCounter = 0;
-            if ((logCounter++ % 1000) == 0) {
-                logger_->debug("popNextChunk called when below safety margin (count: {})", logCounter);
-            }
-        }
-        currentChunk_.invalidate();
-        return false;
-    }
-
+ 
     AudioTimeStamp timestamp;
     uint32_t dataBytes;
     const std::byte* audioPtr;
 
-    // Use your zero-copy pop API
     if (!RTShmRing::pop(*shmControlBlock_, shmRingArray_, timestamp, dataBytes, audioPtr)) {
-        shmUnderrunCount_++;
+        // This is now a "true" underrun from the ring buffer's perspective (rd == wr).
+        // The UnderrunCountProxy is incremented inside RTShmRing::pop.
         currentChunk_.invalidate();
         return false;
     }
@@ -318,6 +403,46 @@ bool IsochPacketProvider::popNextChunk() {
     shmPopCount_++;
     return true;
 }
+
+// bool IsochPacketProvider::popNextChunk() {
+//     if (!shmControlBlock_ || !shmRingArray_) {
+//         return false;
+//     }
+
+//     // === NEW: Secondary Safety Check (Defense in Depth) ===
+//     if (!hasMinimumFillLevel()) {
+//         if (logger_) {
+//             // Throttled logging to avoid spam
+//             static thread_local uint32_t logCounter = 0;
+//             if ((logCounter++ % 1000) == 0) {
+//                 logger_->debug("popNextChunk called when below safety margin (count: {})", logCounter);
+//             }
+//         }
+//         currentChunk_.invalidate();
+//         return false;
+//     }
+
+//     AudioTimeStamp timestamp;
+//     uint32_t dataBytes;
+//     const std::byte* audioPtr;
+
+//     // Use your zero-copy pop API
+//     if (!RTShmRing::pop(*shmControlBlock_, shmRingArray_, timestamp, dataBytes, audioPtr)) {
+//         shmUnderrunCount_++;
+//         currentChunk_.invalidate();
+//         return false;
+//     }
+
+//     // Cache the chunk data
+//     currentChunk_.timeStamp = timestamp;
+//     currentChunk_.totalBytes = dataBytes;
+//     currentChunk_.audioDataPtr = audioPtr;
+//     currentChunk_.consumedBytes = 0;
+//     currentChunk_.valid = true;
+    
+//     shmPopCount_++;
+//     return true;
+// }
 
 
 // simplified version of isReadyForStreaming - testing
@@ -356,15 +481,19 @@ void IsochPacketProvider::reset() {
     fillPacketCallCount_ = 0;
     totalFillPacketTimeNs_ = 0;
     lastStatsTime_ = std::chrono::steady_clock::now();
-    
+
     // === NEW: Reset safety margin state ===
     safetyMarginChunks_ = 4; // Reset to default
     safetyMarginHolds_ = 0;
     safetyMarginAdjustments_ = 0;
     lastSafetyAdjustTime_ = std::chrono::steady_clock::now();
-    
+
+    // === NEW: Reset histogram data ===
+    resetFillLevelHistogram();
+    lastHistogramLogTime_ = std::chrono::steady_clock::now();
+
     if (logger_) {
-        logger_->info("IsochPacketProvider reset (direct SHM mode with safety margin)");
+        logger_->info("IsochPacketProvider reset, including fill level histogram.");
     }
 }
 
@@ -602,6 +731,64 @@ void IsochPacketProvider::resetDiagnostics() {
     if (logger_) {
         logger_->debug("IsochPacketProvider diagnostics reset");
     }
+}
+
+// IsochPacketProvider.cpp
+std::map<uint32_t, uint64_t> IsochPacketProvider::getFillLevelHistogram() const {
+    std::lock_guard<std::mutex> lock(histogramMutex_);
+    std::map<uint32_t, uint64_t> histoMap;
+    for (uint32_t i = 0; i < fillLevelHistogram_.size(); ++i) {
+        uint64_t count = fillLevelHistogram_[i].load(std::memory_order_relaxed);
+        if (count > 0) {
+            histoMap[i] = count;
+        }
+    }
+    uint64_t overflow = fillLevelOverflowCount_.load(std::memory_order_relaxed);
+    if (overflow > 0) {
+        histoMap[HISTOGRAM_MAX_BINS] = overflow;
+    }
+    return histoMap;
+}
+
+void IsochPacketProvider::resetFillLevelHistogram() {
+    std::lock_guard<std::mutex> lock(histogramMutex_);
+    for (auto& count : fillLevelHistogram_) {
+        count.store(0, std::memory_order_relaxed);
+    }
+    fillLevelOverflowCount_.store(0, std::memory_order_relaxed);
+    if (logger_) {
+        logger_->debug("Fill level histogram reset.");
+    }
+}
+
+void IsochPacketProvider::logFillLevelHistogram() const {
+ // NOP - daemon queries histogram...
+}
+
+
+// Helper method for the leaky bucket check
+bool IsochPacketProvider::hasSufficientDataForPop() const {
+    if (!shmControlBlock_) {
+        return false; // Not bound, so definitely not sufficient
+    }
+    // Check if the stream is even active from the driver's perspective
+    if (StreamActiveProxy(*shmControlBlock_).load(std::memory_order_acquire) == 0) {
+        // If you want to log this specific "not active yet" case:
+        // static thread_local uint32_t notActiveLog = 0;
+        // if ((notActiveLog++ % 8000) == 0 && logger_) { // Log ~once/sec
+        //     logger_->debug("hasSufficientDataForPop: Stream not marked active by driver yet.");
+        // }
+        return false; // Don't pop if driver hasn't signaled active
+    }
+
+    auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+    auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
+    uint64_t availableChunks = (wr >= rd) ? (wr - rd) : 0;
+
+    // The core logic: are there MORE chunks available than our minimum threshold?
+    // If availableChunks is 5, and kMinChunksToPop is 4, (5 > 4) is true, so we can pop.
+    // If availableChunks is 4, and kMinChunksToPop is 4, (4 > 4) is false, so we hold.
+    return availableChunks > kMinChunksToPop;
 }
 
 } // namespace Isoch

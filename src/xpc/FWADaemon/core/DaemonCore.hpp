@@ -32,6 +32,7 @@
 
 // Isochronous transmitter interface
 #include "Isoch/interfaces/ITransmitPacketProvider.hpp"
+#include "Isoch/core/AmdtpTransmitter.hpp" // For Diagnostics
 
 namespace FWA {
 
@@ -113,6 +114,10 @@ public:
                                 int               level,
                                 const std::string& source);
 
+    // DIAGNOSTICS
+    std::expected<std::map<uint32_t, uint64_t>, DaemonCoreError> getSHMFillLevelHistogram(uint64_t deviceGuid);
+    std::expected<void, DaemonCoreError> resetSHMFillLevelHistogram(uint64_t deviceGuid);
+
 private:
     // Controller thread / run loop
     void controllerThreadRunLoopFunc();
@@ -165,6 +170,9 @@ private:
 
     // Helper to get device by GUID
     std::expected<std::shared_ptr<AudioDevice>, DaemonCoreError> getDeviceByGuid(uint64_t guid);
+
+    // FOR DIAGNOSTICS
+    std::shared_ptr<FWA::Isoch::AmdtpTransmitter> mainTransmitter_;
 };
 
 } // namespace FWA

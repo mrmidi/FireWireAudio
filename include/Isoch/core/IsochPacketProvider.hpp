@@ -7,11 +7,21 @@
 #include <chrono>
 #include <spdlog/spdlog.h>
 
+#include <vector> //for fillLevelHistogram_
+#include <map>    // for fillLevelHistogram_
+
 namespace FWA {
 namespace Isoch {
 
 class IsochPacketProvider : public ITransmitPacketProvider {
 private:
+    // --- Telemetry for SHM Fill Level ---
+    mutable std::mutex histogramMutex_; // Protects histogram access if queried from another thread
+    static constexpr uint32_t HISTOGRAM_MAX_BINS = 1024; // Max fill level to track individually
+    mutable std::vector<std::atomic<uint64_t>> fillLevelHistogram_;
+    mutable std::atomic<uint64_t> fillLevelOverflowCount_{0}; // Count for fill levels > HISTOGRAM_MAX_BINS
+    mutable std::chrono::steady_clock::time_point lastHistogramLogTime_;
+    static constexpr auto HISTOGRAM_LOG_INTERVAL = std::chrono::seconds(10); // Log histogram every 10s
     mutable std::mutex bindMutex_;  // Protect bind/unbind operations
 public:
     explicit IsochPacketProvider(std::shared_ptr<spdlog::logger> logger);
@@ -53,13 +63,21 @@ public:
         uint32_t currentSafetyMarginChunks;
         uint64_t safetyMarginAdjustments;
     };
+
+    // --- Safety Margin Configuration ---
+    void setSafetyMarginChunks(uint32_t chunks);
+    uint32_t getSafetyMarginChunks() const { return safetyMarginChunks_; }
+
+
+    // Get diagnostics and reset them
     
     DiagnosticStats getDiagnostics() const;
     void resetDiagnostics();
 
-    // --- NEW: Safety Margin Configuration ---
-    void setSafetyMarginChunks(uint32_t chunks);
-    uint32_t getSafetyMarginChunks() const { return safetyMarginChunks_; }
+    std::map<uint32_t, uint64_t> getFillLevelHistogram() const; // Ensure this declaration exists
+    void resetFillLevelHistogram();                             // Ensure this declaration exists
+
+
 
 private:
 
@@ -113,6 +131,7 @@ private:
     static constexpr uint32_t LOW_WATER_MARK_PERCENT = 20;     // 25% full - decrease safety
 
     // --- Helper Methods ---
+    void logFillLevelHistogram() const; // New helper to print the histogram
     bool popNextChunk();
     void handleUnderrun(const TransmitPacketInfo& info);
     void formatToAM824InPlace(uint8_t* buffer, size_t bufferSize) const;
@@ -141,8 +160,13 @@ private:
         return nullptr;
     }
 
+    // SAFETY MARGIN CONSTANTS AND DECLARATIONS
+    static constexpr uint32_t kMinChunksToPop = 8; // Example: Require at least 4 chunks available
 
-    // --- NEW: Safety Margin Helper Methods ---
+    // Helper to check if we have enough beyond the minimum threshold
+    bool hasSufficientDataForPop() const;
+
+    // --- Safety Margin Helper Methods ---
     bool hasMinimumFillLevel() const;
     void adjustSafetyMargin();
     void generateProactiveSilence(uint8_t* targetBuffer, size_t targetBufferSize, 

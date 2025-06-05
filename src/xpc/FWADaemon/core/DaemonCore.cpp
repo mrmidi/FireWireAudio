@@ -26,14 +26,37 @@ class XpcSink : public spdlog::sinks::base_sink<Mutex> {
 public:
     explicit XpcSink(DaemonCore* core): _core(core) {}
 protected:
+    // void sink_it_(const spdlog::details::log_msg& msg) override {
+    //     if (!_core->isLogCallbackToXpcSet()) return;
+    //     spdlog::memory_buf_t buf;
+    //     this->formatter_->format(msg, buf);
+    //     _core->invokeLogCallbackToXpc(
+    //         fmt::to_string(buf),
+    //         int(msg.level),
+    //         // std::string(msg.m_loggername.data(), msg.m_loggername.size())
+    //         std::string(msg.logger_name.data(), msg.logger_name.size())
+
+    //     );
+    // }
     void sink_it_(const spdlog::details::log_msg& msg) override {
-        if (!_core->isLogCallbackToXpcSet()) return;
+        if (!_core->isLogCallbackToXpcSet()) { // Add this check or ensure _core->invokeLogCallbackToXpc handles null m_logCb_toXPC
+             // Optionally log to stderr if the callback isn't set, but be careful of recursion
+            return;
+        }
         spdlog::memory_buf_t buf;
-        this->formatter_->format(msg, buf);
+        this->formatter_->format(msg, buf); // Formats the main message payload
+        
+        std::string logger_name_str;
+        if (msg.logger_name.size() > 0) { // Check if logger_name is not empty
+            logger_name_str = std::string(msg.logger_name.data(), msg.logger_name.size());
+        } else {
+            logger_name_str = "unknown_logger"; // Provide a fallback
+        }
+
         _core->invokeLogCallbackToXpc(
-            fmt::to_string(buf),
-            int(msg.level),
-            std::string(msg.logger_name.data(), msg.logger_name.size())
+            fmt::to_string(buf),         // The formatted log message
+            static_cast<int>(msg.level), // The log level
+            logger_name_str              // The (now correctly accessed) logger name
         );
     }
     void flush_() override {}
@@ -727,6 +750,59 @@ std::expected<void,DaemonCoreError> DaemonCore::validateSharedMemoryFormat() {
     }
     
     return {};
+}
+
+// -----------------------------------------------------------------------------
+//  Diagnostics
+// -----------------------------------------------------------------------------
+std::expected<std::map<uint32_t, uint64_t>, DaemonCoreError> DaemonCore::getSHMFillLevelHistogram(uint64_t deviceGuid) {
+    m_logger->debug("DaemonCore: getSHMFillLevelHistogram for GUID 0x{:016X}", deviceGuid);
+    // --- Find the correct AmdtpTransmitter and its IsochPacketProvider ---
+    // This logic depends on how you manage transmitters.
+    // Example for a single global transmitter:
+    if (mainTransmitter_) { // Assuming mainTransmitter_ is your active one
+        FWA::Isoch::ITransmitPacketProvider* provider = mainTransmitter_->getPacketProvider();
+        if (provider) {
+            // Downcast (carefully, or have ITransmitPacketProvider expose histogram methods)
+            FWA::Isoch::IsochPacketProvider* concreteProvider = dynamic_cast<FWA::Isoch::IsochPacketProvider*>(provider);
+            if (concreteProvider) {
+                return concreteProvider->getFillLevelHistogram();
+            } else {
+                m_logger->error("DaemonCore: Packet provider is not of expected type IsochPacketProvider for GUID 0x{:016X}", deviceGuid);
+                return std::unexpected(DaemonCoreError::XPCInterfaceError);
+            }
+        } else {
+            m_logger->error("DaemonCore: No packet provider found for active transmitter for GUID 0x{:016X}", deviceGuid);
+            return std::unexpected(DaemonCoreError::XPCInterfaceError);
+        }
+    } else {
+        m_logger->warn("DaemonCore: No active transmitter to get histogram from for GUID 0x{:016X}", deviceGuid);
+        return std::map<uint32_t, uint64_t>{}; // Return empty map
+    }
+}
+
+std::expected<void, DaemonCoreError> DaemonCore::resetSHMFillLevelHistogram(uint64_t deviceGuid) {
+    m_logger->info("DaemonCore: resetSHMFillLevelHistogram for GUID 0x{:016X}", deviceGuid);
+    // Similar logic to find the provider and call reset
+    if (mainTransmitter_) {
+        FWA::Isoch::ITransmitPacketProvider* provider = mainTransmitter_->getPacketProvider();
+        if (provider) {
+            FWA::Isoch::IsochPacketProvider* concreteProvider = dynamic_cast<FWA::Isoch::IsochPacketProvider*>(provider);
+            if (concreteProvider) {
+                concreteProvider->resetFillLevelHistogram();
+                return {}; // Success
+            } else {
+                m_logger->error("DaemonCore: Packet provider is not of expected type IsochPacketProvider for reset, GUID 0x{:016X}", deviceGuid);
+                return std::unexpected(DaemonCoreError::XPCInterfaceError);
+            }
+        } else {
+             m_logger->error("DaemonCore: No packet provider for reset, GUID 0x{:016X}", deviceGuid);
+            return std::unexpected(DaemonCoreError::XPCInterfaceError);
+        }
+    } else {
+        m_logger->warn("DaemonCore: No active transmitter to reset histogram for GUID 0x{:016X}", deviceGuid);
+        return {}; // Or an error if transmitter should exist
+    }
 }
 
 } // namespace FWA

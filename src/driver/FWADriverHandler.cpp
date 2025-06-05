@@ -117,15 +117,34 @@ bool FWADriverHandler::PushToSharedMemory(const AudioBufferList* src, const Audi
 OSStatus FWADriverHandler::OnStartIO() {
     os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: OnStartIO called.", LogPrefix);
     if (!controlBlock_ || !ringBuffer_) {
-        os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: ERROR - Cannot StartIO, shared memory not set up.", LogPrefix);
+        os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: ERROR - Cannot StartIO, shared memory not set up.", LogPrefix);
         return kAudioHardwareUnspecifiedError;
     }
-    localOverrunCounter_ = 0;
-    os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: STUB - Assuming Daemon started IO successfully.", LogPrefix);
+
+    localOverrunCounter_ = 0; 
+
+    // Reset read/write indices IF NECESSARY.
+    // The expert suggested the daemon might reset readIndex.
+    // If the driver is the sole authority on SHM init for a new stream:
+    // RTShmRing::WriteIndexProxy(*controlBlock_).store(0, std::memory_order_release); // Release so daemon sees it
+    // RTShmRing::ReadIndexProxy(*controlBlock_).store(0, std::memory_order_release);  // Release so daemon sees it
+    // Clearing sequence numbers in the ring might also be needed if they are not reset by the consumer.
+    // For simplicity, if the daemon always starts reading from where the producer starts writing after reset,
+    // just setting streamActive might be enough.
+
+    // **Signal that the stream is now active and the driver WILL start pushing data**
+    // **as soon as Core Audio provides it.**
+    StreamActiveProxy(*controlBlock_).store(1, std::memory_order_release);
+
+    os_log_info(OS_LOG_DEFAULT, "%sFWADriverHandler: OnStartIO completed. Stream marked active (streamActive = 1). Daemon can now attempt to consume.", LogPrefix);
     return kAudioHardwareNoError;
 }
 
 void FWADriverHandler::OnStopIO() {
     os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: OnStopIO called.", LogPrefix);
-    // Optionally update shared atomic counters here
+    if (controlBlock_) {
+        StreamActiveProxy(*controlBlock_).store(0, std::memory_order_release); // Mark as inactive
+        os_log_info(OS_LOG_DEFAULT, "%sFWADriverHandler: Stream marked inactive (streamActive = 0).", LogPrefix);
+    }
+    // Optionally, could also send an XPC message to daemon if it needs explicit stop notification beyond SHM flag
 }

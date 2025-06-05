@@ -167,7 +167,6 @@ target_link_libraries(Shared PUBLIC spdlog "-framework Foundation")
 add_subdirectory(src/Isoch)
 add_subdirectory(src/FWA)
 add_subdirectory(src/driver)
-add_subdirectory(src/xpc/FWAXPC)
 
 
 # --- XPC Service bundle ---
@@ -211,10 +210,8 @@ endif()
 target_link_libraries(${XPC_SERVICE_NAME} PRIVATE
   spdlog
   "-framework Foundation"
-  Shared
-  FWAXPC
-  FWAIsoch
   FWA
+  # Note: Shared and FWAIsoch are pulled in transitively through FWA
   # Note: Linker flags from SANITIZER_LINK_FLAGS_LIST are applied via target_link_options,
   # not directly in target_link_libraries unless they are actual library names like -lsomething
 )
@@ -236,16 +233,15 @@ endif()
 if(SANITIZER_LINK_FLAGS_LIST)
   target_link_options(FirewireAudioDaemon PRIVATE ${SANITIZER_LINK_FLAGS_LIST})
 endif()
-target_link_libraries(FirewireAudioDaemon PRIVATE FWA Shared FWAXPC FWAIsoch)
+target_link_libraries(FirewireAudioDaemon PRIVATE FWA)
+# Note: FWAIsoch and Shared are pulled in transitively through FWA
 
 # --- FWA-Control Swift GUI app ---
 # Define Swift source files explicitly by group 
 # (Instead of using GLOB which can be problematic with source_group)
 set(SWIFT_MODEL_SOURCES
-  FWA-Control/Models/DomainModels.swift
-  FWA-Control/Models/Enums.swift
-  FWA-Control/Models/JsonDecodables.swift
-  FWA-Control/Models/ModelTypes.swift
+  FWA-Control/Models/Models.swift
+  FWA-Control/Models/DiagnosticsModels.swift
 )
 
 set(SWIFT_VIEW_SOURCES
@@ -266,8 +262,6 @@ set(SWIFT_VIEW_SOURCES
   FWA-Control/PlugListView.swift
   FWA-Control/SubunitInfoSectionView.swift
   FWA-Control/UnitInfoSectionView.swift
-  # streams view
-  FWA-Control/StreamsView.swift
   # Views subdirectory
   FWA-Control/Views/DevicePickerView.swift
   FWA-Control/Views/DeviceOverviewCard.swift
@@ -277,6 +271,7 @@ set(SWIFT_VIEW_SOURCES
   FWA-Control/Views/TechnicalSpecsSection.swift
   FWA-Control/Views/SharedOverviewComponents.swift
   FWA-Control/Views/EmptyDeviceStateView.swift
+  FWA-Control/Views/DiagnosticsView.swift
 )
 
 set(SWIFT_VIEWMODEL_SOURCES
@@ -357,8 +352,6 @@ target_link_libraries(FWA-Control PRIVATE
   Logging
   SwiftCollectionsManual
   FWA
-  Shared
-  FWAXPC
   "-framework SwiftUI"
   "-framework Cocoa"
   "-framework Foundation"
@@ -367,7 +360,8 @@ target_link_libraries(FWA-Control PRIVATE
   "-framework CoreAudio"
   "-framework AVFoundation"
 )
-add_dependencies(FWA-Control Logging SwiftCollectionsManual FWADaemon FWADriver FWA Shared FWAXPC)
+# Note: FWAIsoch and Shared are pulled in transitively through FWA
+add_dependencies(FWA-Control Logging SwiftCollectionsManual FWADaemon FWADriver FWA Shared)
 # --- Relax Swift 6 concurrency checks ---
 target_compile_options(FWA-Control PRIVATE
   $<$<COMPILE_LANGUAGE:Swift>:-Xfrontend -strict-concurrency=targeted>
@@ -408,7 +402,6 @@ src/FWA/IOKitFireWireDeviceDiscovery.cpp
 src/FWA/JsonHelpers.cpp
 src/FWA/XPC/XPCBridge.mm
 src/FWA/XPC/XPCReceiverClient.mm
-src/FWA/XPC/MixedAudioBuffer.m
 src/main.cpp
 )
 
@@ -426,7 +419,6 @@ include/FWA/XPC/XPCBridge.h
 include/FWA/XPC/XPCReceiverClient.hpp
 include/FWA/XPC/DuetXPCProtocol.h
 include/FWA/XPC/DuetXPCClientProtocol.h
-include/FWA/XPC/MixedAudioBuffer.h
 )
 
 # Group Isoch source files
@@ -509,7 +501,6 @@ include/xpc/FWADaemon/FWADaemonClientProtocol.h
 include/xpc/FWADaemon/FWADaemonControlProtocol.h
 include/xpc/FWADaemon/FWAClientNotificationProtocol.h
 include/xpc/FWADaemon/XPCReceiverClientProtocol.h
-include/xpc/FWADaemon/MixedAudioBuffer.h
 )
 
 # --- Source Groups for Swift Application ---

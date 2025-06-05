@@ -270,105 +270,8 @@ static void * const kInternalQueueContext = (void *)&kInternalQueueContext;
 clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
            withReply:(void (^)(BOOL success, NSDictionary * _Nullable daemonInfo))reply
 {
-    SPDLOG_WARN("DEPRECATED: registerClient called from '{}' - use registerClientAndStartEngine instead", [clientID UTF8String] ?: "<nil_client_id>");
-    
-    if (!clientID || [clientID length] == 0 || !clientNotificationEndpoint) {
-        SPDLOG_ERROR("Registration failed - invalid clientID or endpoint for '{}'.", [clientID UTF8String] ?: "<nil_client_id>");
-        if (reply) reply(NO, nil);
-        return;
-    }
-
-    // Use the endpoint to establish the connection back TO the client
-    NSXPCConnection *clientConnection = [[NSXPCConnection alloc] initWithListenerEndpoint:clientNotificationEndpoint];
-    clientConnection.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(FWAClientNotificationProtocol)]; // Use correct protocol
-
-    ClientInfo *newClientInfo = [[ClientInfo alloc] init];
-    newClientInfo.clientID = clientID;
-    newClientInfo.connection = clientConnection; // This connection is for calling the CLIENT
-
-
-    // Notify GUI that driver is connected
-    if (self.driverIsConnected) {
-        id<FWAClientNotificationProtocol> guiProxy = newClientInfo.remoteProxy;
-        @try {
-            [guiProxy driverConnectionStatusDidChange:self.driverIsConnected];
-            SPDLOG_INFO("Notified GUI '{}' of driverConnected=YES on registration.", [clientID UTF8String]);
-        } @catch (NSException *ex) {
-            os_log_error(OS_LOG_DEFAULT,
-                "[FWADaemon] Failed to notify GUI '%{public}@' on register: %{public}@",
-                clientID, ex);
-        }
-    }
-
-    // Error handler for the connection TO the client
-    newClientInfo.remoteProxy = [clientConnection remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
-        const char* clientID_cstr = [clientID UTF8String];
-        const char* error_cstr = [[error description] UTF8String];
-        SPDLOG_ERROR("XPC error calling remote proxy for client '{}': {}",
-                     clientID_cstr ? clientID_cstr : "<nil_id>",
-                     error_cstr ? error_cstr : "<nil_error>");
-        [self performOnInternalQueueAsync:^{
-             ClientInfo *info = self.connectedClients[clientID];
-             if (info && info.connection == clientConnection) {
-                 SPDLOG_INFO("Removing client '{}' due to remote proxy error.", clientID_cstr ? clientID_cstr : "<nil_id>");
-                 [self.connectedClients removeObjectForKey:clientID];
-             }
-         }];
-    }];
-
-    // Invalidation handler for the connection TO the client
-    clientConnection.invalidationHandler = ^{
-        const char* clientID_cstr = [clientID UTF8String];
-        SPDLOG_INFO("Client connection invalidated for '{}'.", clientID_cstr ? clientID_cstr : "<nil_id>");
-        [self performOnInternalQueueAsync:^{
-            ClientInfo *info = self.connectedClients[clientID];
-            if (info && info.connection == clientConnection) {
-                SPDLOG_INFO("Removing client '{}' from registry.", clientID_cstr ? clientID_cstr : "<nil_id>");
-                [self.connectedClients removeObjectForKey:clientID];
-            } else {
-                SPDLOG_INFO("Invalidation handler: Client '{}' not found or connection mismatch.", clientID_cstr ? clientID_cstr : "<nil_id>");
-            }
-        }];
-    };
-
-    [clientConnection resume];
-
-    // Store the new client info thread-safely
-    [self performOnInternalQueueSync:^{
-        ClientInfo* existingClient = self.connectedClients[clientID];
-        if (existingClient) {
-            SPDLOG_WARN("Client ID '{}' already registered. Invalidating old connection.", [clientID UTF8String]);
-            [existingClient.connection invalidate];
-        }
-        self.connectedClients[clientID] = newClientInfo;
-        SPDLOG_INFO("Client '{}' successfully registered.", [clientID UTF8String]);
-    }];
-    // Immediately notify GUI of current driverConnected state if already connected
-    if (self.driverIsConnected) {
-        id<FWAClientNotificationProtocol> guiProxy = newClientInfo.remoteProxy;
-        @try {
-            [guiProxy driverConnectionStatusDidChange:self.driverIsConnected];
-            SPDLOG_INFO("Notified GUI '{}' of driverConnected=YES on registration.", [clientID UTF8String]);
-        } @catch (NSException *ex) {
-            os_log_error(OS_LOG_DEFAULT,
-                         "[FWADaemon] Failed to notify GUI '%{public}s' on register: %{public}@",
-                         [clientID UTF8String], ex);
-        }
-    }
-
-    // Perform a quick handshake: ping the GUI and log the reply
-    id<FWAClientNotificationProtocol> guiProxy = [clientConnection remoteObjectProxy];
-    [guiProxy daemonHandshake:^(BOOL ok) {
-            if (ok) {
-                SPDLOG_INFO("Handshake with GUI client '{}' succeeded.", [clientID UTF8String]);
-            } else {
-                SPDLOG_ERROR("Handshake with GUI client '{}' failed.", [clientID UTF8String]);
-            }
-    }];
-
-    // Prepare reply info
-    NSDictionary *daemonInfo = @{ @"daemonVersion": @"0.1.0-stub" };
-    if (reply) reply(YES, daemonInfo);
+    SPDLOG_WARN("DEPRECATED: registerClient called from '{}' - use registerClientAndStartEngine instead (NOP)", [clientID UTF8String] ?: "<nil_client_id>");
+    if (reply) reply(NO, nil);
 }
 
 - (void)unregisterClient:(NSString *)clientID {
@@ -1066,7 +969,79 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
     // No need for an 'else' log here, the sink already decided not to call if no clients.
 }
 
+- (void)getSHMFillLevelHistogramForDevice:(uint64_t)guid
+                                withReply:(void (^)(NSDictionary<NSNumber *, NSNumber *> * _Nullable histogramData, NSError * _Nullable error))reply {
+    
+    const char* guid_str = [[NSString stringWithFormat:@"0x%016llX", guid] UTF8String];
+    SPDLOG_DEBUG("XPC: getSHMFillLevelHistogramForDevice: GUID={}", guid_str ? guid_str : "<nil>");
 
-// END ADDED/MOVED Method Implementations +++
+    if (!_cppCore) {
+        SPDLOG_ERROR("Cannot get histogram, C++ DaemonCore is nil.");
+        if (reply) reply(nil, [NSError errorWithDomain:FWADaemonErrorDomain code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]);
+        return;
+    }
+
+    // Assuming DaemonCore has a method that forwards to IsochPacketProvider
+    // This method in DaemonCore would look like:
+    // std::map<uint32_t, uint64_t> DaemonCore::getIsochProviderHistogram(uint64_t deviceGuid);
+    std::map<uint32_t, uint64_t> cppHistogram;
+    bool success = false;
+
+    // You'll need to decide how DaemonCore accesses the correct IsochPacketProvider
+    // if you have multiple devices/transmitters. For now, let's assume a single one or
+    // that DaemonCore can find the right one based on GUID.
+    // If your IsochPacketProvider is a member of AmdtpTransmitter, and AmdtpTransmitter
+    // is managed per device in DaemonCore:
+    // success = _cppCore->getHistogramDataForDevice(guid, cppHistogram); // Imaginary method
+
+    // Let's assume for now _cppCore has a direct way to get it, or a default provider's histogram
+    // For example, if IsochPacketProvider is part of the AmdtpTransmitter, and you have one transmitter:
+    // Or if DaemonCore manages IsochPacketProvider directly.
+    // This part depends on your DaemonCore architecture.
+    // Let's make a placeholder call:
+    std::expected<std::map<uint32_t, uint64_t>, FWA::DaemonCoreError> histoResult = _cppCore->getSHMFillLevelHistogram(guid);
+
+    if (!histoResult) {
+        SPDLOG_ERROR("Failed to get histogram data from C++ core for GUID {}: {}", guid_str ? guid_str : "<nil>", static_cast<int>(histoResult.error()));
+        if (reply) reply(nil, errorFromDaemonCoreError(histoResult.error(), @"Failed to retrieve histogram data"));
+        return;
+    }
+    
+    cppHistogram = histoResult.value();
+
+    // Convert std::map<uint32_t, uint64_t> to NSDictionary<NSNumber*, NSNumber*>
+    NSMutableDictionary<NSNumber *, NSNumber *> *nsHistogram = [NSMutableDictionary dictionaryWithCapacity:cppHistogram.size()];
+    for (const auto& pair : cppHistogram) {
+        nsHistogram[@(pair.first)] = @(pair.second);
+    }
+
+    SPDLOG_DEBUG("Returning histogram with {} entries for GUID {}", nsHistogram.count, guid_str ? guid_str : "<nil>");
+    if (reply) reply(nsHistogram, nil);
+}
+
+- (void)resetSHMFillLevelHistogramForDevice:(uint64_t)guid
+                                  withReply:(void (^)(BOOL success, NSError * _Nullable error))reply {
+
+    const char* guid_str = [[NSString stringWithFormat:@"0x%016llX", guid] UTF8String];
+    SPDLOG_INFO("XPC: resetSHMFillLevelHistogramForDevice: GUID={}", guid_str ? guid_str : "<nil>");
+
+    if (!_cppCore) {
+        SPDLOG_ERROR("Cannot reset histogram, C++ DaemonCore is nil.");
+        if (reply) reply(NO, [NSError errorWithDomain:FWADaemonErrorDomain code:1000 userInfo:@{NSLocalizedDescriptionKey:@"Daemon core not ready"}]);
+        return;
+    }
+
+    // Assuming DaemonCore has a method to reset it
+    std::expected<void, FWA::DaemonCoreError> resetResult = _cppCore->resetSHMFillLevelHistogram(guid);
+
+    if (!resetResult) {
+        SPDLOG_ERROR("Failed to reset histogram in C++ core for GUID {}: {}", guid_str ? guid_str : "<nil>", static_cast<int>(resetResult.error()));
+        if (reply) reply(NO, errorFromDaemonCoreError(resetResult.error(), @"Failed to reset histogram"));
+        return;
+    }
+
+    SPDLOG_INFO("Successfully reset histogram for GUID {}", guid_str ? guid_str : "<nil>");
+    if (reply) reply(YES, nil);
+}
 
 @end

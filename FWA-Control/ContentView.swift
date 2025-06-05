@@ -1,4 +1,4 @@
-// === FWA-Control/ContentView.swift (Updated Toolbar) ===
+// === FWA-Control/ContentView.swift (Updated with Diagnostics) ===
 
 import SwiftUI
 import UniformTypeIdentifiers
@@ -60,8 +60,8 @@ struct ContentView: View {
                 .tabItem { Label("AV/C", systemImage: "terminal") }
                 .tag(3)
                 .keyboardShortcut("4", modifiers: .command)
-            StreamsView()
-                .tabItem { Label("Streams", systemImage: "waveform.path.ecg") }
+            DiagnosticsView()
+                .tabItem { Label("Diagnostics", systemImage: "chart.bar.xaxis") }
                 .tag(4)
                 .keyboardShortcut("5", modifiers: .command)
         }
@@ -89,7 +89,7 @@ struct ContentView: View {
         
         // Refresh functionality - only for views that need it
         ToolbarItemGroup {
-            if selectedTab == 0 || selectedTab == 1 || selectedTab == 4 {
+            if selectedTab == 0 || selectedTab == 1 {
                 Button {
                     logger.info("User requested refresh all devices.")
                     uiManager.refreshAllDevices()

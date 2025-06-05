@@ -15,8 +15,6 @@
 #include <chrono>  // For sleep_for & time points
 #include <ctime>   // For std::time
 #include "Isoch/interfaces/ITransmitPacketProvider.hpp" // Include for the packet provider interface
-// #include "xpc/FWAXPC/ShmIsochBridge.hpp" // Updated path from shared/xpc
-#include "xpc/FWAXPC/RingBufferManager.hpp"
 
 // Define stream direction enable/disable flags
 #define RECEIVE 0  // Set to 0 to disable receiver (input stream)

@@ -17,7 +17,6 @@ public struct DeviceStatus: Sendable {
     public let vendor: String?
 }
 
-/// Immutable, thread-safe wrapper for heterogeneous dictionaries returned by the daemon.
 public struct InfoDictionary: @unchecked Sendable {
     public let raw: [AnyHashable: Any]
     public init(_ raw: [AnyHashable: Any]) { self.raw = raw }
@@ -47,25 +46,6 @@ private struct ReplyWrapper: @unchecked Sendable {
 // MARK: - XPCManager actor
 
 public final actor XPCManager {
-    /// Get current driver connection state from daemon
-    public func getIsDriverConnected() async -> Bool? {
-        guard let proxy = validProxy() else {
-            logger.warning("getIsDriverConnected: No valid proxy to daemon.")
-            return nil
-        }
-        return await withCheckedContinuation { (cc: CheckedContinuation<Bool?, Never>) in
-            proxy.getIsDriverConnected { isConnected in
-                cc.resume(returning: isConnected)
-            }
-        }
-    }
-
-    /// Legacy method name for backward compatibility
-    public func getDriverConnected() async -> Bool? {
-        return await getIsDriverConnected()
-    }
-    // Logger
-//    private let logger = AppLoggers.xpcManager
     
     // Public streams
     public let deviceStatusStream: AsyncStream<DeviceStatus>
@@ -107,9 +87,7 @@ public final actor XPCManager {
 
     // MARK: — Connection Management
 
-    /// Primary method for connecting to daemon and starting the engine
     public func connectAndInitializeDaemonEngine() async throws -> Bool {
-        // Check if already connected
         if xpcConnection != nil {
             logger.info("connectAndInitializeDaemonEngine: Already connected.")
             return true
@@ -117,14 +95,12 @@ public final actor XPCManager {
 
         logger.info("connectAndInitializeDaemonEngine: Establishing new connection and starting engine...")
 
-        // 1. Create listener for callbacks FROM the daemon
         let handler = XPCNotificationHandler(manager: self)
         let localListener = NSXPCListener.anonymous()
         localListener.delegate = handler
         localListener.resume()
         self.listener = localListener
 
-        // 2. Create XPC connection TO the daemon
         let daemonConnection = NSXPCConnection(machServiceName: daemonServiceName, options: [])
         daemonConnection.remoteObjectInterface = NSXPCInterface(with: FWADaemonControlProtocol.self)
 
@@ -138,11 +114,8 @@ public final actor XPCManager {
         daemonConnection.resume()
         self.xpcConnection = daemonConnection
 
-        // 3. Call the consolidated XPC method on the daemon
-
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
             guard let proxy = daemonConnection.remoteObjectProxyWithErrorHandler({ @Sendable [weak self] error in
-                // XPC PROXY ERROR HANDLER (NOT on actor executor)
             Task { @MainActor in
                 self?.handleProxyErrorForContinuation(error: error, specificContinuation: continuation)
                 }
@@ -157,21 +130,10 @@ public final actor XPCManager {
                 self.clientID,
                 clientNotificationEndpoint: localListener.endpoint
             ) { @Sendable [weak self] success, errorFromDaemon in
-                // XPC REPLY BLOCK (NOT on actor executor)
             Task { @MainActor in
                 self?.handleRegisterReplyForContinuation(success: success, error: errorFromDaemon, specificContinuation: continuation)
                 }
             }
-        }
-    }
-
-    /// Legacy connect method - now delegates to consolidated method
-    public func connect() async -> Bool {
-        do {
-            return try await connectAndInitializeDaemonEngine()
-        } catch {
-            logger.error("Connection failed: \(error)")
-            return false
         }
     }
 
@@ -182,16 +144,13 @@ public final actor XPCManager {
     private func handleDisconnect(reason: String, invalidateManually: Bool = true) async {
         logger.warning("XPC closed: \(reason)")
         if invalidateManually {
-            xpcConnection?.invalidate() // Invalidate connection TO daemon
+            xpcConnection?.invalidate()
         }
-        listener?.invalidate()      // Invalidate OUR listener for daemon callbacks
+        listener?.invalidate()
         xpcConnection = nil
         listener = nil
-        // Optionally notify other parts of the GUI that the connection is lost.
-        // Example: cont.driverStatus.yield(false) or a specific "disconnected" event.
     }
 
-    // Actor-isolated method to handle proxy errors and resume a specific continuation
     nonisolated private func handleProxyErrorForContinuation(error: Error,
                                                  specificContinuation: CheckedContinuation<Bool, Error>?) {
         Task { @MainActor in
@@ -201,7 +160,6 @@ public final actor XPCManager {
         }
     }
 
-    // Actor-isolated method to handle replies and resume a specific continuation
     nonisolated private func handleRegisterReplyForContinuation(success: Bool,
                                                    error: Error?,
                                                    specificContinuation: CheckedContinuation<Bool, Error>?) {
@@ -228,6 +186,18 @@ public final actor XPCManager {
     }
 
     // MARK: — Queries
+
+    public func getIsDriverConnected() async -> Bool? {
+        guard let proxy = validProxy() else {
+            logger.warning("getIsDriverConnected: No valid proxy to daemon.")
+            return nil
+        }
+        return await withCheckedContinuation { (cc: CheckedContinuation<Bool?, Never>) in
+            proxy.getIsDriverConnected { isConnected in
+                cc.resume(returning: isConnected)
+            }
+        }
+    }
 
     public func getConnectedGUIDs() async -> [UInt64]? {
         guard let proxy = validProxy() else { return nil }
@@ -303,19 +273,15 @@ public final actor XPCManager {
         cont.driverStatus.yield(ok)
     }
 
-    /// Manually query the daemon for current driver connection state
-    // Removed duplicate getDriverConnected()
-
     // MARK: — Engine Lifecycle Methods
 
-    /// Disconnect from daemon and stop engine (combines old unregisterClientAndStopEngine + disconnect)
     public func disconnectAndStopEngine() async throws -> Bool {
         logger.info("Disconnecting from daemon and stopping engine...")
         
         guard let proxy = validProxy() else {
             logger.warning("No valid proxy available for disconnectAndStopEngine, performing local cleanup only")
             await handleDisconnect(reason: "manual disconnect - no proxy", invalidateManually: true)
-            return true // Consider this success since we're disconnecting anyway
+            return true
         }
         
         let stopSuccess = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
@@ -329,44 +295,8 @@ public final actor XPCManager {
                 }
             }
         }
-        // Always perform local cleanup regardless of daemon response
         await handleDisconnect(reason: "manual disconnect after engine stop", invalidateManually: true)
         return stopSuccess
-    }
-
-    // MARK: — Legacy Engine Methods (Deprecated - use connectAndInitializeDaemonEngine instead)
-
-    @available(*, deprecated, message: "Use connectAndInitializeDaemonEngine() instead")
-    public func registerClientAndStartEngine() async throws -> Bool {
-        logger.warning("Using deprecated registerClientAndStartEngine - consider using connectAndInitializeDaemonEngine")
-        guard let proxy = validProxy() else { 
-            throw NSError(domain: "XPCManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "No valid XPC proxy"])
-        }
-        return await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
-            proxy.registerClientAndStartEngine(clientID, 
-                                              clientNotificationEndpoint: listener!.endpoint) { @Sendable success, error in
-                if let error = error {
-                    self.logger.error("registerClientAndStartEngine failed: \(error)")
-                }
-                cc.resume(returning: success && error == nil)
-            }
-        }
-    }
-
-    @available(*, deprecated, message: "Use disconnectAndStopEngine() instead")
-    public func unregisterClientAndStopEngine() async throws -> Bool {
-        logger.warning("Using deprecated unregisterClientAndStopEngine - consider using disconnectAndStopEngine")
-        guard let proxy = validProxy() else { 
-            throw NSError(domain: "XPCManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "No valid XPC proxy"])
-        }
-        return await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
-            proxy.unregisterClientAndStopEngine(clientID) { @Sendable success, error in
-                if let error = error {
-                    self.logger.error("unregisterClientAndStopEngine failed: \(error)")
-                }
-                cc.resume(returning: success && error == nil)
-            }
-        }
     }
 
     // MARK: — Device Operations
@@ -419,7 +349,46 @@ public final actor XPCManager {
         }
     }
 
-    // MARK: — Proxy Helper
+    // MARK: — Diagnostics Methods
+
+    public func getSHMFillLevelHistogram(guid: UInt64) async -> [UInt32: UInt64]? {
+        guard let proxy = validProxy() else { return nil }
+        return await withCheckedContinuation { (cc: CheckedContinuation<[UInt32: UInt64]?, Never>) in
+            proxy.getSHMFillLevelHistogram(forDevice: guid) { @Sendable histogramData, error in
+                if let error = error {
+                    self.logger.error("getSHMFillLevelHistogram failed: \(error)")
+                    cc.resume(returning: nil)
+                    return
+                }
+                
+                guard let histogramData = histogramData else {
+                    cc.resume(returning: nil)
+                    return
+                }
+                
+                // Convert NSDictionary<NSNumber*, NSNumber*> to [UInt32: UInt64]
+                var result: [UInt32: UInt64] = [:]
+                for (key, value) in histogramData {
+                    let keyNum = key as NSNumber
+                    let valueNum = value as NSNumber
+                    result[keyNum.uint32Value] = valueNum.uint64Value
+                }
+                cc.resume(returning: result)
+            }
+        }
+    }
+
+    public func resetSHMFillLevelHistogram(guid: UInt64) async -> Bool {
+        guard let proxy = validProxy() else { return false }
+        return await withCheckedContinuation { (cc: CheckedContinuation<Bool, Never>) in
+            proxy.resetSHMFillLevelHistogram(forDevice: guid) { @Sendable success, error in
+                if let error = error {
+                    self.logger.error("resetSHMFillLevelHistogram failed: \(error)")
+                }
+                cc.resume(returning: success && error == nil)
+            }
+        }
+    }
 }
 
 // MARK: - XPCNotificationHandler
@@ -429,20 +398,14 @@ private final class XPCNotificationHandler: NSObject,
                                            FWAClientNotificationProtocol,
                                            @unchecked Sendable
 {
-    /// Retain callback connections so they aren't deallocated immediately
     private var callbackConnections = [NSXPCConnection]()
     
-    // MARK: NSXPCListenerDelegate
-    /// Accept the connection that the daemon establishes back to the GUI and
-    /// expose ourselves (`self`) under the FWAClientNotificationProtocol.
     func listener(_ listener: NSXPCListener,
                   shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
         newConnection.exportedInterface =
             NSXPCInterface(with: FWAClientNotificationProtocol.self)
         newConnection.exportedObject = self
-        // Keep a strong reference so this connection stays alive
         callbackConnections.append(newConnection)
-        // When the connection invalidates, remove it from our list
         newConnection.invalidationHandler = { [weak self, weak newConnection] in
             guard let self = self, let conn = newConnection else { return }
             if let idx = self.callbackConnections.firstIndex(of: conn) {
@@ -452,8 +415,10 @@ private final class XPCNotificationHandler: NSObject,
         newConnection.resume()
         return true
     }
+    
     private let logger = AppLoggers.xpcManager
     private unowned let manager: XPCManager
+    
     init(manager: XPCManager) {
         self.manager = manager
         super.init()
@@ -493,17 +458,14 @@ private final class XPCNotificationHandler: NSObject,
 
     // MARK: - Required FWAClientNotificationProtocol Methods
     
-    /// Notifies the client that a new FireWire audio device has been discovered and initialized.
     func deviceAdded(_ deviceSummary: [String : Any]) {
         logger.info("Device added: \(deviceSummary)")
         if let guid = deviceSummary["guid"] as? UInt64 {
-            // Notify EngineService
             let mgr = manager
             Task.detached { [mgr] in
                 await mgr.engineService.handleDeviceUpdate(guid: guid, added: true)
             }
             
-            // Also dispatch to status stream
             let status = DeviceStatus(
                 guid: guid,
                 isConnected: true,
@@ -517,17 +479,14 @@ private final class XPCNotificationHandler: NSObject,
         }
     }
     
-    /// Notifies the client that a previously discovered device has been removed.
     func deviceRemoved(_ guid: UInt64) {
         logger.info("Device removed: GUID 0x\(String(format: "%llX", guid))")
         
-        // Notify EngineService
         let mgr = manager
         Task.detached { [mgr] in
             await mgr.engineService.handleDeviceUpdate(guid: guid, added: false)
         }
         
-        // Also dispatch to status stream
         let status = DeviceStatus(
             guid: guid,
             isConnected: false,
@@ -540,56 +499,45 @@ private final class XPCNotificationHandler: NSObject,
         }
     }
     
-    /// Notifies the client that detailed information or status for a device has been updated.
     func deviceInfoUpdated(_ guid: UInt64, newInfoJSON updatedInfoJSON: String) {
         logger.info("Device info updated for GUID 0x\(String(format: "%llX", guid))")
-        // TODO: Parse JSON and create DeviceConfig update
-        // For now, we'll just log it
     }
     
-    /// Notifies the client about a change in the streaming status for a device.
     func streamStatusChanged(forDevice guid: UInt64, isStreaming: Bool, error: Error?) {
         logger.info("Stream status changed for GUID 0x\(String(format: "%llX", guid)): streaming=\(isStreaming), error=\(String(describing: error))")
-        // TODO: Handle stream status changes
     }
     
-    /// Forwards a log message originating from within the daemon (FWA/Isoch C++ libraries).
     func didReceiveLogMessage(_ senderID: String,
                               level: Int32,
                               message: String)
     {
         logger.critical("****** XPCNotificationHandler::didReceiveLogMessage CALLED! Sender: \(senderID), Level: \(level) ******")
 
-        // Map the integer level to swift-log Level
         let mappedLevel: Logger.Level = Logger.Level.allCases.indices.contains(Int(level))
             ? Logger.Level.allCases[Int(level)]
-            : .debug // Default to debug if level is out of range
+            : .debug
 
-        // Create a UILogEntry
-        // Note: We don't have file/function/line info from the daemon via XPC
         let entry = UILogEntry(
             level: mappedLevel,
-            message: .init(stringLiteral: message), // Create Logger.Message
-            metadata: nil, // No metadata forwarded via XPC currently
-            source: senderID, // Use the senderID from XPC as the source
-            file: "#XPC#",     // Placeholder
-            function: "#\(senderID)#", // Placeholder indicating source
-            line: 0           // Placeholder
+            message: .init(stringLiteral: message),
+            metadata: nil,
+            source: senderID,
+            file: "#XPC#",
+            function: "#\(senderID)#",
+            line: 0
         )
 
         logger.trace("Received log from XPC (\(senderID), \(mappedLevel)): \(message)")
 
-        logger.debug("Broadcasting UILogEntry from XPC: \(entry.id)") // <-- ADD DEBUG LOG
+        logger.debug("Broadcasting UILogEntry from XPC: \(entry.id)")
         Task.detached {
             await LogBroadcaster.shared.broadcast(entry: entry)
         }
     }
     
-    /// Legacy method: Forwards a log message with FWAXPCLoglevel for daemon internal use.
     func didReceiveLogMessage(from senderID: String, level: FWAXPCLoglevel, message: String) {
         logger.trace("Received legacy log message from \(senderID) at level \(level): \(message)")
         
-        // Convert FWAXPCLoglevel to Logger.Level
         let mappedLevel: Logger.Level
         switch level {
         case .trace:    mappedLevel = .trace
@@ -602,7 +550,6 @@ private final class XPCNotificationHandler: NSObject,
         @unknown default: mappedLevel = .debug
         }
         
-        // Create a UILogEntry
         let entry = UILogEntry(
             level: mappedLevel,
             message: .init(stringLiteral: message),
@@ -706,15 +653,14 @@ private final class XPCNotificationHandler: NSObject,
 
     func driverConnectionStatusDidChange(_ isConnected: Bool) {
         logger.info("Received driverConnectionStatusDidChange: \(isConnected)")
-        let mgr = manager // Capture manager reference
-        // Call the manager's dispatcher asynchronously
-        Task.detached { [mgr] in // Use Task.detached for fire-and-forget into the actor
+        let mgr = manager
+        Task.detached { [mgr] in
             await mgr.dispatchDriverStatus(isConnected)
         }
     }
-    // MARK: ‑ Hand‑shake ping
+
     func daemonHandshake(_ reply: @escaping (Bool) -> Void) {
         logger.info("Handshake ping received from daemon ✔︎")
-        reply(true)                       // tell daemon that the callback works
+        reply(true)
     }
 }

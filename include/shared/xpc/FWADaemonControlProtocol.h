@@ -190,6 +190,24 @@ clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
  */
 - (void)requestStopIO:(uint64_t)guid;
 
+// --- Diagnostics ---
+
+/**
+ * @brief Requests the current SHM fill level histogram data from the daemon.
+ * The histogram data is returned as a dictionary where keys are fill levels (as NSNumber)
+ * and values are the counts (as NSNumber of uint64_t).
+ * A special key might indicate overflow counts if applicable.
+ * @param guid The GUID of the device for which the histogram is requested (if you have per-device SHM/providers).
+ *             If SHM is global or only one device is active, this might be ignored or used for context.
+ * @param reply Reply block with the histogram data dictionary or an error.
+ */
+- (void)getSHMFillLevelHistogramForDevice:(uint64_t)guid // or simply without GUID if global
+                                withReply:(void (^)(NSDictionary<NSNumber *, NSNumber *> * _Nullable histogramData, NSError * _Nullable error))reply;
+
+// You might also want a method to reset the histogram from the GUI:
+- (void)resetSHMFillLevelHistogramForDevice:(uint64_t)guid // or simply without GUID
+                                  withReply:(void (^)(BOOL success, NSError * _Nullable error))reply;
+
 @end
 
 NS_ASSUME_NONNULL_END

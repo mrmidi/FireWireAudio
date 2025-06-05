@@ -223,7 +223,3 @@ struct PlugEndpointInfoView: View {
     }
 }
 
-/// Make SignalInfo Identifiable for ForEach loop by using Hashable conformance
-extension SignalInfo: Identifiable {
-     public var id: Int { hashValue }
-}
