@@ -26,6 +26,9 @@ public:
     bool IsSharedMemoryReady() const { return controlBlock_ && ringBuffer_; }
     // Helper for device to push audio data
     bool PushToSharedMemory(const AudioBufferList* src, const AudioTimeStamp& ts, uint32_t frames, uint32_t bytesPerFrame);
+    
+    // Helper to pre-fill ring buffer with silence during startup
+    bool preFillChunk();
 
 private:
     // Shared Memory state

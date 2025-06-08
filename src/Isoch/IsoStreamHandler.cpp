@@ -17,7 +17,7 @@
 #include "Isoch/interfaces/ITransmitPacketProvider.hpp" // Include for the packet provider interface
 
 // Define stream direction enable/disable flags
-#define RECEIVE 0  // Set to 0 to disable receiver (input stream)
+#define RECEIVE 1  // Set to 1 to ENABLE receiver (input stream)
 #define TRANSMIT 1 // Set to 0 to disable transmitter (output stream)
 
 // Define RECORD macro - Set to 0 to disable recording
@@ -250,24 +250,6 @@ std::expected<void, IOKitError> IsoStreamHandler::start() {
     }
     m_logger->info("IsoStreamHandler: Output stream started");
 
-    // --- +++ Start ShmIsochBridge AFTER output stream is started +++ ---
-    m_logger->info("IsoStreamHandler: Starting ShmIsochBridge...");
-    Isoch::ITransmitPacketProvider* provider = getTransmitPacketProvider();
-    if (provider) {
-        // ShmIsochBridge::instance().start(provider); // Pass the provider pointer
-        // We are using RingBufferManager instead of ShmIsochBridge
-        // RingBufferManager::instance().setPacketProvider(provider);
-        m_logger->warn("IsoStreamHandler: THIS SHOULD NOT HAPPEN! ShmIsochBridge is not used anymore, RingBufferManager is used instead.");
-    } else {
-        m_logger->error("IsoStreamHandler: Failed to get Packet Provider from output stream! RingBufferManager NOT started.");
-        // Decide if this is fatal? Probably should be.
-#if RECEIVE
-        if (m_inputStream) m_inputStream->stop(); m_inputStream.reset();
-#endif
-        if (m_outputStream) m_outputStream->stop(); m_outputStream.reset();
-        return std::unexpected(IOKitError::NotReady); // Indicate SHM bridge failed to start
-    }
-    // --- +++ End ShmIsochBridge Start +++ ---
 
 #else // TRANSMIT == 0
     m_logger->info("IsoStreamHandler: Transmitter disabled by build configuration.");
@@ -288,7 +270,6 @@ std::expected<void, IOKitError> IsoStreamHandler::start() {
         if (m_inputStream) m_inputStream->stop(); m_inputStream.reset();
 #if TRANSMIT
         if (m_outputStream) {
-            ShmIsochBridge::instance().stop(); // Stop bridge first
             m_outputStream->stop();
             m_outputStream.reset();
         }
@@ -331,15 +312,6 @@ void IsoStreamHandler::stop() {
         }
     }
 
-    // --- +++ Stop ShmIsochBridge BEFORE stopping output stream +++ ---
-#if TRANSMIT
-    if (m_outputStream) { // Only stop bridge if transmitter was active
-        //  m_logger->info("IsoStreamHandler: Stopping ShmIsochBridge...");
-        //  ShmIsochBridge::instance().stop();
-        //  m_logger->info("IsoStreamHandler: ShmIsochBridge stopped.");
-    }
-#endif
-    // --- +++ End ShmIsochBridge Stop +++ ---
 
 
 #if RECEIVE

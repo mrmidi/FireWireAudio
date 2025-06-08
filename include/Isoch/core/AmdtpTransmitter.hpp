@@ -100,13 +100,6 @@ private:
      };
      BlockingSytParams calculateBlockingSyt();
 
-     // --- Helper for the "NonBlocking" (current AmdtpTransmitter) SYT logic ---
-     struct NonBlockingSytParams {
-         bool isNoData;
-         uint16_t syt_value;
-         // Potentially other outputs specific to this strategy's state updates
-     };
-     NonBlockingSytParams calculateNonBlockingSyt(uint8_t current_dbc_state, bool previous_wasNoData_state);
 
     // Helper to send messages to the client
     void notifyMessage(TransmitterMessage msg, uint32_t p1 = 0, uint32_t p2 = 0);
@@ -138,15 +131,13 @@ private:
      std::atomic<bool> firstDCLCallbackOccurred_{false};
      uint32_t expectedTimeStampCycle_{0}; // For timestamp checking
 
-    // --- NEW: State variables specifically for "Blocking" (UniversalTransmitter-style) SYT ---
-    uint16_t sytOffset_blocking_{TICKS_PER_CYCLE};
+    // --- NEW: State variables specifically for "Blocking" (Apple-style) SYT ---
+    uint32_t lastRawSytOffset_blocking_{0};  // Corresponds to "*last_syt_offset" in Apple's C code
     uint32_t sytPhase_blocking_{0};
 
-    // --- Constants for "Blocking" SYT (distinct from NonBlocking) ---
-    static constexpr uint32_t SYT_PHASE_MOD_BLOCKING = 147;
-    static constexpr uint32_t SYT_PHASE_RESET_BLOCKING = 147;
-    // static constexpr uint32_t BASE_TICKS_BLOCKING = 1386;
-    static constexpr uint32_t BASE_TICKS_BLOCKING = 565;
+    // --- Constants for "Blocking" SYT (Apple's algorithm from Python script) ---
+    static constexpr uint32_t SYT_PHASE_MOD_BLOCKING = 147;          // Same as non-blocking
+    static constexpr uint32_t BASE_INCREMENT_BLOCKING = 1386;        // ⌊24576000/44100⌋ = 1386 ticks per packet
     // TICKS_PER_CYCLE is already defined
 
     // Client Callbacks
@@ -156,11 +147,10 @@ private:
     // Interface
     IOFireWireLibNubRef interface_{nullptr}; // The FireWire nub interface
 
-    // Static constants for SYT calc (44.1kHz)
-    static constexpr uint32_t SYT_PHASE_MOD = 147;
-    static constexpr uint32_t SYT_PHASE_RESET = 1470;
-    static constexpr uint32_t BASE_TICKS = 1386; // ~1/8 of TICKS_PER_CYCLE
-    static constexpr uint32_t TICKS_PER_CYCLE = 3072;
+    // Static constants for SYT calc (44.1kHz) - corrected to match Python script
+    static constexpr uint32_t SYT_PHASE_MOD = 147;              // Phase loop length for 44.1kHz
+    static constexpr uint32_t BASE_INCREMENT = 1386;            // ⌊24576000/44100⌋ = 1386 ticks per packet  
+    static constexpr uint32_t TICKS_PER_CYCLE = 3072;           // 3072 ticks = 1 FireWire cycle (125 µs)
 
 
 
@@ -180,6 +170,9 @@ private:
         size_t audioPayloadSize,
         const TransmitPacketInfo& packetInfo // For context
     );
+
+    // Helper to log packet patterns for verification against Apple Duet capture
+    void logPacketPattern(const CIPHeader* cipHeader);
 
 };
 

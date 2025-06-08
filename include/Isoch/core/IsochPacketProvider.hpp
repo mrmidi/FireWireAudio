@@ -118,6 +118,10 @@ private:
     mutable std::atomic<uint64_t> safetyMarginAdjustments_{0}; // Count of safety margin changes
     mutable std::chrono::steady_clock::time_point lastSafetyAdjustTime_;
 
+    // --- NEW: Priming State for refined buffer management ---
+    mutable std::atomic<bool> isPriming_{true};  // Start in priming state
+    mutable std::atomic<uint64_t> packetsProcessedInPriming_{0};
+
     // Configuration/Constants
     static constexpr uint32_t AM824_LABEL = 0x40;     // 24-bit audio label
     static constexpr uint32_t LABEL_SHIFT = 24;       // Shift for 24-bit label

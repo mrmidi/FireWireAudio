@@ -443,14 +443,34 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
                                  next_dbc_val_for_state_update,    // Output: by reference
                                  next_wasNoData_val_for_state_update // Output: by reference
         );
-        // Update transmitter's persistent state AFTER generating the header for *this* packet
 
+        // --- 4e. POST-CORRECTION: Handle forceNoDataCIP from provider ---
+        if (packetDataStatus.forceNoDataCIP) {
+            if (cipHdrTarget->fdf != 0xFF) { // If SYT logic decided DATA, but provider says NO_DATA
+                static thread_local uint32_t forceNoDataLogCounter = 0;
+                if ((forceNoDataLogCounter++ % 100) == 0) { // Throttle logging
+                    logger_->debug("Provider forcing NO_DATA over SYT's DATA decision (G:{}, P:{}, count:{})", 
+                                  fillGroupIndex, p, forceNoDataLogCounter);
+                }
+                
+                // Override CIP header to NO_DATA
+                cipHdrTarget->fdf = 0xFF;
+                cipHdrTarget->syt = 0xFFFF; // Already big-endian for 0xFFFF
+                
+                // Correct DBC state: NO_DATA packets don't increment DBC
+                next_dbc_val_for_state_update = this->dbc_count_;
+                next_wasNoData_val_for_state_update = true;
+            }
+        }
+
+        // Update packet counters based on final CIP header state
         if (cipHdrTarget->fdf == 0xFF) {
            noDataPacketsSent_.fetch_add(1, std::memory_order_relaxed);
         } else {
             dataPacketsSent_.fetch_add(1, std::memory_order_relaxed);
         }
 
+        // Update transmitter's persistent state AFTER all corrections
         this->dbc_count_ = next_dbc_val_for_state_update;
         this->wasNoData_ = next_wasNoData_val_for_state_update;
 
@@ -475,6 +495,9 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
             );
         }
 
+        // --- NEW: Packet Pattern Logging to verify Apple Duet pattern ---
+        logPacketPattern(cipHdrTarget);
+
         // --- 4f. Update DCL Ranges (crucial change here) ---
         IOVirtualRange ranges[2];
         uint32_t numRanges = 0;
@@ -484,7 +507,7 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         ranges[0].length  = kTransmitCIPHeaderSize;
         numRanges++;
 
-        // Determine if we are sending audio data based on the FDF field of the *just generated* CIP header
+        // Determine if we are sending audio data based on the FINAL FDF field (after forceNoDataCIP correction)
         bool sendAudioPayload = (cipHdrTarget->fdf != 0xFF);
 
         if (sendAudioPayload) {
@@ -496,7 +519,7 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         } else {
             numRanges = 1;
             isochHdrTarget->data_length = OSSwapHostToBigInt16(kTransmitCIPHeaderSize);
-            // logger_->trace("handleDCLComplete: Setting numRanges=1 for SYT-driven NO_DATA G={}, P={}", fillGroupIndex, p);
+            // This covers both SYT-driven NO_DATA and provider-forced NO_DATA packets
         }
 
         auto updateExp = dclManager_->updateDCLPacket(fillGroupIndex, p, ranges, numRanges, nullptr);
@@ -707,51 +730,18 @@ void AmdtpTransmitter::initializeCIPState() {
     dbc_count_   = 0;
     wasNoData_   = true; // Start assuming previous was NoData for both modes initially
 
-    // Initialize state for "NonBlocking" (current) AmdtpTransmitter SYT logic
-    sytOffset_   = TICKS_PER_CYCLE;
+    // Initialize state for "NonBlocking" (Linux-style) SYT logic
+    sytOffset_   = 0;  // Start at 0 for Linux algorithm  
     sytPhase_    = 0;
 
-    // Initialize state for "Blocking" (UniversalTransmitter-style) SYT logic
-    sytOffset_blocking_ = TICKS_PER_CYCLE;
+    // Initialize state for "Blocking" (Apple-style) SYT logic  
+    lastRawSytOffset_blocking_ = 0;  // Start at 0 as in Apple's algorithm
     sytPhase_blocking_  = 0;
 
     firstDCLCallbackOccurred_ = false;
     expectedTimeStampCycle_   = 0;
 }
 
-AmdtpTransmitter::NonBlockingSytParams AmdtpTransmitter::calculateNonBlockingSyt(
-    uint8_t current_dbc_state, bool previous_wasNoData_state) {
-    NonBlockingSytParams params;
-
-    if (!firstDCLCallbackOccurred_) {
-        params.isNoData   = true;
-        params.syt_value  = 0xFFFF;
-    } else {
-        if (sytOffset_ >= TICKS_PER_CYCLE) {
-            sytOffset_ -= TICKS_PER_CYCLE;
-        } else {
-            uint32_t phase    = sytPhase_ % SYT_PHASE_MOD;
-            bool     addExtra = (phase && !(phase & 3)) || (sytPhase_ == (SYT_PHASE_RESET - 1));
-            sytOffset_ += BASE_TICKS;
-            if (addExtra) {
-                sytOffset_ += 1;
-            }
-            if (++sytPhase_ >= SYT_PHASE_RESET) {
-                sytPhase_ = 0;
-            }
-        }
-
-        if (sytOffset_ >= TICKS_PER_CYCLE) {
-            params.isNoData  = true;
-            params.syt_value = 0xFFFF;
-        } else {
-            params.isNoData  = false;
-            params.syt_value = static_cast<uint16_t>(sytOffset_);
-        }
-    }
-
-    return params;
-}
 
 // Constants for SFC (Sample Frequency Code)
 constexpr uint8_t SFC_44K1HZ = 0x01;
@@ -800,91 +790,39 @@ void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
         }
     }
 
-    // --- Call Strategy-Specific SYT Calculation ---
-    switch (config_.transmissionType) {
-        case TransmissionType::Blocking: {
-            BlockingSytParams sytParams = calculateBlockingSyt();
-            calculated_isNoData_for_this_packet = sytParams.isNoData;
-            calculated_sytVal_for_this_packet   = sytParams.syt_value;
-            break;
-        }
-        case TransmissionType::NonBlocking:
-        default: {
-            NonBlockingSytParams sytParams = calculateNonBlockingSyt(current_dbc_state,
-                                                                      previous_wasNoData_state);
-            calculated_isNoData_for_this_packet = sytParams.isNoData;
-            calculated_sytVal_for_this_packet   = sytParams.syt_value;
-            break;
-        }
-    }
+    // Always use Blocking for 44.1 kHz
+    BlockingSytParams sytParams = calculateBlockingSyt();
+    calculated_isNoData_for_this_packet = sytParams.isNoData;
+    calculated_sytVal_for_this_packet   = sytParams.syt_value;
 
-    // --- Set Dynamic Fields (FDF, SYT, DBC) ---
+    // --- FIXED: Set Dynamic Fields (FDF, SYT, DBC) based on Apple Duet capture analysis ---
     if (calculated_isNoData_for_this_packet) {
+        // NO-DATA packet
         outHeader->fdf = 0xFF;
         outHeader->syt = 0xFFFF; // NO NEED TO CONVERT ENDIANESS FOR 0xFFFF!
         outHeader->dbc = current_dbc_state;
+        
+        // CRITICAL: NO-DATA packets don't increment DBC! (from Apple capture analysis)
+        next_dbc_for_state = current_dbc_state;
     } else {
+        // DATA packet: fixed 8 frames
         outHeader->fdf = sfc_for_this_packet;
         outHeader->syt = OSSwapHostToBigInt16(calculated_sytVal_for_this_packet);
-
-        uint8_t blocksPerPacket = this->bufferManager_->getAudioPayloadSizePerPacket() / 8;
-        if (blocksPerPacket == 0 && !calculated_isNoData_for_this_packet) {
-            blocksPerPacket = 1;
-        }
-
-        if (previous_wasNoData_state) {
-            outHeader->dbc = current_dbc_state;
-        } else {
-            outHeader->dbc = (current_dbc_state + blocksPerPacket) & 0xFF;
-        }
+        outHeader->dbc = current_dbc_state;
+        next_dbc_for_state = (current_dbc_state + 8) & 0xFF;
     }
 
     // --- Update state for the *next* call (via output parameters) ---
-    next_dbc_for_state       = outHeader->dbc;
     next_wasNoData_for_state = calculated_isNoData_for_this_packet;
 }
 
-// AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() { // <<<< DEFINITION
-//     BlockingSytParams params;
-
-//     if (!this->firstDCLCallbackOccurred_) { 
-//         params.isNoData  = true;
-//         params.syt_value = 0xFFFF;
-//         return params; 
-//     }
-
-//     // ** Step 1 of 3: Check for a full 3072‐tick cycle **
-//     if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
-//         // We've accumulated one full FireWire cycle → skip this callback entirely
-//         sytOffset_blocking_ -= TICKS_PER_CYCLE;
-//         return params;   // EARLY RETURN: no packet emitted this iteration
-//     }
-
-//     // ** Step 2 of 3: Otherwise, update offset by BASE_TICKS_BLOCKING (+ occasional +1) **
-//     uint32_t phase    = sytPhase_blocking_ % SYT_PHASE_MOD_BLOCKING;
-//     bool     addExtra = (phase && !(phase & 3)) 
-//                         || (sytPhase_blocking_ == (SYT_PHASE_RESET_BLOCKING - 1));
-//     sytOffset_blocking_ += BASE_TICKS_BLOCKING;
-//     if (addExtra) {
-//         sytOffset_blocking_ += 1;
-//     }
-//     if (++sytPhase_blocking_ >= SYT_PHASE_RESET_BLOCKING) {
-//         sytPhase_blocking_ = 0;
-//     }
-
-//     // ** Step 3 of 3: Now decide NO_DATA vs. data packet **
-//     if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
-//         params.isNoData  = true;
-//         params.syt_value = 0xFFFF;
-//     } else {
-//         params.isNoData  = false;
-//         params.syt_value = static_cast<uint16_t>(sytOffset_blocking_);
-//     }
-//     return params;
-// }
+// Old implementation commented out - replaced with Apple's correct algorithm
 
 AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() {
     BlockingSytParams params;
+
+    // Apple's "blocking" algorithm exactly as implemented in the Python script
+    // Corresponds to the fixed Apple algorithm for 44.1kHz
 
     // 1) If we haven't had a DCL callback yet, hold off on sending data
     if (!this->firstDCLCallbackOccurred_.load()) {
@@ -893,40 +831,45 @@ AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() {
         return params;
     }
 
-    // 2) If offset >= one full FireWire cycle (3072), subtract and emit NO_DATA
-    if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
-        sytOffset_blocking_ -= TICKS_PER_CYCLE;
-        params.isNoData  = true;     // mark no-data on that overflow
+    // 2) Apple's exact phase accumulator algorithm for 44.1kHz (fixed overshoot issue):
+    
+    // Check if we accumulated a full cycle from previous iteration
+    if (lastRawSytOffset_blocking_ >= TICKS_PER_CYCLE) {
+        lastRawSytOffset_blocking_ -= TICKS_PER_CYCLE;
+        params.isNoData = true;
         params.syt_value = 0xFFFF;
-        return params;
+        return params;  // Important: return here to prevent overshoot!
     }
-
-    // 3) Otherwise, advance by BASE_TICKS_BLOCKING + occasional “+1” jitter
-    uint32_t phase    = sytPhase_blocking_ % SYT_PHASE_MOD_BLOCKING;   // 0..146
-    bool     addExtra = (phase && !(phase & 3)) 
-                         || (sytPhase_blocking_ == (SYT_PHASE_RESET_BLOCKING - 1));
-    sytOffset_blocking_ += BASE_TICKS_BLOCKING;  // = 565 on each iteration
-    if (addExtra) {
-        sytOffset_blocking_ += 1;                // +1 every 4th iteration
+    
+    // Apple's phase accumulator logic (from decompiled code analysis)
+    // For 44.1kHz: sampleRateMultiplier = 441
+    const uint32_t sampleRateMultiplier = 441;  // 44100 / 100
+    const uint32_t phaseModulo = 80;            // 0x50 in Apple's code
+    
+    // Phase accumulator step
+    sytPhase_blocking_ += (sampleRateMultiplier % phaseModulo);  // 441 % 80 = 41
+    uint32_t cycles = sampleRateMultiplier / phaseModulo;        // 441 / 80 = 5
+    
+    if (sytPhase_blocking_ > (phaseModulo - 1)) {  // if > 79
+        sytPhase_blocking_ -= phaseModulo;
+        cycles += 1;  // Add extra cycle when accumulator overflows
     }
-    if (++sytPhase_blocking_ >= SYT_PHASE_RESET_BLOCKING) {
-        sytPhase_blocking_ = 0;
-    }
-
-    // 4) Now decide per-packet if it’s data or no-data
-    if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
-        // overflow→no-data
-        params.isNoData  = true;
+    
+    // Update SYT offset based on calculated cycles
+    // Each cycle represents BASE_INCREMENT_BLOCKING ticks
+    lastRawSytOffset_blocking_ += (BASE_INCREMENT_BLOCKING * cycles) / 5;  // Normalize cycles to ticks
+    
+    // Determine packet type based on final offset
+    if (lastRawSytOffset_blocking_ >= TICKS_PER_CYCLE) {
+        params.isNoData = true;
         params.syt_value = 0xFFFF;
     } else {
-        // within cycle → data packet, embed the SYT
-        params.isNoData  = false;
-        params.syt_value = static_cast<uint16_t>(sytOffset_blocking_);
+        params.isNoData = false;
+        params.syt_value = static_cast<uint16_t>(lastRawSytOffset_blocking_);
     }
 
     return params;
 }
-
 // Helper function implementation
 void AmdtpTransmitter::logPacketDetails(
     uint32_t groupIndex,
@@ -1014,6 +957,54 @@ void AmdtpTransmitter::logPacketDetails(
         logger_->info("  Audio Payload: Zero length but FDF indicates data - unusual.");
     }
     logger_->info("---------- END DETAILED PACKET DUMP ----------");
+}
+
+// Helper to log packet patterns for verification against Apple Duet capture
+void AmdtpTransmitter::logPacketPattern(const CIPHeader* cipHeader) {
+    static thread_local std::string pattern;
+    static thread_local uint32_t patternCount = 0;
+    static thread_local uint32_t dataCount = 0;
+    static thread_local uint32_t noDataCount = 0;
+    
+    // Long-term ratio tracking (as suggested in analysis)
+    static thread_local uint64_t totalDataPackets = 0;
+    static thread_local uint64_t totalNoDataPackets = 0;
+    static thread_local auto startTime = std::chrono::steady_clock::now();
+    
+    if (!cipHeader || !logger_) return;
+    
+    if (cipHeader->fdf == 0xFF) {
+        pattern += "N";
+        noDataCount++;
+        totalNoDataPackets++;
+    } else {
+        pattern += "D";
+        dataCount++;
+        totalDataPackets++;
+    }
+    
+    // Every second, log long-term ratio
+    auto elapsed = std::chrono::steady_clock::now() - startTime;
+    if (elapsed > std::chrono::seconds(10)) {  // Every 10 seconds to avoid spam
+        double actualRatio = (totalNoDataPackets > 0) ? (double)totalDataPackets / totalNoDataPackets : 999.0;
+        double expectedRatio = 5512.5 / 2487.5;  // ≈ 2.1875 for 44.1kHz
+        logger_->info("Long-term ratio: {:.4f} (expected: {:.4f}) | Total D:{} N:{}", 
+                     actualRatio, expectedRatio, totalDataPackets, totalNoDataPackets);
+        startTime = std::chrono::steady_clock::now();
+    }
+    
+    if (++patternCount == 18) {  // Log every 18 packets (matches Apple capture analysis)
+        double ratio = (noDataCount > 0) ? (double)dataCount / noDataCount : 999.0;
+        // too noisy
+        // logger_->info("Packet pattern (18): {} | D:{} N:{} | Ratio: {:.3f} | Expected: D N D D N D D D N D D N D D N D D N", 
+        //              pattern, dataCount, noDataCount, ratio);
+        
+        // Reset for next cycle
+        pattern.clear();
+        patternCount = 0;
+        dataCount = 0;
+        noDataCount = 0;
+    }
 }
 
 } // namespace Isoch

@@ -17,8 +17,7 @@ namespace Isoch {
 
 
 enum class TransmissionType {
-    NonBlocking, // Represents the current AmdtpTransmitter SYT behavior (uses FDF=0xFF for SYT placeholders)
-    Blocking     // Implements UniversalTransmitter-style SYT/NO_DATA logic
+    Blocking     // Apple's blocking algorithm - only mode supported for 44.1 kHz
 };
 
 
@@ -54,8 +53,8 @@ struct TransmitterConfig {
     // Timing & Sync (Potentially add more later)
     uint32_t numStartupCycleMatchBits{0}; ///< For cycle-matching start (0 usually sufficient for transmitter).
 
-    // NEW: Transmission Type
-    TransmissionType transmissionType{TransmissionType::NonBlocking}; // Default to current behavior
+    // Fixed: Only blocking mode supported for 44.1 kHz
+    TransmissionType transmissionType{TransmissionType::Blocking};
 };
 
 // --- Messages & Callbacks ---
@@ -157,6 +156,7 @@ struct PreparedPacketData {
     size_t dataLength = 0;            ///< Length of the valid audio data in bytes.
     bool dataAvailable = false;       ///< True if data is available (not an underrun)
     bool generatedSilence = false;    ///< True if the provider had an underrun and generated silence instead.
+    bool forceNoDataCIP = false;      ///< True if provider wants to force a NO_DATA CIP packet due to low buffer
 };
 
 // --- Constants ---

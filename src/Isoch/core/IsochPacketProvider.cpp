@@ -291,6 +291,7 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
     result.dataPtr       = targetBuffer;
     result.dataLength    = targetBufferSize; // We always "fill" the target buffer
     result.generatedSilence = true;     // Assume silence until proven otherwise
+    result.forceNoDataCIP = false;      // Default to DATA packets to keep DBC ticking
 
     if (!targetBuffer || targetBufferSize == 0 || !shmControlBlock_ || !shmRingArray_) {
         if (logger_) logger_->error("fillPacketData: Preconditions failed (null buffers/SHM not bound). Generating silence.");
@@ -299,43 +300,17 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
         return result;
     }
 
-    // --- LEAKY BUCKET GUARD ---
-    if (!hasSufficientDataForPop()) {
-        // Not enough data in SHM above our minimum threshold.
-        // Generate silence for this FireWire packet, do NOT advance SHM read pointer.
-        std::memset(targetBuffer, 0, targetBufferSize);
-        result.generatedSilence = true; // Already true, but for clarity
-        
-        // This is not a "true" SHM underrun (rd == wr), but a proactive hold.
-        // You might want a separate counter for "proactive silence" vs "true underrun".
-        // For now, let's use handleUnderrun but be aware of its meaning.
-        // Or, create a new logging mechanism for "proactive_silence_due_to_low_fill"
-        // safetyMarginHolds_++; // If you had such a counter
-        if (logger_) {
-            static thread_local uint32_t holdLog = 0;
-            if ((holdLog++ % 1000) == 0) { // Throttle this log
-                 auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
-                 auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
-                 logger_->debug("fillPacketData: Leaky bucket hold. Available: {}, Needed > {}. Generating silence.", 
-                               (wr >= rd ? wr-rd : 0), kMinChunksToPop);
-            }
-        }
-        // Important: We format even silence into AM824 NO_DATA, which still carries SYT
-        formatToAM824InPlace(targetBuffer, targetBufferSize); // Ensures FDF=0xFF
-        return result;
-    }
-    // --- END LEAKY BUCKET GUARD ---
-
-    // If we are here, hasSufficientDataForPop() was true.
+    // Let transmitter's SYT decide DATA vs NO_DATA; consumer still handles true underrun below.
+    
     // Attempt to get data.
     // If current cached chunk is exhausted, try to pop a new one.
     if (remainingBytesInCurrentChunk() == 0) {
         if (!popNextChunk()) {
             // popNextChunk failed. This means RTShmRing::pop() found rd == wr (true empty)
-            // OR if popNextChunk *still* had its own internal hasMinimumFillLevel check
-            // (which it shouldn't in this simplified model), it could fail there.
-            // Assuming popNextChunk now only fails on true empty.
+            // This is a true SHM underrun - different from buffer management hold
             std::memset(targetBuffer, 0, targetBufferSize);
+            result.generatedSilence = true;
+            result.forceNoDataCIP   = false;   // << keep DATA so DBC ticks
             handleUnderrun(info); // Log as a true SHM underrun
             formatToAM824InPlace(targetBuffer, targetBufferSize); // Format silence
             return result;
@@ -351,6 +326,7 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
     if (!srcDataForMemcpy || toCopy == 0) { // Should ideally not happen if remainingBytes > 0
         logger_->error("fillPacketData: Logic error or empty chunk after successful pop. Generating silence.");
         std::memset(targetBuffer, 0, targetBufferSize);
+        result.forceNoDataCIP = false; // Keep DATA so DBC keeps ticking
         handleUnderrun(info); // Treat as underrun
         formatToAM824InPlace(targetBuffer, targetBufferSize);
         return result;
@@ -365,8 +341,10 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
         std::memset(targetBuffer + toCopy, 0, targetBufferSize - toCopy);
         handleUnderrun(info); // Log this partial fill as an underrun event
         result.generatedSilence = true; // Since part of it is silence
+        result.forceNoDataCIP = false;  // Keep DATA so DBC keeps ticking
     } else {
         result.generatedSilence = false; // Full data packet
+        result.forceNoDataCIP = false;   // Normal DATA packet
     }
 
     formatToAM824InPlace(targetBuffer, targetBufferSize);
@@ -381,12 +359,30 @@ bool IsochPacketProvider::popNextChunk() {
         return false;
     }
 
+    // Capture SHM state before pop attempt
+    auto pre_pop_wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+    auto pre_pop_rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
+    uint64_t pre_pop_used = (pre_pop_wr >= pre_pop_rd) ? (pre_pop_wr - pre_pop_rd) : 0;
  
     AudioTimeStamp timestamp;
     uint32_t dataBytes;
     const std::byte* audioPtr;
 
-    if (!RTShmRing::pop(*shmControlBlock_, shmRingArray_, timestamp, dataBytes, audioPtr)) {
+    bool pop_success = RTShmRing::pop(*shmControlBlock_, shmRingArray_, timestamp, dataBytes, audioPtr);
+    
+    // Capture SHM state after pop attempt
+    auto post_pop_rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
+    auto post_pop_wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+    uint64_t post_pop_used = (post_pop_wr >= post_pop_rd) ? (post_pop_wr - post_pop_rd) : 0;
+
+    // Log periodically or on failure to track SHM behavior
+    if (logger_ && (shmPopCount_ % 1000 == 0 || !pop_success)) {
+        logger_->info("POP attempt #{}: success={}. SHM before: wr={}, rd={}, used={}. SHM after: wr={}, rd={}, used={}. Popped bytes={}",
+                     shmPopCount_ + 1, pop_success, pre_pop_wr, pre_pop_rd, pre_pop_used, 
+                     post_pop_wr, post_pop_rd, post_pop_used, (pop_success ? dataBytes : 0));
+    }
+
+    if (!pop_success) {
         // This is now a "true" underrun from the ring buffer's perspective (rd == wr).
         // The UnderrunCountProxy is incremented inside RTShmRing::pop.
         currentChunk_.invalidate();
@@ -492,8 +488,12 @@ void IsochPacketProvider::reset() {
     resetFillLevelHistogram();
     lastHistogramLogTime_ = std::chrono::steady_clock::now();
 
+    // === NEW: Reset priming state ===
+    isPriming_ = true;
+    packetsProcessedInPriming_ = 0;
+
     if (logger_) {
-        logger_->info("IsochPacketProvider reset, including fill level histogram.");
+        logger_->info("IsochPacketProvider reset, including fill level histogram and priming state.");
     }
 }
 
@@ -766,29 +766,100 @@ void IsochPacketProvider::logFillLevelHistogram() const {
 }
 
 
-// Helper method for the leaky bucket check
+// Helper method for the leaky bucket check - refined strategy for 5% SHM fill level
 bool IsochPacketProvider::hasSufficientDataForPop() const {
     if (!shmControlBlock_) {
         return false; // Not bound, so definitely not sufficient
     }
-    // Check if the stream is even active from the driver's perspective
-    if (StreamActiveProxy(*shmControlBlock_).load(std::memory_order_acquire) == 0) {
-        // If you want to log this specific "not active yet" case:
-        // static thread_local uint32_t notActiveLog = 0;
-        // if ((notActiveLog++ % 8000) == 0 && logger_) { // Log ~once/sec
-        //     logger_->debug("hasSufficientDataForPop: Stream not marked active by driver yet.");
-        // }
-        return false; // Don't pop if driver hasn't signaled active
-    }
-
+    
     auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
     auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
     uint64_t availableChunks = (wr >= rd) ? (wr - rd) : 0;
-
-    // The core logic: are there MORE chunks available than our minimum threshold?
-    // If availableChunks is 5, and kMinChunksToPop is 4, (5 > 4) is true, so we can pop.
-    // If availableChunks is 4, and kMinChunksToPop is 4, (4 > 4) is false, so we hold.
-    return availableChunks > kMinChunksToPop;
+    
+    // Get capacity with fallback
+    uint32_t capacity = shmControlBlock_ ? shmControlBlock_->capacity : kRingCapacityPow2;
+    if (capacity == 0) capacity = kRingCapacityPow2; // Fallback if not yet bound or SHM corrupt
+    
+    // Check if the stream is active from the driver's perspective
+    bool streamActive = (StreamActiveProxy(*shmControlBlock_).load(std::memory_order_acquire) == 1);
+    bool isPrimingState = isPriming_.load(std::memory_order_relaxed);
+    uint32_t packetsProcessed = packetsProcessedInPriming_.load(std::memory_order_relaxed);
+    
+    bool result = false;
+    std::string decision_reason;
+    uint32_t threshold = 0;
+    std::string phase;
+    
+    if (!streamActive) {
+        // Stream explicitly not active by driver - require prefill
+        isPriming_ = true; // Reset priming if stream stops and restarts
+        packetsProcessedInPriming_ = 0;
+        
+        // Aim for 10% prefill, or at least 32 chunks, whichever is larger
+        const uint32_t kPrefillPercentTarget = (capacity * 10) / 100; // 10%
+        const uint32_t kAbsolutePrefillMin = 32;
+        threshold = std::max(kPrefillPercentTarget, kAbsolutePrefillMin);
+        phase = "PREFILL";
+        
+        result = availableChunks >= threshold;
+        decision_reason = "stream_inactive: need >= " + std::to_string(threshold) + ", have " + std::to_string(availableChunks);
+    } else if (isPrimingState) {
+        // Still in priming phase even if stream is active
+        const uint32_t kPrimingFillTarget = (capacity * 10) / 100; // 10%
+        const uint32_t kAbsolutePrimingMin = 32;
+        threshold = std::max(kPrimingFillTarget, kAbsolutePrimingMin);
+        phase = "PRIMING";
+        
+        if (availableChunks >= threshold) {
+            // Priming condition met, consider transitioning out of priming
+            // Only transition after processing several packets to ensure stability
+            uint32_t requiredPackets = capacity / 10;
+            uint32_t newPacketCount = packetsProcessedInPriming_.fetch_add(1, std::memory_order_relaxed);
+            if (newPacketCount >= requiredPackets) {
+                isPriming_ = false;
+                if (logger_) {
+                    logger_->info("IsochPacketProvider: Priming complete after {} packets while target sustained. Switching to steady-state threshold. Available: {}", 
+                                 newPacketCount + 1, availableChunks);
+                }
+                decision_reason = "priming_complete: processed " + std::to_string(newPacketCount + 1) + " >= " + std::to_string(requiredPackets) + " packets";
+            } else {
+                decision_reason = "priming_in_progress: " + std::to_string(availableChunks) + " >= " + std::to_string(threshold) + 
+                                ", packet " + std::to_string(newPacketCount + 1) + " of " + std::to_string(requiredPackets);
+            }
+            result = true; // Allow pop once priming target is met
+        } else {
+            // In priming, but target not yet met - Reset counter to ensure sustained fill for priming
+            packetsProcessedInPriming_.store(0, std::memory_order_relaxed);
+            decision_reason = "priming_insufficient: " + std::to_string(availableChunks) + " < " + std::to_string(threshold) + " (counter reset)";
+            result = false; // Hold off
+        }
+    } else {
+        // Not priming, steady state - target 5% fill level
+        const uint32_t kMinSteadyStateFillChunks = (capacity * 5) / 100; // 5%
+        const uint32_t absoluteMin = 6; // Raised to 6 chunks to avoid borderline underruns
+        threshold = std::max(absoluteMin, kMinSteadyStateFillChunks);
+        phase = "STEADY_STATE";
+        
+        // Reduce the steady-state rule to "≥ threshold"
+        result = availableChunks >= threshold;
+        decision_reason = "steady_state: " + std::to_string(availableChunks) + " > " + std::to_string(threshold) + " (need >)";
+    }
+    
+    // Periodic detailed logging to track buffer management decisions
+    static thread_local uint32_t logCounter = 0;
+    if (logger_ && (logCounter++ % 2000) == 0) { // Log every 2000 calls (~250ms at 8kHz)
+        logger_->info("hasSufficientDataForPop #{}: {} | Phase: {} | Available: {}/{} chunks ({:.1f}%) | Threshold: {} | Decision: {} | Reason: {}",
+                     logCounter, 
+                     result ? "ALLOW" : "HOLD",
+                     phase,
+                     availableChunks, capacity, 
+                     capacity > 0 ? (100.0 * availableChunks / capacity) : 0.0,
+                     threshold,
+                     streamActive ? (isPrimingState ? "PRIMING" : "STEADY") : "INACTIVE",
+                     decision_reason);
+    }
+    
+    return result;
 }
 
 } // namespace Isoch

@@ -82,6 +82,24 @@ void FWADriverHandler::TeardownSharedMemory() {
 bool FWADriverHandler::PushToSharedMemory(const AudioBufferList* src, const AudioTimeStamp& ts, uint32_t frames, uint32_t bytesPerFrame) {
     if (!controlBlock_ || !ringBuffer_) return false;
 
+    // Capture SHM state before any operations for diagnostic logging
+    auto pre_wr = RTShmRing::WriteIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+    auto pre_rd = RTShmRing::ReadIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+    uint64_t pre_used = pre_wr - pre_rd;
+    bool streamActiveState = (controlBlock_->streamActive == 1);
+
+    // Static counter for throttled verbose logging
+    static uint32_t pushCallCount = 0;
+    pushCallCount++;
+
+    // Verbose logging every 1000 calls or when there are issues to track producer behavior
+    bool shouldLogVerbose = ((pushCallCount % 1000) == 0) || !streamActiveState || (pre_used == 0) || (pre_used >= controlBlock_->capacity);
+    
+    if (shouldLogVerbose) {
+        os_log_info(OS_LOG_DEFAULT, "%sPUSHING call #%u: frames=%u, bytesPerFrame=%u. SHM before: wr=%llu, rd=%llu, used=%llu, cap=%u, active=%u",
+            LogPrefix, pushCallCount, frames, bytesPerFrame, pre_wr, pre_rd, pre_used, controlBlock_->capacity, controlBlock_->streamActive);
+    }
+
     // ----------------------------------------------
     // ➊ if ring full *and* streams not yet active →
     //    advance rd one slot (overwrite oldest)
@@ -93,18 +111,32 @@ bool FWADriverHandler::PushToSharedMemory(const AudioBufferList* src, const Audi
             // Drop the oldest chunk to make room
             RTShmRing::ReadIndexProxy(*controlBlock_)
                 .store(rd + 1, std::memory_order_release);
+            
+            if (shouldLogVerbose) {
+                os_log_info(OS_LOG_DEFAULT, "%sDropped oldest chunk while stream inactive. rd advanced from %llu to %llu",
+                    LogPrefix, rd, rd + 1);
+            }
         }
     }
 
     bool success = RTShmRing::push(*controlBlock_, ringBuffer_, src, ts, frames, bytesPerFrame);
     
-    // Log only after streams are active
+    // Capture SHM state after push attempt for diagnostic logging
+    auto post_wr = RTShmRing::WriteIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+    auto post_rd = RTShmRing::ReadIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+    uint64_t post_used = post_wr - post_rd;
+
+    if (shouldLogVerbose) {
+        os_log_info(OS_LOG_DEFAULT, "%sPUSHED call #%u: success=%d. SHM after: wr=%llu, rd=%llu, used=%llu. Delta: wr+%lld, rd+%lld, used+%lld",
+            LogPrefix, pushCallCount, success, post_wr, post_rd, post_used, 
+            (int64_t)(post_wr - pre_wr), (int64_t)(post_rd - pre_rd), (int64_t)(post_used - pre_used));
+    }
+    
+    // Log push failures when streams are active (existing logic)
     if (!success && controlBlock_->streamActive) {
-        auto wr = RTShmRing::WriteIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
-        auto rd = RTShmRing::ReadIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
         os_log_error(OS_LOG_DEFAULT,
             "%sPUSH FAIL  wr=%llu rd=%llu used=%llu  frames=%u bytesPerFrame=%u",
-            LogPrefix, wr, rd, wr-rd, frames, bytesPerFrame);
+            LogPrefix, post_wr, post_rd, post_used, frames, bytesPerFrame);
         
         localOverrunCounter_++;
         if ((localOverrunCounter_ & 0xFF) == 0) {
@@ -123,21 +155,62 @@ OSStatus FWADriverHandler::OnStartIO() {
 
     localOverrunCounter_ = 0; 
 
-    // Reset read/write indices IF NECESSARY.
-    // The expert suggested the daemon might reset readIndex.
-    // If the driver is the sole authority on SHM init for a new stream:
-    // RTShmRing::WriteIndexProxy(*controlBlock_).store(0, std::memory_order_release); // Release so daemon sees it
-    // RTShmRing::ReadIndexProxy(*controlBlock_).store(0, std::memory_order_release);  // Release so daemon sees it
-    // Clearing sequence numbers in the ring might also be needed if they are not reset by the consumer.
-    // For simplicity, if the daemon always starts reading from where the producer starts writing after reset,
-    // just setting streamActive might be enough.
+    // 1. Make sure the ring is empty, then pre-fill four 8-frame chunks
+    RTShmRing::WriteIndexProxy(*controlBlock_).store(0, std::memory_order_relaxed);
+    RTShmRing::ReadIndexProxy(*controlBlock_).store(0, std::memory_order_relaxed);
 
-    // **Signal that the stream is now active and the driver WILL start pushing data**
-    // **as soon as Core Audio provides it.**
+    // preFillChunk() writes 8 frames of silence
+    for (int i = 0; i < 4; ++i) {
+        if (!preFillChunk()) {
+            os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: Failed to pre-fill chunk %d", LogPrefix, i);
+            return kAudioHardwareUnspecifiedError;
+        }
+    }
+
+    os_log_info(OS_LOG_DEFAULT, "%sFWADriverHandler: Pre-filled 4 chunks with silence", LogPrefix);
+
+    // 2. NOW tell the consumer it may start
     StreamActiveProxy(*controlBlock_).store(1, std::memory_order_release);
 
     os_log_info(OS_LOG_DEFAULT, "%sFWADriverHandler: OnStartIO completed. Stream marked active (streamActive = 1). Daemon can now attempt to consume.", LogPrefix);
     return kAudioHardwareNoError;
+}
+
+bool FWADriverHandler::preFillChunk() {
+    if (!controlBlock_ || !ringBuffer_) {
+        return false;
+    }
+
+    // Create a minimal AudioBufferList with 8 frames of silence (stereo, 4 bytes per sample)
+    const uint32_t framesPerChunk = 8;
+    const uint32_t bytesPerFrame = 8; // 2 channels * 4 bytes per sample
+    const uint32_t totalBytes = framesPerChunk * bytesPerFrame;
+    
+    // Static buffer for silence - zeroed by default
+    static uint8_t silenceBuffer[8 * 8] = {0}; // 8 frames * 8 bytes per frame
+    
+    AudioBufferList silenceABL;
+    silenceABL.mNumberBuffers = 1;
+    silenceABL.mBuffers[0].mNumberChannels = 2;
+    silenceABL.mBuffers[0].mDataByteSize = totalBytes;
+    silenceABL.mBuffers[0].mData = silenceBuffer;
+    
+    // Create a dummy timestamp
+    AudioTimeStamp silenceTimestamp = {};
+    silenceTimestamp.mFlags = kAudioTimeStampSampleTimeValid;
+    silenceTimestamp.mSampleTime = 0.0; // Will be updated by actual stream later
+    
+    // Use the existing push function to add the silence chunk
+    bool success = RTShmRing::push(*controlBlock_, ringBuffer_, &silenceABL, silenceTimestamp, framesPerChunk, bytesPerFrame);
+    
+    if (success) {
+        os_log_debug(OS_LOG_DEFAULT, "%sFWADriverHandler: Pre-filled silence chunk (%u frames, %u bytes)", 
+                    LogPrefix, framesPerChunk, totalBytes);
+    } else {
+        os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: Failed to pre-fill silence chunk", LogPrefix);
+    }
+    
+    return success;
 }
 
 void FWADriverHandler::OnStopIO() {

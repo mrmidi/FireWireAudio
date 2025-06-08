@@ -173,11 +173,8 @@ std::expected<std::shared_ptr<AudioDeviceStream>, IOKitError> AudioDeviceStream:
                 txConfig.sampleRate = 44100.0; // Default sample rate
                 txConfig.numChannels = 2;      // Default stereo
                 txConfig.initialSpeed = speed;
-                // --- Set transmission type for refactor testing ---
-                txConfig.transmissionType = Isoch::TransmissionType::Blocking; // Or NonBlocking
-                // test non-blocking behavior
-                // txConfig.transmissionType = Isoch::TransmissionType::NonBlocking; // Default to current behavior
-                // txConfig.transmissionType = Isoch::TransmissionType::NonBlocking;
+                // Fixed to blocking mode only for 44.1 kHz
+                txConfig.transmissionType = Isoch::TransmissionType::Blocking;
 
                 // Create the transmitter
                 auto transmitter = Isoch::AmdtpTransmitter::create(txConfig);

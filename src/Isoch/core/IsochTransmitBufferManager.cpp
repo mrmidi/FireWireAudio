@@ -39,20 +39,16 @@ void IsochTransmitBufferManager::cleanup() noexcept {
 void IsochTransmitBufferManager::calculateBufferLayout() {
     totalPackets_ = config_.numGroups * config_.packetsPerGroup;
 
-    // --- MODIFICATION START ---
-    // Explicitly set audio payload size. For AM824 Stereo, DBS=2 (8 bytes/frame).
-    // Assuming 8 frames per packet for a 64-byte payload, consistent with receiver/legacy.
-    // This calculation might become dynamic based on config_.sampleRate and format later.
-    const size_t framesPerPacket = 8; // Based on common practice / legacy UniversalTransmitter
-    const size_t bytesPerFrameStereoAM824 = 8; // 2 channels * 4 bytes/sample (incl. label)
-    audioPayloadSizePerPacket_ = framesPerPacket * bytesPerFrameStereoAM824; // Should be 64 bytes
+    // FIXED for Blocking 44.1 kHz: always 8 frames per packet
+    constexpr size_t framesPerPacket = 8;
+    const size_t bytesPerFrameStereoAM824 = 8; // 2ch × 4 bytes
+    audioPayloadSizePerPacket_ = framesPerPacket * bytesPerFrameStereoAM824; // 64 bytes
 
     if (logger_) {
          logger_->debug("Buffer layout calculated for SampleRate={:.1f}Hz", config_.sampleRate);
-         logger_->debug("  Assumed FramesPerPacket={}, BytesPerFrame={}, Resulting PayloadSize={}",
+         logger_->debug("  Fixed FramesPerPacket={}, BytesPerFrame={}, Resulting PayloadSize={}",
                         framesPerPacket, bytesPerFrameStereoAM824, audioPayloadSizePerPacket_);
     }
-     // --- MODIFICATION END ---
 
     // --- Sizes calculation (NO CHANGE needed here, uses config/constants) ---
     size_t clientDataSize = config_.clientBufferSize;
