@@ -19,7 +19,7 @@ public:
     std::expected<void, IOKitError> setupBuffers(const TransmitterConfig& config) override;
     void cleanup() noexcept override;
 
-    std::expected<uint8_t*, IOKitError> getPacketIsochHeaderPtr(uint32_t groupIndex, uint32_t packetIndexInGroup) const override;
+    std::expected<IsochHeaderValueMask*, IOKitError> getPacketIsochHeaderValueMaskPtr(uint32_t groupIndex, uint32_t packetIndexInGroup) const override;
     std::expected<uint8_t*, IOKitError> getPacketCIPHeaderPtr(uint32_t groupIndex, uint32_t packetIndexInGroup) const override;
     std::expected<uint32_t*, IOKitError> getGroupTimestampPtr(uint32_t groupIndex) const override;
 
@@ -44,10 +44,10 @@ private:
     IOVirtualRange bufferRange_{};
 
     // Pointers into mainBuffer_
-    uint8_t* clientAudioArea_{nullptr};  // HW writes here
-    uint8_t* isochHeaderArea_{nullptr}; // Template area
-    uint8_t* cipHeaderArea_{nullptr};   // Pre-filled area
-    uint32_t* timestampArea_{nullptr};  // Timestamp area
+    uint8_t* clientAudioArea_{nullptr};        // Client audio data area
+    IsochHeaderValueMask* isochHeaderArea_{nullptr}; // Value/mask pairs for SetDCLUserHeaderPtr
+    uint8_t* cipHeaderArea_{nullptr};          // Pre-filled CIP headers
+    uint32_t* timestampArea_{nullptr};         // Timestamp area
 
     // Buffer section sizes (aligned)
     size_t clientBufferSize_aligned_{0};

@@ -6,6 +6,8 @@
 #include <IOKit/firewire/IOFireWireFamilyCommon.h>
 #include <IOKit/firewire/IOFireWireLibIsoch.h>
 #include <IOKit/firewire/IOFireWireLib.h>   
+#include "Isoch/core/CIPHeader.hpp"
+
 
 namespace FWA {
 namespace Isoch {
@@ -91,34 +93,31 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
              uint32_t globalPacketIdx = g * config_.packetsPerGroup + p;
 
              // --- 1. Get Buffer Pointers for this Packet ---
-             auto isochHdrPtrExp = bufferManager.getPacketIsochHeaderPtr(g, p);
+             auto headerVMPtrExp = bufferManager.getPacketIsochHeaderValueMaskPtr(g, p);
              auto cipHdrPtrExp = bufferManager.getPacketCIPHeaderPtr(g, p);
              // For Send DCL, the *source* of audio data is the client buffer area
              uint8_t* audioDataPtr = bufferManager.getClientAudioBufferPtr()
                                    + (globalPacketIdx * bufferManager.getAudioPayloadSizePerPacket()) % bufferManager.getClientAudioBufferSize(); // Cycle through client buffer
              auto timestampPtrExp = bufferManager.getGroupTimestampPtr(g);
 
-             if (!isochHdrPtrExp || !cipHdrPtrExp || !timestampPtrExp || !audioDataPtr) {
+             if (!headerVMPtrExp || !cipHdrPtrExp || !timestampPtrExp || !audioDataPtr) {
                  logger_->error("Failed to get buffer pointers for G={}, P={}", g, p);
                  reset(); // Cleanup partially created DCLs
                  return std::unexpected(IOKitError::NoMemory); // Or more specific error
              }
-             uint8_t* isochHdrTemplatePtr = isochHdrPtrExp.value();
+             auto* headerVM = headerVMPtrExp.value();
              uint8_t* cipHdrPtr = cipHdrPtrExp.value();
              uint32_t* timestampPtr = timestampPtrExp.value();
              size_t audioPayloadSize = bufferManager.getAudioPayloadSizePerPacket();
 
-             // --- 2. Prepare Initial Memory Content (Optional but good practice) ---
-             // Isoch Header Template (Minimal: Tag=1, TCode=A. Channel set later?)
-             IsochHeaderData* isochHdr = reinterpret_cast<IsochHeaderData*>(isochHdrTemplatePtr);
-             isochHdr->data_length = 0; // Hardware fills this
-             isochHdr->tag_channel = (1 << 6) | (config_.initialChannel & 0x3F); // Tag=1
-             isochHdr->tcode_sy = (0xA << 4) | 0; // TCode=A, Sy=0
+             // --- 2. Prepare Initial Value/Mask for Isochronous Header ---
+             // Use the makeIsoHeader helper to create proper value/mask pair
+             *headerVM = makeIsoHeader(/*tag=*/1, /*sy=*/0);
 
              // CIP Header (Initial safe state: NO_DATA)
-             CIPHeader* cipHdr = reinterpret_cast<CIPHeader*>(cipHdrPtr);
+             FWA::Isoch::CIPHeader* cipHdr = reinterpret_cast<FWA::Isoch::CIPHeader*>(cipHdrPtr);
              bzero(cipHdr, kTransmitCIPHeaderSize);
-             cipHdr->fmt_eoh1 = (0x10 << 2) | 0x01; // FMT=0x10 (AM824), EOH=1
+             cipHdr->fmt_eoh = (0x10 << 2) | 0x01; // FMT=0x10 (AM824), EOH=1
              cipHdr->fdf = 0xFF; // NO_DATA
              cipHdr->syt = OSSwapHostToBigInt16(0xFFFF); // NO_INFO
 
@@ -126,10 +125,11 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
              // bzero(audioDataPtr, audioPayloadSize); // Provider should handle initial silence
 
              // --- 3. Prepare IOVirtualRange Array ---
+             // NOTE: NO Isoch header in ranges - hardware generates it via SetDCLUserHeaderPtr
              IOVirtualRange ranges[2];
-             uint32_t numRanges = 2; // Assume CIP + Payload initially
+             uint32_t numRanges = 2; // CIP header + Audio payload only
 
-             // Range 0: CIP Header
+             // Range 0: CIP Header  
              ranges[0].address = reinterpret_cast<IOVirtualAddress>(cipHdrPtr);
              ranges[0].length = kTransmitCIPHeaderSize;
 
@@ -156,8 +156,8 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
              UInt32 dclFlags = kNuDCLDynamic |         // DCL might change (ranges, branch)
                                 kNuDCLUpdateBeforeCallback; // Update status/TS before callback
 
-             // Set Isoch Header Template Pointer
-             (*nuDCLPool_)->SetDCLUserHeaderPtr(currentDCL, reinterpret_cast<UInt32*>(isochHdrTemplatePtr), nullptr); // Mask is null
+             // Set Isoch Header Value/Mask Pointers (THE CRITICAL FIX)
+             (*nuDCLPool_)->SetDCLUserHeaderPtr(currentDCL, &headerVM->value, &headerVM->mask);
 
              // Set Timestamp Pointer (where hardware WRITES completion time)
              (*nuDCLPool_)->SetDCLTimeStampPtr(currentDCL, timestampPtr);
@@ -275,8 +275,7 @@ void IsochTransmitDCLManager::setDCLOverrunCallback(TransmitDCLOverrunCallback c
 
 std::expected<void, IOKitError> IsochTransmitDCLManager::updateDCLPacket(
     uint32_t groupIndex, uint32_t packetIndexInGroup,
-    const IOVirtualRange ranges[], uint32_t numRanges,
-    const IsochHeaderData* isochHeaderTemplate)
+    const IOVirtualRange ranges[], uint32_t numRanges)
 {
      // Remove the lock - DCL access is safe at the driver level
      if (!dclProgramCreated_) return std::unexpected(IOKitError::NotReady);
@@ -288,23 +287,12 @@ std::expected<void, IOKitError> IsochTransmitDCLManager::updateDCLPacket(
          return std::unexpected(IOKitError::BadArgument);
      }
 
-     // Update the ranges (data source pointers and lengths)
-     // This is the most common update needed.
+     // The only thing to update is the data ranges (CIP + payload)
+     // Isochronous header control is handled via the hardware-assisted approach
      IOReturn result = (*nuDCLPool_)->SetDCLRanges(dclRef, numRanges, (::IOVirtualRange*)ranges);
      if (result != kIOReturnSuccess) {
          logger_->error("SetDCLRanges failed for G={}, P={}: 0x{:08X}", groupIndex, packetIndexInGroup, result);
          return std::unexpected(IOKitError(result));
-     }
-     
-     // Update Isoch Header Template Content (if template itself changes, rarely needed)
-     if (isochHeaderTemplate) {
-          // Note: This requires that the caller has already obtained the correct
-          // template pointer location for this DCL's isoch header.
-          // The proper way to handle this would be:
-          // 1. Get the current header pointer via GetDCLUserHeaderPtr from NuDCLPool
-          // 2. Modify its contents
-          // Here we just log that this should happen via buffer manager
-          logger_->trace("isochHeaderTemplate updates should be handled via buffer manager directly");
      }
 
      return {};

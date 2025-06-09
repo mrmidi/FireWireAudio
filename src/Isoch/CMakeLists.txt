@@ -5,6 +5,7 @@ add_library(FWAIsoch STATIC
     SharedManagers.cpp
     core/AmdtpReceiver.cpp
     core/AmdtpTransmitter.cpp
+    core/AppleSyTGenerator.cpp
     core/IsochBufferManager.cpp
     core/IsochTransportManager.cpp
     core/IsochPacketProcessor.cpp
@@ -17,7 +18,7 @@ add_library(FWAIsoch STATIC
     core/IsochTransmitDCLManager.cpp
     core/IsochPacketProvider.cpp
     utils/AmdtpHelpers.cpp
-    utils/CIPHeaderHandler.cpp
+    # utils/CIPHeaderHandler.cpp
     utils/RunLoopHelper.cpp
 )
 target_include_directories(FWAIsoch PUBLIC $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>)

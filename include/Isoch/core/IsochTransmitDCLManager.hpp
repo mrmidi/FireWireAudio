@@ -37,8 +37,7 @@ public:
         uint32_t groupIndex,
         uint32_t packetIndexInGroup,
         const IOVirtualRange ranges[],
-        uint32_t numRanges,
-        const IsochHeaderData* isochHeaderTemplate
+        uint32_t numRanges
     ) override;
 
      std::expected<void, IOKitError> notifySegmentUpdate(

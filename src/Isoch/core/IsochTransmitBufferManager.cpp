@@ -53,7 +53,7 @@ void IsochTransmitBufferManager::calculateBufferLayout() {
     // --- Sizes calculation (NO CHANGE needed here, uses config/constants) ---
     size_t clientDataSize = config_.clientBufferSize;
     size_t cipHeadersSize = totalPackets_ * kTransmitCIPHeaderSize;
-    size_t isochHeadersSize = totalPackets_ * kTransmitIsochHeaderSize; // Template only
+    size_t isochHeadersSize = totalPackets_ * sizeof(IsochHeaderValueMask); // Value/mask pairs
     size_t timestampsSize = config_.numGroups * kTimestampSize; // Only need one per group/segment completion
     // --- End Sizes calculation ---
 
@@ -110,10 +110,10 @@ std::expected<void, IOKitError> IsochTransmitBufferManager::setupBuffers(const T
     cipHeaderArea_   = clientAudioArea_ + clientBufferSize_aligned_;
     assert(reinterpret_cast<uintptr_t>(cipHeaderArea_) % 16 == 0); // Ensure CIP area is 16-byte aligned
 
-    isochHeaderArea_ = cipHeaderArea_ + cipHeaderTotalSize_aligned_;
-    assert(reinterpret_cast<uintptr_t>(isochHeaderArea_) % 16 == 0); // Ensure Isoch header area is 16-byte aligned
+    isochHeaderArea_ = reinterpret_cast<IsochHeaderValueMask*>(cipHeaderArea_ + cipHeaderTotalSize_aligned_);
+    assert(reinterpret_cast<uintptr_t>(isochHeaderArea_) % alignof(IsochHeaderValueMask) == 0); // Ensure proper alignment
 
-    timestampArea_   = reinterpret_cast<uint32_t*>(isochHeaderArea_ + isochHeaderTotalSize_aligned_);
+    timestampArea_   = reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(isochHeaderArea_) + isochHeaderTotalSize_aligned_);
     assert(reinterpret_cast<uintptr_t>(timestampArea_) % sizeof(uint32_t) == 0); // Ensure Timestamp area is 4-byte aligned
 
     bufferRange_.address = reinterpret_cast<IOVirtualAddress>(mainBuffer_);
@@ -131,13 +131,13 @@ std::expected<void, IOKitError> IsochTransmitBufferManager::setupBuffers(const T
 }
 
 // Implement Getters (with basic checks)
-std::expected<uint8_t*, IOKitError> IsochTransmitBufferManager::getPacketIsochHeaderPtr(uint32_t g, uint32_t p) const {
+std::expected<IsochHeaderValueMask*, IOKitError> IsochTransmitBufferManager::getPacketIsochHeaderValueMaskPtr(uint32_t g, uint32_t p) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!mainBuffer_ || g >= config_.numGroups || p >= config_.packetsPerGroup) {
         return std::unexpected(IOKitError::BadArgument);
     }
-    size_t offset = (g * config_.packetsPerGroup + p) * kTransmitIsochHeaderSize;
-    return isochHeaderArea_ + offset;
+    size_t index = g * config_.packetsPerGroup + p;
+    return &isochHeaderArea_[index];
 }
 
 std::expected<uint8_t*, IOKitError> IsochTransmitBufferManager::getPacketCIPHeaderPtr(uint32_t g, uint32_t p) const {

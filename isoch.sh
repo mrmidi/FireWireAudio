@@ -176,6 +176,9 @@ if [[ "$MODE" == "transmit" ]]; then
         "src/Isoch/core/AmdtpTransmitter.cpp"
         "src/Isoch/core/IsochTransmitDCLManager.cpp"
         "src/Isoch/core/IsochTransmitBufferManager.cpp"
+        "src/Isoch/core/AppleSyTGenerator.cpp"
+        "include/shared/AppleSyTGenerator.hpp"
+        "include/Isoch/core/CIPHeader.hpp"
         "src/Driver/FWADriverHandler.cpp"
     )
     

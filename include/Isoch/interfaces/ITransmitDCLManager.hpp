@@ -36,8 +36,7 @@ public:
         uint32_t groupIndex,
         uint32_t packetIndexInGroup,
         const IOVirtualRange ranges[], // Array of ranges (CIP Header, Audio Data)
-        uint32_t numRanges,           // Number of ranges to set (1 for NO_DATA, 2 for DATA)
-        const IsochHeaderData* isochHeaderTemplate // Pointer to the prepared Isoch header
+        uint32_t numRanges           // Number of ranges to set (1 for NO_DATA, 2 for DATA)
     ) = 0;
 
     // Method to notify the hardware about updated DCLs in a segment

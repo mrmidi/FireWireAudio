@@ -309,9 +309,22 @@ set(SWIFT_APP_SOURCES
   ${SWIFT_LOGGING_SOURCES}
 )
 
+# --- Icon configuration ---
+set(MACOSX_BUNDLE_ICON_FILE FWA-Control.icns)
+
+# Add the icon file as a source and set its properties
+set_source_files_properties(${CMAKE_SOURCE_DIR}/FWA-Control/FWA-Control.icns PROPERTIES
+    MACOSX_PACKAGE_LOCATION "Resources"
+)
+
 add_executable(FWA-Control MACOSX_BUNDLE ${SWIFT_APP_SOURCES})
+
+# Add the icon file to target sources
+target_sources(FWA-Control PRIVATE "${CMAKE_SOURCE_DIR}/FWA-Control/FWA-Control.icns")
+
 set_target_properties(FWA-Control PROPERTIES
   MACOSX_BUNDLE TRUE
+  MACOSX_BUNDLE_ICON_FILE ${MACOSX_BUNDLE_ICON_FILE}
   MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/FWA-Control/Info.plist"
   MACOSX_BUNDLE_GUI_IDENTIFIER "net.mrmidi.fwa-control"
   XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "net.mrmidi.fwa-control"
@@ -415,10 +428,10 @@ include/FWA/Helpers.h
 include/FWA/IFireWireDeviceDiscovery.h
 include/FWA/IOKitFireWireDeviceDiscovery.h
 include/FWA/DeviceParser.hpp
-include/FWA/XPC/XPCBridge.h
-include/FWA/XPC/XPCReceiverClient.hpp
-include/FWA/XPC/DuetXPCProtocol.h
-include/FWA/XPC/DuetXPCClientProtocol.h
+# include/FWA/XPC/XPCBridge.h
+# include/FWA/XPC/XPCReceiverClient.hpp
+# include/FWA/XPC/DuetXPCProtocol.h
+# include/FWA/XPC/DuetXPCClientProtocol.h
 )
 
 # Group Isoch source files

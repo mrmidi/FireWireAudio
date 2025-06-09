@@ -12,16 +12,18 @@
 #include <iomanip> // For std::setw, std::setfill
 
 #include "FWA/Error.h"
+#include "Isoch/core/CIPHeader.hpp"
 #include "Isoch/core/TransmitterTypes.hpp"
 #include "Isoch/interfaces/ITransmitBufferManager.hpp"
 #include "Isoch/interfaces/ITransmitDCLManager.hpp"
 #include "Isoch/interfaces/ITransmitPacketProvider.hpp"
+#include "Isoch/core/AppleSyTGenerator.hpp"
 
 // Forward declarations
 namespace FWA {
 namespace Isoch {
 class IsochPortChannelManager; 
-class IsochTransportManager; 
+class IsochTransportManager;
 } }
 
 namespace FWA {
@@ -55,9 +57,6 @@ public:
 
     ITransmitPacketProvider* getPacketProvider() const;
 
-    inline PreparedPacketData safeFillAudio(uint8_t* dst, size_t len,
-                                                         const TransmitPacketInfo& inf);
-
 
 private:
 
@@ -86,19 +85,20 @@ private:
 
      // CIP Header/Timing generation logic
      void initializeCIPState();
-     void generateCIPHeaderContent(CIPHeader* outHeader,
+     void generateCIPHeaderContent(FWA::Isoch::CIPHeader* outHeader,
                                    uint8_t current_dbc_state,
                                    bool previous_wasNoData_state,
                                    bool first_dcl_callback_occurred_state,
                                    uint8_t& next_dbc_for_state,
                                    bool& next_wasNoData_for_state);
 
-     // --- Helper for the "Blocking" (UniversalTransmitter-style) SYT logic ---
-     struct BlockingSytParams {
-         bool isNoData;
-         uint16_t syt_value;
-     };
-     BlockingSytParams calculateBlockingSyt();
+     // --- New refactored CIP header generation helper ---
+     void generateCIPHeaderContent_from_decision(FWA::Isoch::CIPHeader* outHeader,
+                                                 bool isNoDataPacket,
+                                                 uint16_t sytValueForDataPacket,
+                                                 uint8_t current_dbc_state,
+                                                 uint8_t& next_dbc_for_state,
+                                                 bool& next_wasNoData_for_state);
 
 
     // Helper to send messages to the client
@@ -126,19 +126,11 @@ private:
      // CIP Header State
      uint8_t dbc_count_{0};
      bool wasNoData_{true}; // Start assuming previous was NoData
-     uint16_t sytOffset_{0};
-     uint32_t sytPhase_{0}; // For 44.1kHz calculation
      std::atomic<bool> firstDCLCallbackOccurred_{false};
      uint32_t expectedTimeStampCycle_{0}; // For timestamp checking
 
-    // --- NEW: State variables specifically for "Blocking" (Apple-style) SYT ---
-    uint32_t lastRawSytOffset_blocking_{0};  // Corresponds to "*last_syt_offset" in Apple's C code
-    uint32_t sytPhase_blocking_{0};
-
-    // --- Constants for "Blocking" SYT (Apple's algorithm from Python script) ---
-    static constexpr uint32_t SYT_PHASE_MOD_BLOCKING = 147;          // Same as non-blocking
-    static constexpr uint32_t BASE_INCREMENT_BLOCKING = 1386;        // ⌊24576000/44100⌋ = 1386 ticks per packet
-    // TICKS_PER_CYCLE is already defined
+    // --- Apple SYT Generator for "Blocking" (Apple-style) SYT ---
+    std::unique_ptr<AppleSyTGenerator> m_appleSyTGenerator;
 
     // Client Callbacks
     MessageCallback messageCallback_{nullptr};
@@ -147,14 +139,7 @@ private:
     // Interface
     IOFireWireLibNubRef interface_{nullptr}; // The FireWire nub interface
 
-    // Static constants for SYT calc (44.1kHz) - corrected to match Python script
-    static constexpr uint32_t SYT_PHASE_MOD = 147;              // Phase loop length for 44.1kHz
-    static constexpr uint32_t BASE_INCREMENT = 1386;            // ⌊24576000/44100⌋ = 1386 ticks per packet  
-    static constexpr uint32_t TICKS_PER_CYCLE = 3072;           // 3072 ticks = 1 FireWire cycle (125 µs)
-
-
-
-        // --- Packet Logging Helper ---
+    // --- Packet Logging Helper ---
     // Counter to decide when to log a packet
     std::atomic<uint64_t> packetLogCounter_{0};
     // How often to log a full packet dump (e.g., every 10000th generated packet)
@@ -164,15 +149,14 @@ private:
     void logPacketDetails(
         uint32_t groupIndex,
         uint32_t packetIndexInGroup,
-        const IsochHeaderData* isochHeader, // Pass the IsochHeader as well
-        const CIPHeader* cipHeader,
+        const FWA::Isoch::CIPHeader* cipHeader,
         const uint8_t* audioPayload,
         size_t audioPayloadSize,
         const TransmitPacketInfo& packetInfo // For context
     );
 
     // Helper to log packet patterns for verification against Apple Duet capture
-    void logPacketPattern(const CIPHeader* cipHeader);
+    void logPacketPattern(const FWA::Isoch::CIPHeader* cipHeader);
 
 };
 

@@ -1,4 +1,5 @@
 #include "Isoch/core/AmdtpTransmitter.hpp"
+#include "Isoch/core/CIPHeader.hpp"
 #include "Isoch/core/IsochTransmitBufferManager.hpp"
 #include "Isoch/core/IsochPortChannelManager.hpp"
 #include "Isoch/core/IsochTransmitDCLManager.hpp"
@@ -74,9 +75,7 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
                                    + (absPktIdx * bufferManager_->getAudioPayloadSizePerPacket())
                                         % bufferManager_->getClientAudioBufferSize();
             }
-            auto isochHdrPtrExp = bufferManager_->getPacketIsochHeaderPtr(g, p); // For template update
-
-            if (!cipHdrPtrExp || !audioDataTargetPtr || !isochHdrPtrExp) {
+            if (!cipHdrPtrExp || !audioDataTargetPtr) {
                 logger_->error("startTransmit: Failed to get buffer pointers for initial prep G={}, P={}", g, p);
                 // Don't start if buffers aren't right
                 error_code = IOKitError::InternalError;
@@ -85,7 +84,6 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
             }
             CIPHeader* cipHdrTarget = reinterpret_cast<CIPHeader*>(cipHdrPtrExp.value());
             size_t audioPayloadTargetSize = bufferManager_->getAudioPayloadSizePerPacket();
-            IsochHeaderData* isochHdrTarget = reinterpret_cast<IsochHeaderData*>(isochHdrPtrExp.value());
 
             // --- 2b. Fill Audio Payload (Initial Silence) ---
             // Ask provider to fill - it should generate silence if its buffer is empty.
@@ -101,24 +99,17 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
             );
 
             // --- 2c. Prepare CIP Header (Initial State) ---
-            // Directly set a minimal NO_DATA header for initial prep
-            cipHdrTarget->sid_byte       = 0; // Will be set by HW or Port later
-            cipHdrTarget->dbs            = 2; // AM824 Stereo
+            // Directly set a minimal NO_DATA header for initial prep using new structure
+            cipHdrTarget->sid            = 0; // Will be set by HW or Port later
+            cipHdrTarget->dbs            = CIP::kDataBlockSizeStereo;
             cipHdrTarget->fn_qpc_sph_rsv = 0;
-            cipHdrTarget->fmt_eoh1       = (0x10 << 2) | 0x01; // FMT=0x10 (AM824), EOH=1
-            cipHdrTarget->fdf           = 0xFF;                // NO_DATA
-            cipHdrTarget->syt           = 0xFFFF; // NO_INFO
-            cipHdrTarget->dbc           = 0;                   // Initial DBC
+            cipHdrTarget->dbc            = 0;                // Initial DBC
+            cipHdrTarget->fmt_eoh        = CIP::kFmtEoh;     // 0x90 for MBLA
+            cipHdrTarget->fdf            = CIP::kFDF_NoDat;  // 0xFF for NO_DATA
+            cipHdrTarget->syt            = CIP::makeBigEndianSyt(CIP::kSytNoData); // 0xFFFF
 
-            // --- 2d. Prepare Isoch Header Template ---
-            // Set the channel, tag, tcode in the template memory
-            uint8_t fwChannel = portChannelManager_->getActiveChannel()
-                                    .value_or(config_.initialChannel & 0x3F);
-            // Calculate expected data_length (CIP + Payload, even if payload is silence for now)
-            uint16_t dataLength = kTransmitCIPHeaderSize + audioPayloadTargetSize;
-            isochHdrTarget->data_length  = OSSwapHostToBigInt16(dataLength);
-            isochHdrTarget->tag_channel  = (1 << 6) | (fwChannel & 0x3F); // Tag=1
-            isochHdrTarget->tcode_sy     = (0xA << 4) | 0;              // TCode=A, Sy=0
+            // NOTE: Isoch header is now handled automatically by hardware via SetDCLUserHeaderPtr
+            // No manual header preparation needed - the value/mask was set during DCL creation
         } // End initial prep loop
 
         // Check for error from the loop
@@ -145,39 +136,29 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
             }
         }
 
-        // --- PLACE DCL PROGRAM DUMP HERE (Attempt 1) ---
-        // At this point, the DCLs should be created, linked, and their initial content prepared.
-        // The IsochPortChannelManager should also have its nuDCLPool_ if dclManager_ got it.
-        if (portChannelManager_) { // Ensure portChannelManager_ exists
+        if (portChannelManager_) {
             IOFireWireLibNuDCLPoolRef dclPool = portChannelManager_->getNuDCLPool();
             if (dclPool) {
                 CFArrayRef dclArray = (*dclPool)->GetDCLs(dclPool);
                 if (dclArray) {
                     CFIndex dclCount = CFArrayGetCount(dclArray);
                     os_log(OS_LOG_DEFAULT,
-                           "AmdtpTransmitter::startTransmit: NuDCLPool GetDCLs reports %ld DCLs.",
+                           "AmdtpTransmitter::startTransmit: NuDCLPool GetDCLs reports %ld DCLs",
                            dclCount);
-
-                    // You can optionally iterate and log the DCLRef pointers for more detail
-                    // for (CFIndex i = 0; i < dclCount; ++i) {
-                    //     NuDCLRef dcl = (NuDCLRef)CFArrayGetValueAtIndex(dclArray, i);
-                    //     logger_->trace("  DCL[{}]: {:p}", i, (void*)dcl);
-                    // }
-
-                    CFRelease(dclArray); // IMPORTANT: Release the CFArrayRef
+                    CFRelease(dclArray);
                 }
 
                 os_log(OS_LOG_DEFAULT, "--- DUMPING DCL PROGRAM (TRANSMIT) BEFORE TRANSPORT START ---");
-                (*dclPool)->PrintProgram(dclPool); // Call PrintProgram
+                (*dclPool)->PrintProgram(dclPool);
                 logger_->info("--- END DCL PROGRAM DUMP (TRANSMIT) ---");
             } else {
                 logger_->error("AmdtpTransmitter::startTransmit: NuDCLPool is null from portChannelManager_, cannot dump DCL program.");
                 os_log(OS_LOG_DEFAULT,
-                       "AmdtpTransmitter::startTransmit: NuDCLPool is null from portChannelManager_, cannot dump DCL program.");
+                       "AmdtpTransmitter::startTransmit: NuDCLPool is null from portChannelManager_, cannot dump DCL program");
             }
         } else {
             os_log(OS_LOG_DEFAULT,
-                   "AmdtpTransmitter::startTransmit: portChannelManager_ is null, cannot get NuDCLPool to dump DCL program.");
+                   "AmdtpTransmitter::startTransmit: portChannelManager_ is null, cannot get NuDCLPool to dump DCL program");
         }
 
         // --- 4. Start Transport (only if no error so far) ---
@@ -286,118 +267,61 @@ void AmdtpTransmitter::handleDCLOverrun() {
     }
 }
 
-// --- IMPLEMENTATION OF handleDCLComplete (Instance Method) ---
-// This is the core real-time loop function called from the RunLoop via the static helper
 void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
-
-    // EVEN MORE DEBUG LOGGING
-    // --- Callback Rate Monitoring ---
-    static thread_local uint64_t callbackCountSinceLastLog = 0;
-    static thread_local auto lastRateLogTime = std::chrono::steady_clock::now();
-    static const auto loggingInterval = std::chrono::seconds(1); // Log roughly every second
-
-    callbackCountSinceLastLog++; // Increment for this current callback
-
-    auto nowForRateLog = std::chrono::steady_clock::now();
-    auto elapsedSinceLastRateLog = nowForRateLog - lastRateLogTime;
-
-    if (elapsedSinceLastRateLog >= loggingInterval) {
-        // Calculate the actual elapsed time in seconds (as a double for precision)
-        double elapsedSeconds = std::chrono::duration<double>(elapsedSinceLastRateLog).count();
-
-        // Calculate the rate
-        double callbacksPerSecond = 0.0;
-        if (elapsedSeconds > 0) { // Avoid division by zero if interval is tiny (unlikely but safe)
-            callbacksPerSecond = static_cast<double>(callbackCountSinceLastLog) / elapsedSeconds;
-        }
-
-        // Log the rate
-        // You can use logger_->info, logger_->debug, or os_log depending on preference
-        logger_->info("DCLComplete Rate: {:.2f} callbacks/sec ({} callbacks in {:.3f}s)",
-                    callbacksPerSecond,
-                    callbackCountSinceLastLog,
-                    elapsedSeconds);
-        // os_log(OS_LOG_DEFAULT, "DCLComplete Rate: %.2f callbacks/sec (%llu callbacks in %.3f s)",
-        //        callbacksPerSecond,
-        //        callbackCountSinceLastLog,
-        //        elapsedSeconds);
-
-
-        // Reset for the next logging interval
-        callbackCountSinceLastLog = 0;
-        lastRateLogTime = nowForRateLog; // Or just `lastRateLogTime = std::chrono::steady_clock::now();`
-    }
-    // --- End Callback Rate Monitoring ---
-
-    // DEBUG LOGGING
-    // uint32_t cycleTime;
-    // IOReturn result = (*interface_)->GetCycleTime(interface_, &cycleTime);
-    
-    // logger_->info("Callback: group={}, cycle={:08x}", completedGroupIndex, cycleTime);
-    
-    // // Check if we're being called too often
-    // static uint32_t lastCycle = 0;
-    // uint32_t cycleDiff = (cycleTime >> 12) - (lastCycle >> 12);
-    // if (cycleDiff == 0) {
-    //     // logger_->error("🚨 Multiple callbacks in same cycle!");
-    // }
-    // lastCycle = cycleTime;
-
-    
-    // os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::handleDCLComplete FIRED");
-    // logger_->critical("<<<<< AmdtpTransmitter::handleDCLComplete ENTERED for Group: {} >>>>>", completedGroupIndex);
-    // --- 1. State Check ---
-    // Check running state *without* lock first for performance optimisation
     if (!running_.load(std::memory_order_relaxed)) {
-        // logger_->trace("handleDCLComplete: Not running, ignoring callback for group {}", completedGroupIndex);
         return;
     }
 
-    // Get essential components (check for null - should ideally not happen if running)
     auto localPort = portChannelManager_ ? portChannelManager_->getLocalPort() : nullptr;
     if (!localPort || !dclManager_ || !bufferManager_ || !packetProvider_) {
         logger_->error("handleDCLComplete: Required manager component is missing! Stopping stream.");
-        // Attempt to stop cleanly, ignoring potential errors during error handling
-        auto stopExp = stopTransmit(); // This will acquire the lock if needed
-        notifyMessage(TransmitterMessage::Error); // Notify client of error
+        auto stopExp = stopTransmit();
+        notifyMessage(TransmitterMessage::Error);
         return;
     }
 
-    // --- 2. Timing & Debug ---
-    uint64_t callbackEntryTime = mach_absolute_time(); // Measure entry time
-    if (!firstDCLCallbackOccurred_) {
-        firstDCLCallbackOccurred_ = true;
-        // Potentially record first callback time for latency estimation
-        logger_->info("First DCL completion callback received for group {}", completedGroupIndex);
-    }
-
-    // Read hardware completion timestamp for the completed group
     uint32_t completionTimestamp = 0;
+    bool hw_time_acquired = false;
     auto tsExp = bufferManager_->getGroupTimestampPtr(completedGroupIndex);
-    if (tsExp) {
+    if (tsExp && *tsExp.value() != 0) {
         completionTimestamp = *tsExp.value();
-        // logger_->trace("Completed Group {}: HW Timestamp = {:#010x}", completedGroupIndex, completionTimestamp);
-        // TODO: Use this timestamp for PLL/rate estimation later
+        hw_time_acquired = true;
     } else {
-        logger_->warn("Could not get completion timestamp for group {}", completedGroupIndex);
+        if (interface_) {
+            IOReturn cycleTimeResult = (*interface_)->GetCycleTime(interface_, &completionTimestamp);
+            if (cycleTimeResult == kIOReturnSuccess && completionTimestamp != 0) {
+                hw_time_acquired = true;
+            } else {
+                logger_->warn("GetCycleTime failed (0x{:X}) or returned 0. SYT might drift.", cycleTimeResult);
+            }
+        }
+        if (!hw_time_acquired) {
+            logger_->warn("Could not get completion timestamp for group {}", completedGroupIndex);
+        }
     }
 
-    // --- 3. Determine Next Segment to Fill ---
-    // We need to fill the segment that the hardware will encounter *after*
-    // the currently executing segments. With a callback interval of 1,
-    // when group N completes, the hardware might be starting group N+1.
-    // We should prepare group N+2 to ensure double buffering.
+    if (m_appleSyTGenerator && hw_time_acquired) {
+        bool is_first_ever_callback = !firstDCLCallbackOccurred_.load(std::memory_order_acquire);
+        if (is_first_ever_callback) {
+            bool expected_false = false;
+            if (firstDCLCallbackOccurred_.compare_exchange_strong(expected_false, true,
+                                                                std::memory_order_acq_rel,
+                                                                std::memory_order_relaxed)) {
+                m_appleSyTGenerator->seedWithHardwareTime(completionTimestamp);
+            } else {
+                m_appleSyTGenerator->updateCurrentTimeReference(completionTimestamp);
+            }
+        } else {
+            m_appleSyTGenerator->updateCurrentTimeReference(completionTimestamp);
+        }
+    }
+
     uint32_t fillGroupIndex = (completedGroupIndex + 2) % config_.numGroups;
     logger_->debug("handleDCLComplete: Completed Group = {}, Preparing Group = {}",
                    completedGroupIndex, fillGroupIndex);
 
-    // --- 4. Prepare Next Segment Loop ---
-    // Iterate through all packets within the 'fillGroupIndex' segment
     for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
         uint32_t absolutePacketIndex = fillGroupIndex * config_.packetsPerGroup + p;
-
-        // --- 4a. Get Buffer Pointers ---
-        auto isochHdrPtrExp = bufferManager_->getPacketIsochHeaderPtr(fillGroupIndex, p);
         auto cipHdrPtrExp   = bufferManager_->getPacketCIPHeaderPtr(fillGroupIndex, p);
         uint8_t* audioDataTargetPtr = nullptr;
         if (bufferManager_->getClientAudioBufferPtr() && bufferManager_->getClientAudioBufferSize() > 0) {
@@ -406,123 +330,98 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
                                     % bufferManager_->getClientAudioBufferSize();
         }
 
-        if (!isochHdrPtrExp || !cipHdrPtrExp || !audioDataTargetPtr) {
+        if (!cipHdrPtrExp || !audioDataTargetPtr) {
             logger_->error("handleDCLComplete: Failed to get buffer pointers for G={}, P={}. Skipping packet.", fillGroupIndex, p);
             continue;
         }
 
-        IsochHeaderData* isochHdrTarget = reinterpret_cast<IsochHeaderData*>(isochHdrPtrExp.value());
         CIPHeader*       cipHdrTarget   = reinterpret_cast<CIPHeader*>(cipHdrPtrExp.value());
         size_t           audioPayloadTargetSize = bufferManager_->getAudioPayloadSizePerPacket();
 
-        // --- 4b. Prepare TransmitPacketInfo ---
-        uint64_t estimatedHostTimeNano    = 0;
-        uint32_t estimatedFirewireTimestamp = 0;
         TransmitPacketInfo packetInfo = {
             .segmentIndex        = fillGroupIndex,
             .packetIndexInGroup  = p,
             .absolutePacketIndex = absolutePacketIndex,
-            .hostTimestampNano   = estimatedHostTimeNano,
-            .firewireTimestamp   = estimatedFirewireTimestamp
+            .hostTimestampNano   = 0,
+            .firewireTimestamp   = 0
         };
 
-        // --- 4c. Fill Audio Data (ask provider) ---
         PreparedPacketData packetDataStatus = packetProvider_->fillPacketData(
             audioDataTargetPtr,
             audioPayloadTargetSize,
             packetInfo
         );
 
-        // --- 4d. Prepare CIP Header Content (using the new centralized method) ---
         uint8_t next_dbc_val_for_state_update;
         bool    next_wasNoData_val_for_state_update;
-        generateCIPHeaderContent(cipHdrTarget,                       // Output: where to write the header
-                                 this->dbc_count_,                   // Input: current DBC state from member
-                                 this->wasNoData_,                   // Input: previous packet type state from member
-                                 this->firstDCLCallbackOccurred_.load(), // Input: current atomic bool state
-                                 next_dbc_val_for_state_update,    // Output: by reference
-                                 next_wasNoData_val_for_state_update // Output: by reference
+        generateCIPHeaderContent(cipHdrTarget,
+                                 this->dbc_count_,
+                                 this->wasNoData_,
+                                 this->firstDCLCallbackOccurred_.load(),
+                                 next_dbc_val_for_state_update,
+                                 next_wasNoData_val_for_state_update
         );
 
-        // --- 4e. POST-CORRECTION: Handle forceNoDataCIP from provider ---
         if (packetDataStatus.forceNoDataCIP) {
-            if (cipHdrTarget->fdf != 0xFF) { // If SYT logic decided DATA, but provider says NO_DATA
+            if (cipHdrTarget->fdf != 0xFF) {
                 static thread_local uint32_t forceNoDataLogCounter = 0;
-                if ((forceNoDataLogCounter++ % 100) == 0) { // Throttle logging
+                if ((forceNoDataLogCounter++ % 100) == 0) {
                     logger_->debug("Provider forcing NO_DATA over SYT's DATA decision (G:{}, P:{}, count:{})", 
                                   fillGroupIndex, p, forceNoDataLogCounter);
                 }
                 
-                // Override CIP header to NO_DATA
                 cipHdrTarget->fdf = 0xFF;
-                cipHdrTarget->syt = 0xFFFF; // Already big-endian for 0xFFFF
-                
-                // Correct DBC state: NO_DATA packets don't increment DBC
+                cipHdrTarget->syt = 0xFFFF;
                 next_dbc_val_for_state_update = this->dbc_count_;
                 next_wasNoData_val_for_state_update = true;
             }
         }
 
-        // Update packet counters based on final CIP header state
         if (cipHdrTarget->fdf == 0xFF) {
            noDataPacketsSent_.fetch_add(1, std::memory_order_relaxed);
         } else {
             dataPacketsSent_.fetch_add(1, std::memory_order_relaxed);
         }
 
-        // Update transmitter's persistent state AFTER all corrections
         this->dbc_count_ = next_dbc_val_for_state_update;
         this->wasNoData_ = next_wasNoData_val_for_state_update;
 
-        // --- 4e. Update Isoch Header (based on whether it's a NO_DATA packet from CIP gen) ---
-        uint8_t fwChannel = portChannelManager_->getActiveChannel()
-                                .value_or(config_.initialChannel & 0x3F);
-        isochHdrTarget->tag_channel = (1 << 6) | (fwChannel & 0x3F);
-        isochHdrTarget->tcode_sy    = (0xA << 4) | 0; 
+        // NOTE: Isoch header channel/tag/tcode are now handled automatically by hardware
+        // via SetDCLUserHeaderPtr - no manual updates needed
 
-
-        // --- NEW: Conditional Packet Logging ---
         uint64_t currentPacketCount = packetLogCounter_.fetch_add(1, std::memory_order_relaxed);
         if ((currentPacketCount % PACKET_LOG_INTERVAL) == 0) {
             logPacketDetails(
                 fillGroupIndex,
                 p,
-                isochHdrTarget,       // Pointer to the prepared Isoch Header
-                cipHdrTarget,         // Pointer to the prepared CIP Header
-                audioDataTargetPtr,   // Pointer to the prepared audio payload
-                audioPayloadTargetSize, // Size of the audio payload for this packet
-                packetInfo            // The TransmitPacketInfo struct
+                cipHdrTarget,
+                audioDataTargetPtr,
+                audioPayloadTargetSize,
+                packetInfo
             );
         }
 
-        // --- NEW: Packet Pattern Logging to verify Apple Duet pattern ---
         logPacketPattern(cipHdrTarget);
 
-        // --- 4f. Update DCL Ranges (crucial change here) ---
         IOVirtualRange ranges[2];
-        uint32_t numRanges = 0;
+        uint32_t numRanges = 1; // Always send at least the CIP header
 
-        // Range 0: CIP Header (Always present)
         ranges[0].address = reinterpret_cast<IOVirtualAddress>(cipHdrTarget);
-        ranges[0].length  = kTransmitCIPHeaderSize;
-        numRanges++;
+        ranges[0].length  = sizeof(FWA::Isoch::CIPHeader);
 
-        // Determine if we are sending audio data based on the FINAL FDF field (after forceNoDataCIP correction)
         bool sendAudioPayload = (cipHdrTarget->fdf != 0xFF);
 
         if (sendAudioPayload) {
             ranges[1].address = reinterpret_cast<IOVirtualAddress>(audioDataTargetPtr);
-            ranges[1].length  = packetDataStatus.dataLength;
+            ranges[1].length  = audioPayloadTargetSize; // Using fixed size for consistency
             numRanges++;
-            isochHdrTarget->data_length = OSSwapHostToBigInt16(
-                kTransmitCIPHeaderSize + packetDataStatus.dataLength);
-        } else {
-            numRanges = 1;
-            isochHdrTarget->data_length = OSSwapHostToBigInt16(kTransmitCIPHeaderSize);
-            // This covers both SYT-driven NO_DATA and provider-forced NO_DATA packets
         }
+        
+        // The hardware will now automatically calculate the correct data_length
+        // based on the sum of the lengths of the ranges we provide.
 
-        auto updateExp = dclManager_->updateDCLPacket(fillGroupIndex, p, ranges, numRanges, nullptr);
+        // Call the corrected updateDCLPacket (no header parameter)
+        auto updateExp = dclManager_->updateDCLPacket(fillGroupIndex, p, ranges, numRanges);
         if (!updateExp) {
             logger_->error("handleDCLComplete: Failed to update DCL packet ranges for G={}, P={}: {}",
                 fillGroupIndex, p,
@@ -546,32 +445,7 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         // Handle error - might lead to hardware sending stale data.
     }
 
-    // --- 6. No DCL Jump Target Updates Needed ---
-    // We use a static circular DCL program configured during setup
-    // Hardware follows the pre-defined circular path
-
-    // --- 7. Performance Monitoring (Optional) ---
-    uint64_t callbackExitTime = mach_absolute_time();
-    uint64_t callbackDuration = callbackExitTime - callbackEntryTime;
-
-    // Convert to milliseconds (this is a simple approximation)
-    static mach_timebase_info_data_t timebase;
-    if (timebase.denom == 0) {
-        mach_timebase_info(&timebase);
-    }
-
-    uint64_t durationNanos = callbackDuration * timebase.numer / timebase.denom;
-    double   durationMs    = static_cast<double>(durationNanos) / 1000000.0;
-
-    // Log if duration exceeds threshold (e.g., 1ms for real-time audio)
-    static const double kWarningThresholdMs = 1.0; // 1ms is quite strict for real-time audio
-    // if (durationMs > kWarningThresholdMs) {
-    //     logger_->warn("handleDCLComplete: Long processing time for G={}: {:.3f}ms",
-    //                   completedGroupIndex, durationMs);
-    // }
-
-
-    // Log the number of packets sent in the last second
+    // Log packet counts periodically
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastPacketLogTime_);
     if (elapsed.count() >= 1) {
@@ -594,30 +468,28 @@ void AmdtpTransmitter::DCLOverrunCallback_Helper(void* refCon) {
 }
 
 void AmdtpTransmitter::TransportFinalize_Helper(void* refCon) {
-    // AmdtpTransmitter* self = static_cast<AmdtpTransmitter*>(refCon);
-    // if (self) self->handleFinalize(); // If finalize handling is needed
+    // Unused
 }
 
-// Constructor
 AmdtpTransmitter::AmdtpTransmitter(const TransmitterConfig& config)
     : config_(config),
       logger_(config.logger ? config.logger : spdlog::default_logger()) {
     logger_->info("AmdtpTransmitter constructing...");
-    // Initialize other members if necessary
+    
+    if (config_.transmissionType == TransmissionType::Blocking) {
+        m_appleSyTGenerator = std::make_unique<AppleSyTGenerator>(logger_);
+    }
 }
 
-// Destructor
 AmdtpTransmitter::~AmdtpTransmitter() {
     logger_->info("AmdtpTransmitter destructing...");
     if (running_.load()) {
-        // Attempt to stop, log errors but don't throw from destructor
         auto result = stopTransmit();
         if (!result) logger_->error("stopTransmit failed during destruction");
     }
     cleanup();
 }
 
-// cleanup
 void AmdtpTransmitter::cleanup() noexcept {
     logger_->debug("AmdtpTransmitter cleanup starting...");
     packetProvider_.reset();
@@ -730,13 +602,10 @@ void AmdtpTransmitter::initializeCIPState() {
     dbc_count_   = 0;
     wasNoData_   = true; // Start assuming previous was NoData for both modes initially
 
-    // Initialize state for "NonBlocking" (Linux-style) SYT logic
-    sytOffset_   = 0;  // Start at 0 for Linux algorithm  
-    sytPhase_    = 0;
-
-    // Initialize state for "Blocking" (Apple-style) SYT logic  
-    lastRawSytOffset_blocking_ = 0;  // Start at 0 as in Apple's algorithm
-    sytPhase_blocking_  = 0;
+    // Initialize AppleSyTGenerator for "Blocking" (Apple-style) SYT logic
+    if (m_appleSyTGenerator) {
+        m_appleSyTGenerator->initialize(config_.sampleRate);
+    }
 
     firstDCLCallbackOccurred_ = false;
     expectedTimeStampCycle_   = 0;
@@ -744,16 +613,14 @@ void AmdtpTransmitter::initializeCIPState() {
 
 
 // Constants for SFC (Sample Frequency Code)
-constexpr uint8_t SFC_44K1HZ = 0x01;
-constexpr uint8_t SFC_48KHZ  = 0x02;
+// SFC constants moved to CIP namespace in CIPHeader.hpp
 
-void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
+void AmdtpTransmitter::generateCIPHeaderContent(FWA::Isoch::CIPHeader* outHeader,
                                                 uint8_t current_dbc_state,
                                                 bool previous_wasNoData_state,
                                                 bool first_dcl_callback_occurred_state_param,
                                                 uint8_t& next_dbc_for_state,
                                                 bool& next_wasNoData_for_state) {
-    // Check preconditions
     if (!outHeader || !portChannelManager_ || !this->bufferManager_) {
         if (logger_) logger_->error("generateCIPHeaderContent: Preconditions not met (null pointers).");
         if (outHeader) {
@@ -766,197 +633,96 @@ void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
         return;
     }
 
-    // --- Get Node ID, Set static fields ---
     uint16_t nodeID   = portChannelManager_->getLocalNodeID().value_or(0x3F);
-    outHeader->sid_byte       = static_cast<uint8_t>(nodeID & 0x3F);
-    outHeader->dbs            = 2;
-    outHeader->fn_qpc_sph_rsv = 0;
-    outHeader->fmt_eoh1       = (0x10 << 2) | 0x01;
+    outHeader->sid            = static_cast<uint8_t>(nodeID & 0x3F);
+    outHeader->dbs            = CIP::kDataBlockSizeStereo;   // 0x02
+    outHeader->fn_qpc_sph_rsv = 0x00;
 
-    // Local variables for this function's calculations
+    // --- DBC comes *before* FMT/EOH/FDF now ---
+    outHeader->dbc            = current_dbc_state;
+
+    outHeader->fmt_eoh        = CIP::kFmtEoh;                // 0x90
+
     bool   calculated_isNoData_for_this_packet  = true;
     uint16_t calculated_sytVal_for_this_packet = 0xFFFF;
-    uint8_t  sfc_for_this_packet                = SFC_48KHZ;
 
-    // Determine SFC based on config
-    if (config_.sampleRate == 44100.0) {
-        sfc_for_this_packet = SFC_44K1HZ;
-    } else if (config_.sampleRate == 48000.0) {
-        sfc_for_this_packet = SFC_48KHZ;
+    if (config_.transmissionType == TransmissionType::Blocking && m_appleSyTGenerator) {
+        AppleSyTGenerator::SyTResult appleResult = m_appleSyTGenerator->calculateSyT();
+        calculated_isNoData_for_this_packet = appleResult.isNoData;
+        calculated_sytVal_for_this_packet   = appleResult.sytValue;
     } else {
-        if (logger_) {
-            logger_->warn("generateCIPHeaderContent: Unsupported sample rate {:.1f}Hz, using SFC for 48kHz as fallback.",
-                          config_.sampleRate);
-        }
+        calculated_isNoData_for_this_packet = true;
+        calculated_sytVal_for_this_packet   = 0xFFFF;
     }
 
-    // Always use Blocking for 44.1 kHz
-    BlockingSytParams sytParams = calculateBlockingSyt();
-    calculated_isNoData_for_this_packet = sytParams.isNoData;
-    calculated_sytVal_for_this_packet   = sytParams.syt_value;
-
-    // --- FIXED: Set Dynamic Fields (FDF, SYT, DBC) based on Apple Duet capture analysis ---
     if (calculated_isNoData_for_this_packet) {
-        // NO-DATA packet
-        outHeader->fdf = 0xFF;
-        outHeader->syt = 0xFFFF; // NO NEED TO CONVERT ENDIANESS FOR 0xFFFF!
-        outHeader->dbc = current_dbc_state;
-        
-        // CRITICAL: NO-DATA packets don't increment DBC! (from Apple capture analysis)
-        next_dbc_for_state = current_dbc_state;
+        outHeader->fdf          = CIP::kFDF_NoDat;             // 0xFF
+        next_dbc_for_state      = current_dbc_state;           // don't bump
     } else {
-        // DATA packet: fixed 8 frames
-        outHeader->fdf = sfc_for_this_packet;
-        outHeader->syt = OSSwapHostToBigInt16(calculated_sytVal_for_this_packet);
-        outHeader->dbc = current_dbc_state;
-        next_dbc_for_state = (current_dbc_state + 8) & 0xFF;
+        outHeader->fdf          = (config_.sampleRate == 44100.0)
+                                  ? CIP::kFDF_44k1
+                                  : CIP::kFDF_48k;
+        next_dbc_for_state      = static_cast<uint8_t>((current_dbc_state + 8) & 0xFF);
     }
 
-    // --- Update state for the *next* call (via output parameters) ---
+    outHeader->syt              = CIP::makeBigEndianSyt(calculated_sytVal_for_this_packet);
     next_wasNoData_for_state = calculated_isNoData_for_this_packet;
 }
 
-// Old implementation commented out - replaced with Apple's correct algorithm
-
-AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() {
-    BlockingSytParams params;
-
-    // Apple's "blocking" algorithm exactly as implemented in the Python script
-    // Corresponds to the fixed Apple algorithm for 44.1kHz
-
-    // 1) If we haven't had a DCL callback yet, hold off on sending data
-    if (!this->firstDCLCallbackOccurred_.load()) {
-        params.isNoData  = true;
-        params.syt_value = 0xFFFF;   // no-data
-        return params;
+// New refactored helper method for generating CIP headers from SYT decisions
+void AmdtpTransmitter::generateCIPHeaderContent_from_decision(
+                                FWA::Isoch::CIPHeader* outHeader,
+                                bool isNoDataPacket,
+                                uint16_t sytValueForDataPacket, // Host endian, 0-3071
+                                uint8_t current_dbc_state,
+                                uint8_t& next_dbc_for_state,
+                                bool& next_wasNoData_for_state) {
+    if (!outHeader || !portChannelManager_) {
+        if (outHeader) {
+            outHeader->fdf = CIP::kFDF_NoDat;
+            outHeader->syt = CIP::makeBigEndianSyt(CIP::kSytNoData);
+            outHeader->dbc = current_dbc_state;
+        }
+        next_dbc_for_state = current_dbc_state;
+        next_wasNoData_for_state = true;
+        return;
     }
 
-    // 2) Apple's exact phase accumulator algorithm for 44.1kHz (fixed overshoot issue):
+    uint16_t nodeID = portChannelManager_->getLocalNodeID().value_or(0x3F);
     
-    // Check if we accumulated a full cycle from previous iteration
-    if (lastRawSytOffset_blocking_ >= TICKS_PER_CYCLE) {
-        lastRawSytOffset_blocking_ -= TICKS_PER_CYCLE;
-        params.isNoData = true;
-        params.syt_value = 0xFFFF;
-        return params;  // Important: return here to prevent overshoot!
-    }
-    
-    // Apple's phase accumulator logic (from decompiled code analysis)
-    // For 44.1kHz: sampleRateMultiplier = 441
-    const uint32_t sampleRateMultiplier = 441;  // 44100 / 100
-    const uint32_t phaseModulo = 80;            // 0x50 in Apple's code
-    
-    // Phase accumulator step
-    sytPhase_blocking_ += (sampleRateMultiplier % phaseModulo);  // 441 % 80 = 41
-    uint32_t cycles = sampleRateMultiplier / phaseModulo;        // 441 / 80 = 5
-    
-    if (sytPhase_blocking_ > (phaseModulo - 1)) {  // if > 79
-        sytPhase_blocking_ -= phaseModulo;
-        cycles += 1;  // Add extra cycle when accumulator overflows
-    }
-    
-    // Update SYT offset based on calculated cycles
-    // Each cycle represents BASE_INCREMENT_BLOCKING ticks
-    lastRawSytOffset_blocking_ += (BASE_INCREMENT_BLOCKING * cycles) / 5;  // Normalize cycles to ticks
-    
-    // Determine packet type based on final offset
-    if (lastRawSytOffset_blocking_ >= TICKS_PER_CYCLE) {
-        params.isNoData = true;
-        params.syt_value = 0xFFFF;
+    outHeader->sid            = static_cast<uint8_t>(nodeID & 0x3F);
+    outHeader->dbs            = CIP::kDataBlockSizeStereo;   // 0x02
+    outHeader->fn_qpc_sph_rsv = 0x00;
+
+    // --- DBC comes *before* FMT/EOH/FDF now ---
+    outHeader->dbc            = current_dbc_state;
+
+    outHeader->fmt_eoh        = CIP::kFmtEoh;                // 0x90
+
+    if (isNoDataPacket) {
+        outHeader->fdf          = CIP::kFDF_NoDat;             // 0xFF
+        outHeader->syt          = CIP::makeBigEndianSyt(CIP::kSytNoData); // 0xFFFF
+        next_dbc_for_state      = current_dbc_state;           // don't bump
     } else {
-        params.isNoData = false;
-        params.syt_value = static_cast<uint16_t>(lastRawSytOffset_blocking_);
+        outHeader->fdf          = (config_.sampleRate == 44100.0)
+                                  ? CIP::kFDF_44k1
+                                  : CIP::kFDF_48k;
+        outHeader->syt          = CIP::makeBigEndianSyt(sytValueForDataPacket);
+        next_dbc_for_state      = static_cast<uint8_t>((current_dbc_state + 8) & 0xFF);
     }
 
-    return params;
+    next_wasNoData_for_state = isNoDataPacket;
 }
 // Helper function implementation
 void AmdtpTransmitter::logPacketDetails(
     uint32_t groupIndex,
     uint32_t packetIndexInGroup,
-    const IsochHeaderData* isochHeader,
     const CIPHeader* cipHeader,
     const uint8_t* audioPayload,
     size_t audioPayloadSize,
     const TransmitPacketInfo& packetInfo // For additional context if needed
-) {
-    if (!logger_ || !cipHeader || !audioPayload || !isochHeader) {
-        return;
-    }
-
-    logger_->info("---------- DETAILED PACKET DUMP (G:{}, P:{}, AbsPkt:{}) ----------",
-                  groupIndex, packetIndexInGroup, packetInfo.absolutePacketIndex);
-
-    // --- Log Isoch Header (Raw and Parsed) ---
-    // Assuming IsochHeaderData is a struct matching the on-wire format after endian swap
-    // If it's just a byte pointer, you'd cast and parse.
-    // For now, let's assume it's a struct that is already host-endian if needed for parsing,
-    // or we log its raw big-endian bytes.
-    std::vector<uint8_t> raw_isoch_header_bytes(kTransmitIsochHeaderSize);
-    std::memcpy(raw_isoch_header_bytes.data(), isochHeader, kTransmitIsochHeaderSize);
-    logger_->info("  Isoch Header (Big Endian Raw): {}", spdlog::to_hex(raw_isoch_header_bytes));
-
-    // You would parse fields from isochHeader similar to IsochPacketProcessor if needed,
-    // but for transmit, you mostly care about what you *set*.
-    // Example: (assuming IsochHeaderData has members data_length, tag_channel, tcode_sy)
-    logger_->info("    data_length (from IsochHdr): {}", OSSwapBigToHostInt16(isochHeader->data_length));
-    logger_->info("    tag_channel (from IsochHdr): {:#04x}", isochHeader->tag_channel); // Assuming it's already set for transmit
-    logger_->info("    tcode_sy    (from IsochHdr): {:#04x}", isochHeader->tcode_sy);
-
-    // --- Log CIP Header (Raw and Parsed) ---
-    // Your CIPHeader struct is byte-wise. We can log it directly.
-    std::vector<uint8_t> raw_cip_header_bytes(kTransmitCIPHeaderSize);
-    std::memcpy(raw_cip_header_bytes.data(), cipHeader, kTransmitCIPHeaderSize);
-    logger_->info("  CIP Header (Big Endian Raw):   {}", spdlog::to_hex(raw_cip_header_bytes));
-
-    // Parse and log human-readable CIP fields (already big-endian as per transmit prep)
-    // This assumes your CIPHeader struct directly maps to the byte layout
-    // and you want to interpret it as if it were on the wire (big-endian).
-    // The values inside cipHeader are already prepared for transmission.
-    uint16_t syt_be = cipHeader->syt; // Already big-endian from OSSwapHostToBigInt16
-    uint16_t syt_host = OSSwapBigToHostInt16(syt_be); // Swap back for logging if you want host value
-
-    logger_->info("    SID: {:#04x} (Source Node ID)", cipHeader->sid_byte & 0x3F);
-    logger_->info("    DBS: {} (Data Blocks in CIP payload, quadlets)", cipHeader->dbs);
-    // Further parsing of fn_qpc_sph_rsv if needed:
-    // uint8_t fn  = (cipHeader->fn_qpc_sph_rsv >> 6) & 0x03;
-    // uint8_t qpc = (cipHeader->fn_qpc_sph_rsv >> 3) & 0x07;
-    // uint8_t sph = (cipHeader->fn_qpc_sph_rsv >> 2) & 0x01;
-    // logger_->info("    FN: {}, QPC: {}, SPH: {}", fn, qpc, sph);
-    logger_->info("    FMT_EOH: {:#04x} (FMT should be 0x10<<2 for AM824)", cipHeader->fmt_eoh1);
-    logger_->info("    FDF: {:#04x} (SFC. 0xFF=NoData, 0x01=44.1k, 0x02=48k)", cipHeader->fdf);
-    logger_->info("    SYT: {:#06x} (Host Endian: {:#06x})", syt_be, syt_host);
-    logger_->info("    DBC: {:#04x} ({})", cipHeader->dbc, cipHeader->dbc);
-
-
-    // --- Log Audio Payload (First few AM824 samples) ---
-    if (cipHeader->fdf != 0xFF && audioPayloadSize > 0) { // If it's a DATA packet
-        logger_->info("  Audio Payload ({} bytes, AM824 formatted, Big Endian):", audioPayloadSize);
-        size_t bytesToLog = std::min(audioPayloadSize, (size_t)64); // Log up to 64 bytes
-        std::vector<uint8_t> payload_sample_bytes(audioPayload, audioPayload + bytesToLog);
-        logger_->info("    Raw Hex: {}", spdlog::to_hex(payload_sample_bytes));
-
-        // Log first few 32-bit AM824 words (as host endian for easier reading of sample values)
-        logger_->info("    First AM824 words (Host Endian, Label|Sample24):");
-        for (size_t i = 0; i < bytesToLog / 4 && i < 4; ++i) { // Log up to 4 AM824 words
-            uint32_t am824_word_be;
-            std::memcpy(&am824_word_be, audioPayload + i * 4, sizeof(uint32_t));
-            uint32_t am824_word_host = OSSwapBigToHostInt32(am824_word_be);
-            uint8_t label = (am824_word_host >> 24) & 0xFF;
-            int32_t sample_val_24bit = am824_word_host & 0x00FFFFFF;
-            // Sign extend if necessary (AM824 typically stores signed 24-bit)
-            if (sample_val_24bit & 0x00800000) { // if 24th bit (sign bit) is set
-                sample_val_24bit |= 0xFF000000; // sign extend to 32-bit
-            }
-            logger_->info("      Word {}: {:#010x} (Label: {:#04x}, Sample24: {:#08x} ({}) )",
-                          i, am824_word_host, label, (sample_val_24bit & 0x00FFFFFF), sample_val_24bit);
-        }
-    } else if (cipHeader->fdf == 0xFF) {
-        logger_->info("  Audio Payload: NO_DATA packet");
-    } else {
-        logger_->info("  Audio Payload: Zero length but FDF indicates data - unusual.");
-    }
-    logger_->info("---------- END DETAILED PACKET DUMP ----------");
+) { // NO-OP, PowerMac G3 is fixed for packet logging
+    return;
 }
 
 // Helper to log packet patterns for verification against Apple Duet capture

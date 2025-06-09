@@ -87,47 +87,33 @@ using MessageCallback = void(*)(uint32_t message, uint32_t param1, uint32_t para
 
 // --- Data Structures ---
 
-/**
- * @brief Basic structure representing the 8-byte CIP Header.
- *        Ensures correct byte order access (assumes system is Little Endian).
- */
-#pragma pack(push, 1) // Ensure tight packing
-struct CIPHeader {
-    // Quadlet 0
-    uint8_t sid_byte;  // Source ID (Node ID) - 6 bits used
-    uint8_t dbs;  // Data Block Size (in quadlets)
-    uint8_t fn_qpc_sph_rsv; // FN (2), QPC (3), SPH (1), RSV (2) - Often 0 for AMDTP
-    uint8_t dbc;  // Data Block Counter
-    // Quadlet 1
-    uint8_t fmt_eoh1; // FMT (6 bits), EOH1=1
-    uint8_t fdf;      // Format Dependent Field (includes SFC)
-    uint16_t syt;     // Synchronization Timestamp (Big Endian in memory!)
-
-    // Helper to get/set fields assuming BE memory layout for packet buffer
-    // Example: Set DBS
-    // void setDBS(uint8_t val) { dbs = val; }
-    // Example: Set DBC
-    // void setDBC(uint8_t val) { dbc = val; }
-    // Example: Set SYT (takes host order, writes big endian)
-    // void setSYT(uint16_t host_syt) { syt = OSSwapHostToBigInt16(host_syt); }
-    // Example: Get FDF
-    // uint8_t getFDF() const { return fdf; }
-};
-#pragma pack(pop)
-static_assert(sizeof(CIPHeader) == 8, "CIPHeader size must be 8 bytes");
+// CIP Header is now defined in Isoch/core/CIPHeader.hpp
+// Include it here for backward compatibility
+#include "Isoch/core/CIPHeader.hpp"
 
 /**
- * @brief Structure containing isoch header data for packet transmission
+ * @brief Structure containing value and mask for Isochronous header control.
+ * This is used with SetDCLUserHeaderPtr for hardware-assisted header generation.
  */
-#pragma pack(push, 1) // Ensure tight packing
-struct IsochHeaderData {
-    // IEEE-1394 Isochronous Packet Header (as used by FireWire)
-    uint16_t data_length;  // Total data length (filled by hardware at transmit time)
-    uint8_t tag_channel;   // Tag (upper 2 bits) and channel (lower 6 bits)
-    uint8_t tcode_sy;      // Transaction code (upper 4 bits) and sync code (lower 4 bits)
+struct IsochHeaderValueMask {
+    uint32_t value;  ///< Host-endian value with bits we want to control (tag, sy).
+    uint32_t mask;   ///< Mask telling the DMA engine which bits from 'value' to use.
 };
-#pragma pack(pop)
-static_assert(sizeof(IsochHeaderData) == 4, "IsochHeaderData size must be 4 bytes");
+
+/**
+ * @brief Creates the value/mask pair for Isochronous header control, per Apple's sample code.
+ * @param tag The tag field (0-3). Should be 1 for streams with a CIP header.
+ * @param sy The sync field (0-15). Typically 0.
+ * @return An IsochHeaderValueMask struct with the correct value and mask.
+ */
+inline IsochHeaderValueMask makeIsoHeader(uint8_t tag, uint8_t sy) {
+    IsochHeaderValueMask header{};
+    // Mask 0x0000C00F targets bits 15, 14 (Tag) and bits 3,2,1,0 (Sy) in the
+    // hardware's internal 32-bit representation before byte-swapping.
+    header.value = (static_cast<uint32_t>(tag & 0x3) << 14) | (static_cast<uint32_t>(sy & 0xF));
+    header.mask  = 0x0000C00F;
+    return header;
+}
 
 /**
  * @brief Structure holding information about the packet currently being prepared for transmission.
@@ -162,7 +148,6 @@ struct PreparedPacketData {
 // --- Constants ---
 // Constants for header sizes
 constexpr size_t kTransmitCIPHeaderSize = 8;        ///< Size of CIP header in bytes
-constexpr size_t kTransmitIsochHeaderSize = 4;      ///< Size of IEEE1394 isoch header in bytes
 
 } // namespace Isoch
 } // namespace FWA
