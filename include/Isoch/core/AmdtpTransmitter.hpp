@@ -6,6 +6,7 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include <chrono>
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/firewire/IOFireWireLibIsoch.h>
 #include <spdlog/logger.h>
@@ -18,6 +19,7 @@
 #include "Isoch/interfaces/ITransmitDCLManager.hpp"
 #include "Isoch/interfaces/ITransmitPacketProvider.hpp"
 #include "Isoch/core/AppleSyTGenerator.hpp"
+#include "Isoch/utils/TimingUtils.hpp"
 
 // Forward declarations
 namespace FWA {
@@ -157,6 +159,36 @@ private:
 
     // Helper to log packet patterns for verification against Apple Duet capture
     void logPacketPattern(const FWA::Isoch::CIPHeader* cipHeader);
+
+    // Timing drift detection
+    struct TimingState {
+        enum Quality {
+            Unknown = 0,
+            Unreliable = 1,     // Hardware timing is drifting
+            Synchronizing = 2,   // Trying to lock to hardware
+            Locked = 3          // Hardware timing is stable
+        };
+        
+        Quality quality = Unknown;
+        uint32_t consecutiveGoodSamples = 0;
+        uint32_t consecutiveBadSamples = 0;
+        uint32_t lastHardwareTime = 0;
+        uint32_t expectedNextTime = 0;
+        std::chrono::steady_clock::time_point lastQualityLog;
+    };
+    
+    TimingState timingState_;
+    
+    // Drift detection constants
+    static constexpr uint32_t DRIFT_THRESHOLD_TICKS = 50;        // ~1.6µs tolerance
+    static constexpr uint32_t GOOD_SAMPLES_FOR_LOCK = 32;       // Apple uses 32
+    static constexpr uint32_t BAD_SAMPLES_FOR_UNLOCK = 3;       // Apple uses 3
+    static constexpr uint32_t MAX_CYCLE_PROCESSING_TIME = 0x800; // Half a cycle
+    
+    // Timing drift detection methods
+    bool acquireTimestampWithDriftDetection(uint32_t groupIndex, uint32_t& timestamp);
+    void assessTimingQuality(uint32_t currentTime, uint32_t processingDuration);
+    uint32_t calculateExpectedNextTime(uint32_t currentTime) const;
 
 };
 

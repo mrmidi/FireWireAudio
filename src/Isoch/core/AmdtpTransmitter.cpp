@@ -11,6 +11,7 @@
 #include <chrono>                  // For timing/sleep
 #include <os/log.h>
 #include <spdlog/fmt/bin_to_hex.h> // For spdlog::to_hex
+#include <spdlog/fmt/fmt.h>        // For fmt::format
 
 namespace FWA {
 namespace Isoch {
@@ -280,39 +281,39 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         return;
     }
 
+    // NEW: Robust timestamp acquisition with drift detection
     uint32_t completionTimestamp = 0;
-    bool hw_time_acquired = false;
-    auto tsExp = bufferManager_->getGroupTimestampPtr(completedGroupIndex);
-    if (tsExp && *tsExp.value() != 0) {
-        completionTimestamp = *tsExp.value();
-        hw_time_acquired = true;
-    } else {
-        if (interface_) {
-            IOReturn cycleTimeResult = (*interface_)->GetCycleTime(interface_, &completionTimestamp);
-            if (cycleTimeResult == kIOReturnSuccess && completionTimestamp != 0) {
-                hw_time_acquired = true;
-            } else {
-                logger_->warn("GetCycleTime failed (0x{:X}) or returned 0. SYT might drift.", cycleTimeResult);
-            }
-        }
-        if (!hw_time_acquired) {
-            logger_->warn("Could not get completion timestamp for group {}", completedGroupIndex);
-        }
+    bool hw_time_acquired = acquireTimestampWithDriftDetection(completedGroupIndex, completionTimestamp);
+    
+    if (!hw_time_acquired) {
+        logger_->error("Failed to acquire hardware timestamp for group {}", completedGroupIndex);
+        // Could fallback to software timestamp here if desired
+        return;
     }
 
-    if (m_appleSyTGenerator && hw_time_acquired) {
+
+    // Inform SYT generator about timing quality
+    if (m_appleSyTGenerator) {
         bool is_first_ever_callback = !firstDCLCallbackOccurred_.load(std::memory_order_acquire);
+        
         if (is_first_ever_callback) {
             bool expected_false = false;
             if (firstDCLCallbackOccurred_.compare_exchange_strong(expected_false, true,
                                                                 std::memory_order_acq_rel,
                                                                 std::memory_order_relaxed)) {
                 m_appleSyTGenerator->seedWithHardwareTime(completionTimestamp);
+                logger_->info("SYT generator seeded with hardware time: 0x{:X}", completionTimestamp);
             } else {
                 m_appleSyTGenerator->updateCurrentTimeReference(completionTimestamp);
             }
         } else {
             m_appleSyTGenerator->updateCurrentTimeReference(completionTimestamp);
+            
+            // NEW: Pass timing quality to SYT generator
+            if (timingState_.quality == TimingState::Unreliable) {
+                // Could switch to software timing or apply corrections
+                logger_->debug("Hardware timing unreliable - SYT may drift");
+            }
         }
     }
 
@@ -656,7 +657,9 @@ void AmdtpTransmitter::generateCIPHeaderContent(FWA::Isoch::CIPHeader* outHeader
     }
 
     if (calculated_isNoData_for_this_packet) {
-        outHeader->fdf          = CIP::kFDF_NoDat;             // 0xFF
+        outHeader->fdf          = (config_.sampleRate == 44100.0)
+                                  ? CIP::kFDF_44k1
+                                  : CIP::kFDF_48k;
         next_dbc_for_state      = current_dbc_state;           // don't bump
     } else {
         outHeader->fdf          = (config_.sampleRate == 44100.0)
@@ -713,6 +716,134 @@ void AmdtpTransmitter::generateCIPHeaderContent_from_decision(
 
     next_wasNoData_for_state = isNoDataPacket;
 }
+bool AmdtpTransmitter::acquireTimestampWithDriftDetection(uint32_t groupIndex, uint32_t& timestamp) {
+    if (!interface_) {
+        logger_->error("No interface available for timestamp acquisition");
+        return false;
+    }
+    
+    uint32_t startTime = 0, endTime = 0;
+    
+    // Apple's dual timestamp pattern
+    IOReturn startResult = (*interface_)->GetCycleTime(interface_, &startTime);
+    if (startResult != kIOReturnSuccess) {
+        logger_->warn("Initial GetCycleTime failed: 0x{:X}", startResult);
+        return false;
+    }
+    
+    // Validate timestamp isn't zero (hardware error indicator)
+    if (startTime == 0) {
+        logger_->warn("GetCycleTime returned zero timestamp");
+        return false;
+    }
+    
+    // Brief processing simulation - in real code this is where packet processing happens
+    // For now, just get a second timestamp to detect drift
+    IOReturn endResult = (*interface_)->GetCycleTime(interface_, &endTime);
+    if (endResult != kIOReturnSuccess) {
+        logger_->warn("End GetCycleTime failed: 0x{:X}", endResult);
+        timestamp = startTime; // Use start time as fallback
+        return true;
+    }
+    
+    // Calculate processing duration (handle cycle wraparound)
+    uint32_t processingDuration = Timing::deltaFWTimeNano(endTime, startTime) / 1000; // Convert to ticks
+    
+    // Detect if processing crossed cycle boundary
+    if (processingDuration > MAX_CYCLE_PROCESSING_TIME) {
+        logger_->warn("DCL processing crossed cycle boundary - Group {}: start=0x{:X}, end=0x{:X}, duration={} ticks",
+                     groupIndex, startTime, endTime, processingDuration);
+        
+        // Use interpolated timestamp (Apple's approach)
+        uint32_t startOffsets = startTime & Timing::kEncOffsetsMask;
+        uint32_t endOffsets = endTime & Timing::kEncOffsetsMask;
+        uint32_t midOffsets = (startOffsets + endOffsets) / 2;
+        
+        // Reconstruct timestamp with interpolated offsets
+        timestamp = (startTime & ~Timing::kEncOffsetsMask) | (midOffsets & Timing::kEncOffsetsMask);
+        
+        // Mark timing as unreliable
+        assessTimingQuality(timestamp, processingDuration);
+        return true;
+    }
+    
+    // Normal case - use end timestamp (most recent)
+    timestamp = endTime;
+    assessTimingQuality(timestamp, processingDuration);
+    return true;
+}
+
+void AmdtpTransmitter::assessTimingQuality(uint32_t currentTime, uint32_t processingDuration) {
+    bool timingIsGood = true;
+    std::string qualityReason;
+    
+    // Check 1: Processing duration reasonable?
+    if (processingDuration > MAX_CYCLE_PROCESSING_TIME) {
+        timingIsGood = false;
+        qualityReason = fmt::format("excessive processing time: {} ticks", processingDuration);
+    }
+    
+    // Check 2: Expected timing progression?
+    if (timingState_.lastHardwareTime != 0) {
+        int64_t actualDelta = Timing::deltaFWTimeNano(currentTime, timingState_.lastHardwareTime) / 1000;
+        int64_t expectedDelta = Timing::kOffsetsPerCycle; // One cycle expected between callbacks
+        
+        if (std::abs(actualDelta - expectedDelta) > DRIFT_THRESHOLD_TICKS) {
+            timingIsGood = false;
+            qualityReason = fmt::format("timing drift: expected {} ticks, got {} ticks", 
+                                      expectedDelta, actualDelta);
+        }
+    }
+    
+    // Update timing state machine
+    if (timingIsGood) {
+        timingState_.consecutiveBadSamples = 0;
+        timingState_.consecutiveGoodSamples++;
+        
+        if (timingState_.quality != TimingState::Locked && 
+            timingState_.consecutiveGoodSamples >= GOOD_SAMPLES_FOR_LOCK) {
+            timingState_.quality = TimingState::Locked;
+            logger_->info("Hardware timing LOCKED after {} consecutive good samples", 
+                         timingState_.consecutiveGoodSamples);
+        } else if (timingState_.quality == TimingState::Unknown) {
+            timingState_.quality = TimingState::Synchronizing;
+        }
+    } else {
+        timingState_.consecutiveGoodSamples = 0;
+        timingState_.consecutiveBadSamples++;
+        
+        if (timingState_.quality == TimingState::Locked && 
+            timingState_.consecutiveBadSamples >= BAD_SAMPLES_FOR_UNLOCK) {
+            timingState_.quality = TimingState::Unreliable;
+            logger_->warn("Hardware timing UNLOCKED after {} bad samples: {}", 
+                         timingState_.consecutiveBadSamples, qualityReason);
+        } else if (timingState_.quality == TimingState::Unknown) {
+            timingState_.quality = TimingState::Unreliable;
+        }
+    }
+    
+    // Update state for next comparison
+    timingState_.lastHardwareTime = currentTime;
+    timingState_.expectedNextTime = calculateExpectedNextTime(currentTime);
+    
+    // Periodic quality reporting
+    auto now = std::chrono::steady_clock::now();
+    if (now - timingState_.lastQualityLog > std::chrono::seconds(10)) {
+        logger_->info("Timing quality: {} (good: {}, bad: {})", 
+                     static_cast<int>(timingState_.quality),
+                     timingState_.consecutiveGoodSamples,
+                     timingState_.consecutiveBadSamples);
+        timingState_.lastQualityLog = now;
+    }
+}
+
+uint32_t AmdtpTransmitter::calculateExpectedNextTime(uint32_t currentTime) const {
+    // Calculate expected next timestamp based on one cycle advance
+    uint64_t currentNanos = Timing::encodedFWTimeToNanos(currentTime);
+    uint64_t nextNanos = currentNanos + Timing::kNanosPerCycle;
+    return Timing::nanosToEncodedFWTime(nextNanos);
+}
+
 // Helper function implementation
 void AmdtpTransmitter::logPacketDetails(
     uint32_t groupIndex,
