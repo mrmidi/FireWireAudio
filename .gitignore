@@ -84,5 +84,9 @@ driver.txt
 xpc.txt
 transmit.txt
 
+# Generated diff files
+diff.txt
+source.txt
+
 # AppleHeaders folder
 AppleHeaders/
