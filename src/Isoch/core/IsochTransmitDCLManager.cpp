@@ -1,4 +1,5 @@
 #include "Isoch/core/IsochTransmitDCLManager.hpp"
+#include "Isoch/core/CIPHeader.hpp" // Include for CIPHeader definition
 #include "Isoch/interfaces/ITransmitBufferManager.hpp" // Full definition needed now
 #include <vector>
 #include <stdexcept> // For potential exceptions if needed
@@ -113,11 +114,11 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
              *headerVM = makeIsoHeader(/*tag=*/1, /*sy=*/0);
 
              // CIP Header (Initial safe state: NO_DATA)
-             CIPHeader* cipHdr = reinterpret_cast<CIPHeader*>(cipHdrPtr);
+             FWA::Isoch::CIPHeader* cipHdr = reinterpret_cast<FWA::Isoch::CIPHeader*>(cipHdrPtr);
              bzero(cipHdr, kTransmitCIPHeaderSize);
-             cipHdr->fmt_eoh1 = (0x10 << 2) | 0x01; // FMT=0x10 (AM824), EOH=1
-             cipHdr->fdf = 0xFF; // NO_DATA
-             cipHdr->syt = 0xFFFF; // Already big-endian in memory if we treat it as such
+             cipHdr->fmt_eoh1 = FWA::Isoch::CIP::kFmtEohValue;
+             cipHdr->fdf = FWA::Isoch::CIP::kFDF_NoDat;
+             cipHdr->syt = FWA::Isoch::CIP::makeBigEndianSyt(FWA::Isoch::CIP::kSytNoData);
 
              // Audio Payload (Zero it out initially)
              // bzero(audioDataPtr, audioPayloadSize); // Provider should handle initial silence
@@ -125,10 +126,9 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
              // --- 3. Prepare IOVirtualRange Array ---
              // With hardware-assisted headers, the isochronous header is NOT part of the data ranges.
              IOVirtualRange ranges[2];
-             // Initially, we will only send the CIP header (a NO_DATA packet).
-             uint32_t numRanges = 1;
+             uint32_t numRanges = 2; // Assume CIP + Payload initially
 
-             // Range 0: CIP Header (Always the first part of the payload)
+             // Range 0: CIP Header
              ranges[0].address = reinterpret_cast<IOVirtualAddress>(cipHdrPtr);
              ranges[0].length = kTransmitCIPHeaderSize;
 

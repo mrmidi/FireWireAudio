@@ -1,4 +1,5 @@
 #include "Isoch/core/IsochTransmitBufferManager.hpp"
+#include "Isoch/core/CIPHeader.hpp" // Include for CIPHeader definition
 #include "Isoch/core/TransmitterTypes.hpp" // Include for kTransmitCIPHeaderSize and kTransmitIsochHeaderSize constants
 #include <mach/mach.h>
 #include <cstring> // For bzero
@@ -56,7 +57,7 @@ void IsochTransmitBufferManager::calculateBufferLayout() {
 
     // --- Sizes calculation (NO CHANGE needed here, uses config/constants) ---
     size_t clientDataSize = config_.clientBufferSize;
-    size_t cipHeadersSize = totalPackets_ * sizeof(CIPHeader);
+    size_t cipHeadersSize = totalPackets_ * sizeof(FWA::Isoch::CIPHeader);
     size_t isochHeadersSize = totalPackets_ * sizeof(IsochHeaderValueMask); // For hardware-assisted headers
     size_t timestampsSize = config_.numGroups * kTimestampSize; // Only need one per group/segment completion
     // --- End Sizes calculation ---

@@ -183,7 +183,8 @@ std::expected<void, IOKitError> IsoStreamHandler::start() {
 
     // isochronous parameters for transmitter
     // 256 callbacks per second
-    const unsigned int txPacketsPerGroup = 32;      
+    // worth playing around with this values 32/8 rate ~250 callbacks per second. Latency is need to be estimated.
+    const unsigned int txPacketsPerGroup = 64; 
     const unsigned int txNumGroups = 8;            
     const unsigned int txPacketDataSize = 64; // Audio payload size per packet
     unsigned int transmitProviderBufferSize = 2 * txNumGroups * txPacketsPerGroup * txPacketDataSize; // Example buffer size

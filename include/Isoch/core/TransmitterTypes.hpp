@@ -88,16 +88,8 @@ using MessageCallback = void(*)(uint32_t message, uint32_t param1, uint32_t para
 
 // --- Data Structures ---
 
-struct CIPHeader {
-    uint8_t sid_byte;
-    uint8_t dbs;
-    uint8_t fn_qpc_sph_rsv;
-    uint8_t dbc;
-    uint8_t fmt_eoh1;
-    uint8_t fdf;
-    uint16_t syt;
-};
-static_assert(sizeof(CIPHeader) == 8, "CIPHeader size must be 8 bytes");
+// Forward declaration of CIPHeader - actual definition is in CIPHeader.hpp
+struct CIPHeader;
 
 /**
  * @brief Structure containing value and mask for Isochronous header control.
@@ -164,7 +156,7 @@ struct PreparedPacketData {
 
 // --- Constants ---
 // Constants for header sizes
-constexpr size_t kTransmitCIPHeaderSize = sizeof(CIPHeader);
+constexpr size_t kTransmitCIPHeaderSize = 8;
 
 } // namespace Isoch
 } // namespace FWA

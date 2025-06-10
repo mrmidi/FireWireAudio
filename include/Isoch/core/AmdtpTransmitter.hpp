@@ -10,6 +10,7 @@
 #include <spdlog/logger.h>
 
 #include "FWA/Error.h"
+#include "Isoch/core/CIPHeader.hpp"
 #include "Isoch/core/TransmitterTypes.hpp"
 #include "Isoch/interfaces/ITransmitBufferManager.hpp"
 #include "Isoch/interfaces/ITransmitDCLManager.hpp"
@@ -84,7 +85,7 @@ private:
 
      // CIP Header/Timing generation logic
      void initializeCIPState();
-     void generateCIPHeaderContent(CIPHeader* outHeader,
+     void generateCIPHeaderContent(FWA::Isoch::CIPHeader* outHeader,
                                    uint8_t current_dbc_state,
                                    bool previous_wasNoData_state,
                                    bool first_dcl_callback_occurred_state,

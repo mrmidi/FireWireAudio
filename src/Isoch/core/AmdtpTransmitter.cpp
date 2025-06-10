@@ -1,4 +1,5 @@
 #include "Isoch/core/AmdtpTransmitter.hpp"
+#include "Isoch/core/CIPHeader.hpp" // Include for CIPHeader definition
 #include "Isoch/core/IsochTransmitBufferManager.hpp"
 #include "Isoch/core/IsochPortChannelManager.hpp"
 #include "Isoch/core/IsochTransmitDCLManager.hpp"
@@ -80,7 +81,7 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
                 // Go to end of locked scope
                 break;
             }
-            CIPHeader* cipHdrTarget = reinterpret_cast<CIPHeader*>(cipHdrPtrExp.value());
+            FWA::Isoch::CIPHeader* cipHdrTarget = reinterpret_cast<FWA::Isoch::CIPHeader*>(cipHdrPtrExp.value());
             size_t audioPayloadTargetSize = bufferManager_->getAudioPayloadSizePerPacket();
 
             // --- 2b. Fill Audio Payload (Initial Silence) ---
@@ -96,13 +97,14 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
             );
 
             // --- 2c. Prepare CIP Header (Initial State) ---
-            cipHdrTarget->sid_byte       = 0;
-            cipHdrTarget->dbs            = 2;
+            // Set an initial NO_DATA header using the new constants for clarity.
+            cipHdrTarget->sid_byte       = 0; // Will be set by HW or Port later
+            cipHdrTarget->dbs            = 2; // 2 quadlets (8 bytes) per frame for stereo
             cipHdrTarget->fn_qpc_sph_rsv = 0;
-            cipHdrTarget->fmt_eoh1       = (0x10 << 2) | 0x01;
-            cipHdrTarget->fdf           = 0xFF;
-            cipHdrTarget->syt           = OSSwapHostToBigInt16(0xFFFF);
-            cipHdrTarget->dbc           = 0;
+            cipHdrTarget->dbc            = 0;
+            cipHdrTarget->fmt_eoh1       = FWA::Isoch::CIP::kFmtEohValue;
+            cipHdrTarget->fdf            = FWA::Isoch::CIP::kFDF_NoDat;
+            cipHdrTarget->syt            = FWA::Isoch::CIP::kSytNoData; // don't need to conver 0xFFFF to big endian
         } // End initial prep loop
 
         // Check for error from the loop
@@ -393,7 +395,7 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
             continue;
         }
 
-        CIPHeader*       cipHdrTarget   = reinterpret_cast<CIPHeader*>(cipHdrPtrExp.value());
+        FWA::Isoch::CIPHeader*       cipHdrTarget   = reinterpret_cast<FWA::Isoch::CIPHeader*>(cipHdrPtrExp.value());
         size_t           audioPayloadTargetSize = bufferManager_->getAudioPayloadSizePerPacket();
 
         // --- 4b. Prepare TransmitPacketInfo ---
@@ -420,7 +422,7 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
 
         // --- 4d. Fill Audio Data Only If Not a No-Data Packet ---
         PreparedPacketData packetDataStatus = {};
-        bool isNoDataPacket = (cipHdrTarget->fdf == 0xFF);
+        bool isNoDataPacket = (cipHdrTarget->fdf == FWA::Isoch::CIP::kFDF_NoDat);
         
         if (!isNoDataPacket) {
             // Only call fillPacketData if we're sending a data packet
@@ -721,11 +723,9 @@ AmdtpTransmitter::NonBlockingSytParams AmdtpTransmitter::calculateNonBlockingSyt
     return params;
 }
 
-// Constants for SFC (Sample Frequency Code)
-constexpr uint8_t SFC_44K1HZ = 0x01;
-constexpr uint8_t SFC_48KHZ  = 0x02;
+// These constants are now defined in CIPHeader.hpp as FWA::Isoch::CIP::kFDF_44k1, etc.
 
-void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
+void AmdtpTransmitter::generateCIPHeaderContent(FWA::Isoch::CIPHeader* outHeader,
                                                 uint8_t current_dbc_state,
                                                 bool previous_wasNoData_state,
                                                 bool first_dcl_callback_occurred_state_param,
@@ -735,8 +735,8 @@ void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
     if (!outHeader || !portChannelManager_ || !this->bufferManager_) {
         if (logger_) logger_->error("generateCIPHeaderContent: Preconditions not met (null pointers).");
         if (outHeader) {
-            outHeader->fdf = 0xFF;
-            outHeader->syt = 0xFFFF;
+            outHeader->fdf = FWA::Isoch::CIP::kFDF_NoDat;
+            outHeader->syt = FWA::Isoch::CIP::makeBigEndianSyt(FWA::Isoch::CIP::kSytNoData);
             outHeader->dbc = current_dbc_state;
         }
         next_dbc_for_state      = current_dbc_state;
@@ -746,21 +746,21 @@ void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
 
     // --- Get Node ID, Set static fields ---
     uint16_t nodeID   = portChannelManager_->getLocalNodeID().value_or(0x3F);
-    outHeader->sid_byte       = static_cast<uint8_t>(nodeID & 0x3F);
-    outHeader->dbs            = 2;
+    outHeader->sid_byte       = static_cast<uint8_t>(nodeID & 0x3F); // TODO: Check if this should be part of CIP or Isoch header
+    outHeader->dbs            = 2; // Stereo = 2 quadlets per block
     outHeader->fn_qpc_sph_rsv = 0;
-    outHeader->fmt_eoh1       = (0x10 << 2) | 0x01;
+    outHeader->fmt_eoh1       = FWA::Isoch::CIP::kFmtEohValue;
 
     // Local variables for this function's calculations
     bool   calculated_isNoData_for_this_packet  = true;
-    uint16_t calculated_sytVal_for_this_packet = 0xFFFF;
-    uint8_t  sfc_for_this_packet                = SFC_48KHZ;
+    uint16_t calculated_sytVal_for_this_packet = FWA::Isoch::CIP::kSytNoData;
+    uint8_t  sfc_for_this_packet                = FWA::Isoch::CIP::kFDF_48k;
 
     // Determine SFC based on config
     if (config_.sampleRate == 44100.0) {
-        sfc_for_this_packet = SFC_44K1HZ;
+        sfc_for_this_packet = FWA::Isoch::CIP::kFDF_44k1;
     } else if (config_.sampleRate == 48000.0) {
-        sfc_for_this_packet = SFC_48KHZ;
+        sfc_for_this_packet = FWA::Isoch::CIP::kFDF_48k;
     } else {
         if (logger_) {
             logger_->warn("generateCIPHeaderContent: Unsupported sample rate {:.1f}Hz, using SFC for 48kHz as fallback.",
@@ -788,12 +788,12 @@ void AmdtpTransmitter::generateCIPHeaderContent(CIPHeader* outHeader,
 
     // --- Set Dynamic Fields (FDF, SYT, DBC) ---
     if (calculated_isNoData_for_this_packet) {
-        outHeader->fdf = 0xFF;
-        outHeader->syt = 0xFFFF; // NO NEED TO CONVERT ENDIANESS FOR 0xFFFF!
+        outHeader->fdf = FWA::Isoch::CIP::kFDF_NoDat;
+        outHeader->syt = FWA::Isoch::CIP::makeBigEndianSyt(FWA::Isoch::CIP::kSytNoData);
         outHeader->dbc = current_dbc_state;
     } else {
         outHeader->fdf = sfc_for_this_packet;
-        outHeader->syt = OSSwapHostToBigInt16(calculated_sytVal_for_this_packet);
+        outHeader->syt = FWA::Isoch::CIP::makeBigEndianSyt(calculated_sytVal_for_this_packet);
 
         uint8_t blocksPerPacket = this->bufferManager_->getAudioPayloadSizePerPacket() / 8;
         if (blocksPerPacket == 0 && !calculated_isNoData_for_this_packet) {
