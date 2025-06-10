@@ -73,9 +73,7 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
                                    + (absPktIdx * bufferManager_->getAudioPayloadSizePerPacket())
                                         % bufferManager_->getClientAudioBufferSize();
             }
-            auto isochHdrPtrExp = bufferManager_->getPacketIsochHeaderPtr(g, p); // For template update
-
-            if (!cipHdrPtrExp || !audioDataTargetPtr || !isochHdrPtrExp) {
+            if (!cipHdrPtrExp || !audioDataTargetPtr) {
                 logger_->error("startTransmit: Failed to get buffer pointers for initial prep G={}, P={}", g, p);
                 // Don't start if buffers aren't right
                 error_code = IOKitError::InternalError;
@@ -84,10 +82,8 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
             }
             CIPHeader* cipHdrTarget = reinterpret_cast<CIPHeader*>(cipHdrPtrExp.value());
             size_t audioPayloadTargetSize = bufferManager_->getAudioPayloadSizePerPacket();
-            IsochHeaderData* isochHdrTarget = reinterpret_cast<IsochHeaderData*>(isochHdrPtrExp.value());
 
             // --- 2b. Fill Audio Payload (Initial Silence) ---
-            // Ask provider to fill - it should generate silence if its buffer is empty.
             TransmitPacketInfo dummyInfo = {
                 .segmentIndex        = g,
                 .packetIndexInGroup  = p,
@@ -100,24 +96,13 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
             );
 
             // --- 2c. Prepare CIP Header (Initial State) ---
-            // Directly set a minimal NO_DATA header for initial prep
-            cipHdrTarget->sid_byte       = 0; // Will be set by HW or Port later
-            cipHdrTarget->dbs            = 2; // AM824 Stereo
+            cipHdrTarget->sid_byte       = 0;
+            cipHdrTarget->dbs            = 2;
             cipHdrTarget->fn_qpc_sph_rsv = 0;
-            cipHdrTarget->fmt_eoh1       = (0x10 << 2) | 0x01; // FMT=0x10 (AM824), EOH=1
-            cipHdrTarget->fdf           = 0xFF;                // NO_DATA
-            cipHdrTarget->syt           = 0xFFFF; // NO_INFO
-            cipHdrTarget->dbc           = 0;                   // Initial DBC
-
-            // --- 2d. Prepare Isoch Header Template ---
-            // Set the channel, tag, tcode in the template memory
-            uint8_t fwChannel = portChannelManager_->getActiveChannel()
-                                    .value_or(config_.initialChannel & 0x3F);
-            // Calculate expected data_length (CIP + Payload, even if payload is silence for now)
-            uint16_t dataLength = kTransmitCIPHeaderSize + audioPayloadTargetSize;
-            isochHdrTarget->data_length  = OSSwapHostToBigInt16(dataLength);
-            isochHdrTarget->tag_channel  = (1 << 6) | (fwChannel & 0x3F); // Tag=1
-            isochHdrTarget->tcode_sy     = (0xA << 4) | 0;              // TCode=A, Sy=0
+            cipHdrTarget->fmt_eoh1       = (0x10 << 2) | 0x01;
+            cipHdrTarget->fdf           = 0xFF;
+            cipHdrTarget->syt           = OSSwapHostToBigInt16(0xFFFF);
+            cipHdrTarget->dbc           = 0;
         } // End initial prep loop
 
         // Check for error from the loop
@@ -395,8 +380,6 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
     for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
         uint32_t absolutePacketIndex = fillGroupIndex * config_.packetsPerGroup + p;
 
-        // --- 4a. Get Buffer Pointers ---
-        auto isochHdrPtrExp = bufferManager_->getPacketIsochHeaderPtr(fillGroupIndex, p);
         auto cipHdrPtrExp   = bufferManager_->getPacketCIPHeaderPtr(fillGroupIndex, p);
         uint8_t* audioDataTargetPtr = nullptr;
         if (bufferManager_->getClientAudioBufferPtr() && bufferManager_->getClientAudioBufferSize() > 0) {
@@ -405,12 +388,11 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
                                     % bufferManager_->getClientAudioBufferSize();
         }
 
-        if (!isochHdrPtrExp || !cipHdrPtrExp || !audioDataTargetPtr) {
+        if (!cipHdrPtrExp || !audioDataTargetPtr) {
             logger_->error("handleDCLComplete: Failed to get buffer pointers for G={}, P={}. Skipping packet.", fillGroupIndex, p);
             continue;
         }
 
-        IsochHeaderData* isochHdrTarget = reinterpret_cast<IsochHeaderData*>(isochHdrPtrExp.value());
         CIPHeader*       cipHdrTarget   = reinterpret_cast<CIPHeader*>(cipHdrPtrExp.value());
         size_t           audioPayloadTargetSize = bufferManager_->getAudioPayloadSizePerPacket();
 
@@ -425,14 +407,7 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
             .firewireTimestamp   = estimatedFirewireTimestamp
         };
 
-        // --- 4c. Fill Audio Data (ask provider) ---
-        PreparedPacketData packetDataStatus = packetProvider_->fillPacketData(
-            audioDataTargetPtr,
-            audioPayloadTargetSize,
-            packetInfo
-        );
-
-        // --- 4d. Prepare CIP Header Content (using the new centralized method) ---
+        // --- 4c. Generate CIP Header Content First (to determine if we need audio data) ---
         uint8_t next_dbc_val_for_state_update;
         bool    next_wasNoData_val_for_state_update;
         generateCIPHeaderContent(cipHdrTarget,                       // Output: where to write the header
@@ -442,9 +417,26 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
                                  next_dbc_val_for_state_update,    // Output: by reference
                                  next_wasNoData_val_for_state_update // Output: by reference
         );
-        // Update transmitter's persistent state AFTER generating the header for *this* packet
 
-        if (cipHdrTarget->fdf == 0xFF) {
+        // --- 4d. Fill Audio Data Only If Not a No-Data Packet ---
+        PreparedPacketData packetDataStatus = {};
+        bool isNoDataPacket = (cipHdrTarget->fdf == 0xFF);
+        
+        if (!isNoDataPacket) {
+            // Only call fillPacketData if we're sending a data packet
+            packetDataStatus = packetProvider_->fillPacketData(
+                audioDataTargetPtr,
+                audioPayloadTargetSize,
+                packetInfo
+            );
+        } else {
+            // For no-data packets, set default values
+            packetDataStatus.dataLength = 0;
+            packetDataStatus.dataAvailable = false;
+            packetDataStatus.generatedSilence = false;
+        }
+        // Update transmitter's persistent state AFTER generating the header for *this* packet
+        if (isNoDataPacket) {
            noDataPacketsSent_.fetch_add(1, std::memory_order_relaxed);
         } else {
             dataPacketsSent_.fetch_add(1, std::memory_order_relaxed);
@@ -453,11 +445,7 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         this->dbc_count_ = next_dbc_val_for_state_update;
         this->wasNoData_ = next_wasNoData_val_for_state_update;
 
-        // --- 4e. Update Isoch Header (based on whether it's a NO_DATA packet from CIP gen) ---
-        uint8_t fwChannel = portChannelManager_->getActiveChannel()
-                                .value_or(config_.initialChannel & 0x3F);
-        isochHdrTarget->tag_channel = (1 << 6) | (fwChannel & 0x3F);
-        isochHdrTarget->tcode_sy    = (0xA << 4) | 0; 
+        // NOTE: Isoch header is now handled automatically by hardware. No updates needed here. 
 
         // --- 4f. Update DCL Ranges (crucial change here) ---
         IOVirtualRange ranges[2];
@@ -468,22 +456,19 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         ranges[0].length  = kTransmitCIPHeaderSize;
         numRanges++;
 
-        // Determine if we are sending audio data based on the FDF field of the *just generated* CIP header
-        bool sendAudioPayload = (cipHdrTarget->fdf != 0xFF);
+        // Determine if we are sending audio data based on the already determined packet type
+        bool sendAudioPayload = !isNoDataPacket;
 
         if (sendAudioPayload) {
             ranges[1].address = reinterpret_cast<IOVirtualAddress>(audioDataTargetPtr);
             ranges[1].length  = packetDataStatus.dataLength;
             numRanges++;
-            isochHdrTarget->data_length = OSSwapHostToBigInt16(
-                kTransmitCIPHeaderSize + packetDataStatus.dataLength);
         } else {
-            numRanges = 1;
-            isochHdrTarget->data_length = OSSwapHostToBigInt16(kTransmitCIPHeaderSize);
-            // logger_->trace("handleDCLComplete: Setting numRanges=1 for SYT-driven NO_DATA G={}, P={}", fillGroupIndex, p);
+            // Hardware will calculate data_length as just kTransmitCIPHeaderSize
         }
 
-        auto updateExp = dclManager_->updateDCLPacket(fillGroupIndex, p, ranges, numRanges, nullptr);
+        // The isochronous header is handled by the hardware now, so we only update the data ranges.
+        auto updateExp = dclManager_->updateDCLPacket(fillGroupIndex, p, ranges, numRanges);
         if (!updateExp) {
             logger_->error("handleDCLComplete: Failed to update DCL packet ranges for G={}, P={}: {}",
                 fillGroupIndex, p,
@@ -532,7 +517,6 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
     // }
 
 
-    // Log the number of packets sent in the last second
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastPacketLogTime_);
     if (elapsed.count() >= 1) {

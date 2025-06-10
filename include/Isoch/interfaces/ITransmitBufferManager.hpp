@@ -17,7 +17,7 @@ public:
     virtual void cleanup() noexcept = 0;
 
     // Getters for pre-allocated header/timestamp areas
-    virtual std::expected<uint8_t*, IOKitError> getPacketIsochHeaderPtr(uint32_t groupIndex, uint32_t packetIndexInGroup) const = 0;
+    virtual std::expected<IsochHeaderValueMask*, IOKitError> getPacketIsochHeaderValueMaskPtr(uint32_t groupIndex, uint32_t packetIndexInGroup) const = 0;
     virtual std::expected<uint8_t*, IOKitError> getPacketCIPHeaderPtr(uint32_t groupIndex, uint32_t packetIndexInGroup) const = 0;
     virtual std::expected<uint32_t*, IOKitError> getGroupTimestampPtr(uint32_t groupIndex) const = 0;
 
