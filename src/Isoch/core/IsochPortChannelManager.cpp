@@ -2,6 +2,7 @@
 #include <spdlog/spdlog.h>
 #include <unistd.h>
 #include <os/log.h>
+#include "Isoch/utils/AmdtpHelpers.hpp"
 
 namespace FWA {
 namespace Isoch {
@@ -102,7 +103,7 @@ void IsochPortChannelManager::cleanupResources() noexcept {
 void IsochPortChannelManager::cleanupDispatchers() noexcept {
     if (!interface_ || !dispatchersAdded_) {
         return;
-    }
+    }  
     
     // Remove dispatchers from RunLoop
     (*interface_)->RemoveIsochCallbackDispatcherFromRunLoop(interface_);

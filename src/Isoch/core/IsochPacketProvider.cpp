@@ -1,3 +1,4 @@
+#define DEBUG 0
 // IsochPacketProvider.cpp - Direct SHM Implementation with Safety Margin
 #include "Isoch/core/IsochPacketProvider.hpp"
 #include <CoreServices/CoreServices.h>
@@ -115,9 +116,11 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
 
     // === 0. Early parameter checks ===
     if (!targetBuffer || targetBufferSize == 0) {
+        #if DEBUG
         if (logger_) {
             logger_->error("fillPacketData: Invalid target buffer or size");
         }
+        #endif
         return result;
     }
 
@@ -126,17 +129,20 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
         // Atomically read & clear the underrun counter
         uint32_t underruns = RTShmRing::UnderrunCountProxy(*shmControlBlock_)
                                 .exchange(0, std::memory_order_relaxed);
+        #if DEBUG
         if (underruns && logger_) {
-            // silence for now - too much noise
            logger_->warn("Audio underrun x{}", underruns);
         }
+        #endif
     }
 
     // === 2. Check SHM binding ===
     if (!shmControlBlock_ || !shmRingArray_) {
+        #if DEBUG
         if (logger_) {
             logger_->error("fillPacketData: SHM not bound; filling silence");
         }
+        #endif
         std::memset(targetBuffer, 0, targetBufferSize);
         result.dataLength = targetBufferSize;
         return result;
@@ -145,9 +151,11 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
     // === 3. Validate SHM format once in a while ===
     if (!validateShmFormat()) {
         formatValidationErrors_++;
+        #if DEBUG
         if (logger_) {
             logger_->error("fillPacketData: SHM format invalid; filling silence");
         }
+        #endif
         std::memset(targetBuffer, 0, targetBufferSize);
         result.dataLength = targetBufferSize;
         return result;
@@ -175,6 +183,7 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
     bool     gotAllData = true;
 
     // Optional periodic stats logging
+    #if DEBUG
     static thread_local uint32_t statsTicks = 0;
     if (++statsTicks == 8000) { // ~1 s at 8 kHz IRQ rate
         auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_)
@@ -190,6 +199,7 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
         }
         statsTicks = 0;
     }
+    #endif
 
     while (remaining > 0) {
         // If current chunk is exhausted, try to pop next one
@@ -343,18 +353,6 @@ void IsochPacketProvider::handleUnderrun(const TransmitPacketInfo& info) {
         }
     }
 }
-
-// void IsochPacketProvider::formatToAM824InPlace(uint8_t* buffer, size_t bufferSize) const {
-//     int32_t* samplesPtr = reinterpret_cast<int32_t*>(buffer);
-//     size_t numSamples = bufferSize / sizeof(int32_t);
-
-//     for (size_t i = 0; i < numSamples; ++i) {
-//         int32_t sample = samplesPtr[i];
-//         sample &= 0x00FFFFFF;  // Mask to 24-bit
-//         uint32_t am824Sample = (AM824_LABEL << LABEL_SHIFT) | sample;
-//         samplesPtr[i] = OSSwapHostToBigInt32(am824Sample);
-//     }
-// }
 
 void IsochPacketProvider::formatToAM824InPlace(uint8_t* buffer, size_t bufferSize) const {
     // Assuming buffer contains interleaved SInt32 samples,

@@ -11,6 +11,8 @@
 #include "FWADriverHandler.hpp"
 #include <CoreAudio/AudioServerPlugIn.h>
 // os_log
+
+#define DEBUG 0
 #include <os/log.h>
 
 constexpr const char* LogPrefix = "FWADriverASPL: ";
@@ -194,11 +196,15 @@ OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
                                         void* ioSecondaryBuffer)
 {
     static uint64_t g_frameCounter = 0;
+    #if DEBUG
     if ((g_frameCounter++ & 0xFFF) == 0) {
         os_log(OS_LOG_DEFAULT,
             "%sIO cycle %llu  opID=%u  frames=%u",
             LogPrefix, g_frameCounter, operationID, ioBufferFrameSize);
     }
+    #else
+    g_frameCounter++;
+    #endif
 
     // Only handle WriteMix and ReadInput
     if (operationID == kAudioServerPlugInIOOperationWriteMix)

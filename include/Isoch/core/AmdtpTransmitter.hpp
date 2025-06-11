@@ -9,6 +9,13 @@
 #include <IOKit/firewire/IOFireWireLibIsoch.h>
 #include <spdlog/logger.h>
 
+// Add after existing includes
+#include "Isoch/utils/TimingUtils.hpp"
+
+// Add Apple-style logging control
+#define APPLE_STYLE_LOGGING 1
+#define APPLE_STATS_LOG_INTERVAL_SEC 3
+
 #include "FWA/Error.h"
 #include "Isoch/core/CIPHeader.hpp"
 #include "Isoch/core/TransmitterTypes.hpp"
@@ -59,6 +66,49 @@ public:
 
 
 private:
+    // Group processing configuration
+    static constexpr uint32_t kGroupsPerCallback = 2; // 2 = double-buffer, 1 keeps old behaviour
+
+    // === ADD: Apple's fixed-size arrays ===
+    static constexpr uint32_t MAX_BUFFER_GROUPS = 16;  // Matches your txNumGroups
+    static constexpr uint32_t MAX_PACKETS_PER_GROUP = 64; // Matches your txPacketsPerGroup
+    
+    struct alignas(64) BufferGroupState {
+        uint64_t hardwareTimestamp{0};
+        uint64_t correctedTimestamp{0}; 
+        uint32_t groupIndex{0};
+        uint32_t packetsProcessed{0};
+        bool needsProcessing{false};
+        bool isActive{false};
+        uint8_t _padding[42]; // Cache line padding
+    };
+    
+    // === FIXED ARRAYS (No allocations in hot path) ===
+    BufferGroupState bufferGroupStates_[MAX_BUFFER_GROUPS];
+    uint32_t timestampBufferArray_[MAX_BUFFER_GROUPS];
+    
+    // === APPLE'S TIMING STATE ===
+    std::atomic<uint32_t> totalCallbackCount_{0};
+    std::atomic<uint32_t> lateCallbackCount_{0};
+    std::atomic<uint32_t> currentBufferGroupIndex_{0};
+    std::atomic<uint32_t> pendingBufferGroupIndex_{0};
+    std::atomic<bool> isFirstTimeExecution_{true};
+    
+    uint64_t lastCallbackTimestamp_{0};
+    uint64_t accumulatedProcessingTime_{0};
+    
+    // === APPLE'S CONSTANTS ===
+    static constexpr uint64_t MAC_SYNC_LATE_THRESHOLD = 0x2625A00;    // ~40ms
+    static constexpr uint64_t EXTERNAL_SYNC_LATE_THRESHOLD = 0xBEBC200; // ~200ms
+    static constexpr uint32_t CALLBACK_RATE_LIMIT = 0x7F;
+    
+    // === LOGGING STATE ===
+    #if APPLE_STYLE_LOGGING
+    mutable std::atomic<uint64_t> lastStatsLogTime_{0};
+    mutable std::atomic<uint64_t> groupsProcessedSinceLastLog_{0};
+    mutable std::atomic<uint64_t> packetsProcessedSinceLastLog_{0};
+    mutable std::atomic<uint64_t> totalProcessingTimeNs_{0};
+    #endif
 
         // --- LOGGING/DIAGNOSTICS ---
     std::atomic<uint64_t> dataPacketsSent_{0};
@@ -77,6 +127,23 @@ private:
     // Internal DCL callback handlers (instance methods)
     void handleDCLComplete(uint32_t completedGroupIndex);
     void handleDCLOverrun();
+    
+    // === ADD: Apple's methods ===
+    void handleDCLCompleteAppleStyle(uint32_t completedGroupIndex);
+    
+    // === ADD: Apple's processing methods ===
+    void processBufferGroupLoop(uint32_t completedGroupIndex, uint64_t currentTimestamp);
+    bool processOutputForBufferGroup(uint32_t groupIndex, uint64_t timestamp);
+    void handleFirstTimeExecution(uint32_t callbackCount);
+    void updateAppleStyleStats(uint32_t groupsProcessed, uint64_t processingTimeNs);
+    uint32_t getCurrentHardwareCycleTime() const;
+    void handleStreamReset();
+    
+    // === LOGGING HELPERS ===
+    #if APPLE_STYLE_LOGGING
+    void logAppleStyleStats() const;
+    bool shouldLogStats() const;
+    #endif
 
     // Static callback helpers (forward to instance methods)
     static void DCLCompleteCallback_Helper(uint32_t completedGroupIndex, void* refCon);

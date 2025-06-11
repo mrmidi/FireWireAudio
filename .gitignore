@@ -13,6 +13,14 @@ ubuild/
 extern/
 FWA-Control/.build/
 
+# Any .venv directories
+.venv/
+# Ignore Python bytecode files
+*.pyc
+# Ignore Python cache directories
+__pycache__/
+
+
 # Xcode
 *.xcodeproj/
 xcuserdata/

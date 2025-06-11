@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- interactive audio packet analyzer for FireWire audio logs -->
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FireWire Audio Packet Analyzer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.umd.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0; 
+            padding: 20px; 
+            background: #f5f7fa;
+        }
+        .container { 
+            max-width: 1600px; 
+            margin: 0 auto; 
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 { margin: 0; font-size: 2.5em; font-weight: 300; }
+        .header p { margin: 10px 0 0 0; opacity: 0.9; font-size: 1.1em; }
+        
+        .upload-section {
+            padding: 30px;
+            border-bottom: 1px solid #e1e8ed;
+            background: #f8fafc;
+        }
+        .upload-area {
+            border: 3px dashed #cbd5e0;
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            background: white;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        .upload-area:hover, .upload-area.dragover {
+            border-color: #667eea;
+            background: #f7faff;
+            transform: translateY(-2px);
+        }
+        .upload-area input { display: none; }
+        .upload-icon { font-size: 3em; color: #a0aec0; margin-bottom: 20px; }
+        .upload-text { font-size: 1.2em; color: #4a5568; margin-bottom: 10px; }
+        .upload-subtext { color: #718096; font-size: 0.9em; }
+        
+        .analysis-section { 
+            padding: 30px; 
+            display: none; 
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+        }
+        .stat-value { font-size: 2em; font-weight: bold; color: #2d3748; margin-bottom: 5px; }
+        .stat-label { color: #718096; font-size: 0.9em; text-transform: uppercase; letter-spacing: 1px; }
+        .stat-unit { font-size: 0.7em; color: #a0aec0; }
+        
+        .chart-container { 
+            margin: 30px 0; 
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+        }
+        .chart-title {
+            font-size: 1.3em;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #2d3748;
+        }
+        .chart-canvas { height: 400px !important; }
+        
+        .log-info {
+            background: #edf2f7;
+            border-left: 4px solid #4299e1;
+            padding: 15px 20px;
+            margin: 20px 0;
+            border-radius: 0 8px 8px 0;
+        }
+        .warning {
+            background: #fef5e7;
+            border-left-color: #ed8936;
+        }
+        .error {
+            background: #fed7d7;
+            border-left-color: #e53e3e;
+        }
+        .success {
+            background: #f0fff4;
+            border-left-color: #38a169;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .control-group label {
+            font-size: 0.9em;
+            color: #4a5568;
+            font-weight: 500;
+        }
+        .control-group select, .control-group input {
+            padding: 8px 12px;
+            border: 1px solid #cbd5e0;
+            border-radius: 6px;
+            font-size: 0.9em;
+        }
+        
+        .progress {
+            width: 100%;
+            height: 4px;
+            background: #e2e8f0;
+            border-radius: 2px;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #5a67d8;
+            transform: translateY(-1px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎵 FireWire Audio Packet Analyzer</h1>
+            <p>Upload your FireWire audio logs for comprehensive waveform analysis</p>
+        </div>
+        
+        <div class="upload-section">
+            <div class="upload-area" id="uploadArea">
+                <input type="file" id="fileInput" accept=".txt,.log" multiple>
+                <div class="upload-icon">📁</div>
+                <div class="upload-text">Drop log files here or click to browse</div>
+                <div class="upload-subtext">Supports .txt and .log files with FireWire packet dumps</div>
+            </div>
+            <div class="progress" id="progressContainer" style="display: none;">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+        </div>
+        
+        <div class="analysis-section" id="analysisSection">
+            <div class="controls">
+                <div class="control-group">
+                    <label>Channel</label>
+                    <select id="channelSelect">
+                        <option value="auto">Auto-detect</option>
+                        <option value="0">Channel 0</option>
+                        <option value="1">Channel 1</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>Time Range (seconds)</label>
+                    <input type="range" id="timeRange" min="0.1" max="10" step="0.1" value="2">
+                    <span id="timeRangeValue">2.0s</span>
+                </div>
+                <div class="control-group">
+                    <label>Sample Rate Override</label>
+                    <select id="sampleRateOverride">
+                        <option value="auto">Auto (from FDF)</option>
+                        <option value="44100">44.1 kHz</option>
+                        <option value="48000">48 kHz</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" id="reAnalyze">Re-analyze</button>
+            </div>
+            
+            <div id="logInfo"></div>
+            
+            <div class="stats-grid" id="statsGrid"></div>
+            
+            <div class="chart-container">
+                <div class="chart-title">Audio Waveform</div>
+                <canvas id="waveformChart" class="chart-canvas"></canvas>
+            </div>
+            
+            <div class="chart-container">
+                <div class="chart-title">Frequency Spectrum (FFT)</div>
+                <canvas id="spectrumChart" class="chart-canvas"></canvas>
+            </div>
+            
+            <div class="chart-container">
+                <div class="chart-title">Level Meter Over Time</div>
+                <canvas id="levelChart" class="chart-canvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class FireWireAudioAnalyzer {
+            constructor() {
+                this.packets = [];
+                this.audioData = [];
+                this.analysisResults = null;
+                this.setupEventListeners();
+            }
+            
+            setupEventListeners() {
+                const uploadArea = document.getElementById('uploadArea');
+                const fileInput = document.getElementById('fileInput');
+                const timeRange = document.getElementById('timeRange');
+                const reAnalyze = document.getElementById('reAnalyze');
+                
+                uploadArea.addEventListener('click', () => fileInput.click());
+                uploadArea.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    uploadArea.classList.add('dragover');
+                });
+                uploadArea.addEventListener('dragleave', () => {
+                    uploadArea.classList.remove('dragover');
+                });
+                uploadArea.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    uploadArea.classList.remove('dragover');
+                    this.handleFiles(e.dataTransfer.files);
+                });
+                
+                fileInput.addEventListener('change', (e) => {
+                    this.handleFiles(e.target.files);
+                });
+                
+                timeRange.addEventListener('input', (e) => {
+                    document.getElementById('timeRangeValue').textContent = e.target.value + 's';
+                });
+                
+                reAnalyze.addEventListener('click', () => {
+                    if (this.packets.length > 0) {
+                        this.analyzePackets();
+                    }
+                });
+            }
+            
+            async handleFiles(files) {
+                this.showProgress(true);
+                
+                for (let file of files) {
+                    await this.processFile(file);
+                }
+                
+                this.showProgress(false);
+                
+                if (this.packets.length > 0) {
+                    this.analyzePackets();
+                } else {
+                    this.showLogInfo('No valid packets found in uploaded files', 'error');
+                }
+            }
+            
+            async processFile(file) {
+                return new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        this.parseLogContent(e.target.result);
+                        resolve();
+                    };
+                    reader.readAsText(file);
+                });
+            }
+            
+            parseLogContent(content) {
+                const lines = content.split('\n');
+                let currentPacket = null;
+                let hexData = [];
+                
+                for (let line of lines) {
+                    line = line.trim();
+                    
+                    // Look for packet header: "076:6807:1409  Isoch channel 1, tag 1, sy 0, size 72"
+                    const headerMatch = line.match(/\d{3}:\d{4}:\d{4}\s+Isoch channel (\d+), tag (\d+), sy (\d+), size (\d+)/);
+                    if (headerMatch) {
+                        // Save previous packet if exists
+                        if (currentPacket && hexData.length > 0) {
+                            currentPacket.hexData = hexData.join(' ');
+                            this.packets.push(currentPacket);
+                        }
+                        
+                        // Start new packet
+                        currentPacket = {
+                            channel: parseInt(headerMatch[1]),
+                            tag: parseInt(headerMatch[2]),
+                            sy: parseInt(headerMatch[3]),
+                            size: parseInt(headerMatch[4]),
+                            hexData: ''
+                        };
+                        hexData = [];
+                        continue;
+                    }
+                    
+                    // Look for hex data lines: "0000   02020060 900144c0 401a7b72 400b174e"
+                    const hexMatch = line.match(/^\s*[0-9a-fA-F]{4}\s+([0-9a-fA-F\s]+)/);
+                    if (hexMatch && currentPacket) {
+                        const hexValues = hexMatch[1].trim().split(/\s+/);
+                        hexData.push(...hexValues);
+                    }
+                }
+                
+                // Save last packet
+                if (currentPacket && hexData.length > 0) {
+                    currentPacket.hexData = hexData.join(' ');
+                    this.packets.push(currentPacket);
+                }
+            }
+            
+            analyzePackets() {
+                const channelSelect = document.getElementById('channelSelect').value;
+                const sampleRateOverride = document.getElementById('sampleRateOverride').value;
+                
+                // Filter packets by channel
+                let filteredPackets = this.packets;
+                if (channelSelect !== 'auto') {
+                    filteredPackets = this.packets.filter(p => p.channel === parseInt(channelSelect));
+                }
+                
+                if (filteredPackets.length === 0) {
+                    this.showLogInfo('No packets found for selected channel', 'error');
+                    return;
+                }
+                
+                // Extract audio data
+                this.audioData = this.extractAudioData(filteredPackets, sampleRateOverride);
+                
+                // Perform analysis
+                this.analysisResults = this.performAudioAnalysis(this.audioData);
+                
+                // Update UI
+                this.updateUI();
+            }
+            
+            extractAudioData(packets, sampleRateOverride) {
+                const results = {
+                    samples: [],
+                    sampleRate: 44100,
+                    noDataCount: 0,
+                    dataPacketCount: 0,
+                    totalPackets: packets.length,
+                    packetInfo: []
+                };
+                
+                for (let packet of packets) {
+                    const hexWords = packet.hexData.split(' ').filter(h => h.length === 8);
+                    
+                    if (hexWords.length < 2) continue; // Need at least CIP header
+                    
+                    // Parse CIP header (first 8 bytes = 2 words)
+                    const cipWord1 = parseInt(hexWords[0], 16);
+                    const cipWord2 = parseInt(hexWords[1], 16);
+                    
+                    // Extract fields from CIP header
+                    const sid = (cipWord1 >> 24) & 0xFF;
+                    const dbs = (cipWord1 >> 16) & 0xFF;
+                    const dbc = (cipWord1 >> 8) & 0xFF;
+                    const fmt_eoh = cipWord2 >> 24;
+                    const fdf = (cipWord2 >> 16) & 0xFF;
+                    const syt = cipWord2 & 0xFFFF;
+                    
+                    // Detect sample rate from FDF
+                    if (sampleRateOverride === 'auto') {
+                        if (fdf === 0x01) results.sampleRate = 44100;
+                        else if (fdf === 0x02) results.sampleRate = 48000;
+                    } else {
+                        results.sampleRate = parseInt(sampleRateOverride);
+                    }
+                    
+                    // Check if NO_DATA packet
+                    const isNoData = (fdf === 0xFF) || (syt === 0xFFFF);
+                    
+                    if (isNoData) {
+                        results.noDataCount++;
+                        continue;
+                    }
+                    
+                    results.dataPacketCount++;
+                    
+                    // Extract audio payload (skip CIP header)
+                    const audioWords = hexWords.slice(2);
+                    
+                    for (let hexWord of audioWords) {
+                        const word = parseInt(hexWord, 16);
+                        
+                        // Extract AM824 format: 0x40XXXXXX
+                        const label = (word >> 24) & 0xFF;
+                        const audioData24 = word & 0x00FFFFFF;
+                        
+                        // Convert to signed 24-bit
+                        const signed24 = audioData24 > 0x7FFFFF ? audioData24 - 0x1000000 : audioData24;
+                        
+                        // Convert to floating point (-1.0 to 1.0)
+                        const normalized = signed24 / 0x7FFFFF;
+                        
+                        results.samples.push(normalized);
+                    }
+                    
+                    results.packetInfo.push({
+                        packet: packet,
+                        sid, dbs, dbc, fmt_eoh, fdf, syt,
+                        isNoData,
+                        sampleCount: audioWords.length
+                    });
+                }
+                
+                return results;
+            }
+            
+            performAudioAnalysis(audioData) {
+                const samples = audioData.samples;
+                if (samples.length === 0) return null;
+                
+                // Basic statistics
+                const rms = Math.sqrt(samples.reduce((sum, s) => sum + s*s, 0) / samples.length);
+                const peak = Math.max(...samples.map(Math.abs));
+                const dcOffset = samples.reduce((sum, s) => sum + s, 0) / samples.length;
+                
+                // Dynamic range
+                const min = Math.min(...samples);
+                const max = Math.max(...samples);
+                const dynamicRange = max - min;
+                
+                // Zero crossings (frequency estimation)
+                let zeroCrossings = 0;
+                for (let i = 1; i < samples.length; i++) {
+                    if ((samples[i-1] >= 0) !== (samples[i] >= 0)) {
+                        zeroCrossings++;
+                    }
+                }
+                const estimatedFreq = (zeroCrossings / 2) * audioData.sampleRate / samples.length;
+                
+                // Crest factor
+                const crestFactor = peak / (rms || 1e-10);
+                
+                // THD+N estimation (very basic)
+                const fundamentalFreq = estimatedFreq;
+                const thd = this.estimateTHD(samples, audioData.sampleRate, fundamentalFreq);
+                
+                return {
+                    rms,
+                    peak,
+                    dcOffset,
+                    dynamicRange,
+                    min,
+                    max,
+                    zeroCrossings,
+                    estimatedFreq,
+                    crestFactor,
+                    thd,
+                    duration: samples.length / audioData.sampleRate,
+                    sampleCount: samples.length
+                };
+            }
+            
+            estimateTHD(samples, sampleRate, fundamental) {
+                // Very basic THD estimation using harmonics
+                if (fundamental < 100 || fundamental > sampleRate/4) return 0;
+                
+                const harmonics = [2, 3, 4, 5].map(h => h * fundamental).filter(f => f < sampleRate/2);
+                let harmonicPower = 0;
+                let fundamentalPower = 0;
+                
+                // This is a very simplified estimation
+                // In reality, you'd need proper FFT analysis
+                for (let i = 0; i < Math.min(1000, samples.length - 1); i++) {
+                    const freq = i * sampleRate / 1000;
+                    if (Math.abs(freq - fundamental) < 50) {
+                        fundamentalPower += samples[i] * samples[i];
+                    }
+                    for (let harmonic of harmonics) {
+                        if (Math.abs(freq - harmonic) < 50) {
+                            harmonicPower += samples[i] * samples[i];
+                        }
+                    }
+                }
+                
+                return fundamentalPower > 0 ? Math.sqrt(harmonicPower / fundamentalPower) * 100 : 0;
+            }
+            
+            updateUI() {
+                document.getElementById('analysisSection').style.display = 'block';
+                
+                this.updateLogInfo();
+                this.updateStats();
+                this.updateCharts();
+            }
+            
+            updateLogInfo() {
+                const info = document.getElementById('logInfo');
+                const audioData = this.audioData;
+                
+                let html = '';
+                
+                // Success info
+                html += `<div class="log-info success">
+                    <strong>✅ Analysis Complete:</strong> 
+                    Processed ${audioData.totalPackets} packets, 
+                    ${audioData.dataPacketCount} with audio data, 
+                    ${audioData.noDataCount} NO_DATA packets
+                </div>`;
+                
+                // Sample rate info
+                html += `<div class="log-info">
+                    <strong>📊 Audio Format:</strong> 
+                    ${audioData.sampleRate} Hz, 
+                    ${this.analysisResults.sampleCount.toLocaleString()} samples, 
+                    ${this.analysisResults.duration.toFixed(2)}s duration
+                </div>`;
+                
+                // Warnings
+                if (audioData.noDataCount > audioData.dataPacketCount * 0.1) {
+                    html += `<div class="log-info warning">
+                        <strong>⚠️ Warning:</strong> 
+                        High number of NO_DATA packets (${audioData.noDataCount}). 
+                        This may indicate timing issues or buffer underruns.
+                    </div>`;
+                }
+                
+                if (this.analysisResults.peak < 0.01) {
+                    html += `<div class="log-info warning">
+                        <strong>⚠️ Warning:</strong> 
+                        Very low audio levels detected (peak: ${(this.analysisResults.peak * 100).toFixed(2)}%). 
+                        Check if audio data is being processed correctly.
+                    </div>`;
+                }
+                
+                info.innerHTML = html;
+            }
+            
+            updateStats() {
+                const stats = this.analysisResults;
+                const statsGrid = document.getElementById('statsGrid');
+                
+                const statCards = [
+                    { label: 'RMS Level', value: (stats.rms * 100).toFixed(2), unit: '%' },
+                    { label: 'Peak Level', value: (stats.peak * 100).toFixed(2), unit: '%' },
+                    { label: 'Dynamic Range', value: (stats.dynamicRange * 100).toFixed(1), unit: '%' },
+                    { label: 'DC Offset', value: (stats.dcOffset * 100).toFixed(3), unit: '%' },
+                    { label: 'Crest Factor', value: stats.crestFactor.toFixed(2), unit: 'dB' },
+                    { label: 'Est. Frequency', value: stats.estimatedFreq.toFixed(0), unit: 'Hz' },
+                    { label: 'Sample Rate', value: this.audioData.sampleRate.toLocaleString(), unit: 'Hz' },
+                    { label: 'Duration', value: stats.duration.toFixed(2), unit: 's' }
+                ];
+                
+                statsGrid.innerHTML = statCards.map(stat => `
+                    <div class="stat-card">
+                        <div class="stat-value">${stat.value}<span class="stat-unit">${stat.unit}</span></div>
+                        <div class="stat-label">${stat.label}</div>
+                    </div>
+                `).join('');
+            }
+            
+            updateCharts() {
+                this.updateWaveformChart();
+                this.updateSpectrumChart();
+                this.updateLevelChart();
+            }
+            
+            updateWaveformChart() {
+                const ctx = document.getElementById('waveformChart').getContext('2d');
+                const timeRange = parseFloat(document.getElementById('timeRange').value);
+                const samples = this.audioData.samples;
+                const sampleRate = this.audioData.sampleRate;
+                
+                // Calculate how many samples to show
+                const maxSamples = Math.min(samples.length, timeRange * sampleRate);
+                const step = Math.max(1, Math.floor(maxSamples / 2000)); // Max 2000 points for performance
+                
+                const data = [];
+                const labels = [];
+                
+                for (let i = 0; i < maxSamples; i += step) {
+                    const time = i / sampleRate;
+                    labels.push(time.toFixed(4));
+                    data.push(samples[i]);
+                }
+                
+                if (this.waveformChart) {
+                    this.waveformChart.destroy();
+                }
+                
+                this.waveformChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Audio Waveform',
+                            data: data,
+                            borderColor: '#667eea',
+                            backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                            borderWidth: 1,
+                            pointRadius: 0,
+                            tension: 0.1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            x: {
+                                title: { display: true, text: 'Time (seconds)' }
+                            },
+                            y: {
+                                title: { display: true, text: 'Amplitude' },
+                                min: -1,
+                                max: 1
+                            }
+                        },
+                        plugins: {
+                            legend: { display: false }
+                        }
+                    }
+                });
+            }
+            
+            updateSpectrumChart() {
+                const ctx = document.getElementById('spectrumChart').getContext('2d');
+                const samples = this.audioData.samples.slice(0, 1024); // Use first 1024 samples for FFT
+                
+                // Simple magnitude spectrum (not true FFT, but gives frequency distribution idea)
+                const spectrum = this.calculateSpectrum(samples, this.audioData.sampleRate);
+                
+                if (this.spectrumChart) {
+                    this.spectrumChart.destroy();
+                }
+                
+                this.spectrumChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: spectrum.frequencies,
+                        datasets: [{
+                            label: 'Magnitude',
+                            data: spectrum.magnitudes,
+                            borderColor: '#48bb78',
+                            backgroundColor: 'rgba(72, 187, 120, 0.1)',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            x: {
+                                title: { display: true, text: 'Frequency (Hz)' }
+                            },
+                            y: {
+                                title: { display: true, text: 'Magnitude (dB)' },
+                                type: 'logarithmic'
+                            }
+                        },
+                        plugins: {
+                            legend: { display: false }
+                        }
+                    }
+                });
+            }
+            
+            calculateSpectrum(samples, sampleRate) {
+                // Simplified frequency analysis - bins samples into frequency ranges
+                const bins = 64;
+                const frequencies = [];
+                const magnitudes = [];
+                
+                for (let i = 0; i < bins; i++) {
+                    const freq = (i * sampleRate) / (2 * bins);
+                    const startIdx = Math.floor((i * samples.length) / bins);
+                    const endIdx = Math.floor(((i + 1) * samples.length) / bins);
+                    
+                    let magnitude = 0;
+                    for (let j = startIdx; j < endIdx; j++) {
+                        magnitude += Math.abs(samples[j]);
+                    }
+                    magnitude = magnitude / (endIdx - startIdx);
+                    
+                    frequencies.push(freq.toFixed(0));
+                    magnitudes.push(20 * Math.log10(magnitude + 1e-10)); // Convert to dB
+                }
+                
+                return { frequencies, magnitudes };
+            }
+            
+            updateLevelChart() {
+                const ctx = document.getElementById('levelChart').getContext('2d');
+                const samples = this.audioData.samples;
+                const sampleRate = this.audioData.sampleRate;
+                
+                // Calculate RMS over time (100ms windows)
+                const windowSize = Math.floor(sampleRate * 0.1); // 100ms
+                const levels = [];
+                const times = [];
+                
+                for (let i = 0; i < samples.length - windowSize; i += windowSize) {
+                    const window = samples.slice(i, i + windowSize);
+                    const rms = Math.sqrt(window.reduce((sum, s) => sum + s*s, 0) / window.length);
+                    const peak = Math.max(...window.map(Math.abs));
+                    
+                    levels.push({
+                        time: i / sampleRate,
+                        rms: 20 * Math.log10(rms + 1e-10), // Convert to dB
+                        peak: 20 * Math.log10(peak + 1e-10)
+                    });
+                }
+                
+                if (this.levelChart) {
+                    this.levelChart.destroy();
+                }
+                
+                this.levelChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: levels.map(l => l.time.toFixed(2)),
+                        datasets: [
+                            {
+                                label: 'RMS Level',
+                                data: levels.map(l => l.rms),
+                                borderColor: '#ed8936',
+                                backgroundColor: 'rgba(237, 137, 54, 0.1)',
+                                borderWidth: 2,
+                                pointRadius: 2
+                            },
+                            {
+                                label: 'Peak Level',
+                                data: levels.map(l => l.peak),
+                                borderColor: '#e53e3e',
+                                backgroundColor: 'rgba(229, 62, 62, 0.1)',
+                                borderWidth: 2,
+                                pointRadius: 2
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            x: {
+                                title: { display: true, text: 'Time (seconds)' }
+                            },
+                            y: {
+                                title: { display: true, text: 'Level (dB)' },
+                                min: -100,
+                                max: 0
+                            }
+                        }
+                    }
+                });
+            }
+            
+            showProgress(show) {
+                document.getElementById('progressContainer').style.display = show ? 'block' : 'none';
+                if (show) {
+                    // Animate progress bar
+                    const bar = document.getElementById('progressBar');
+                    bar.style.width = '0%';
+                    setTimeout(() => bar.style.width = '100%', 100);
+                }
+            }
+            
+            showLogInfo(message, type = 'info') {
+                const info = document.getElementById('logInfo');
+                info.innerHTML = `<div class="log-info ${type}">${message}</div>`;
+            }
+        }
+        
+        // Initialize the analyzer
+        const analyzer = new FireWireAudioAnalyzer();
+    </script>
+</body>
+</html>

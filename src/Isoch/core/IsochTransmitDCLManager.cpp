@@ -163,10 +163,10 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
              // NOTE: Setting a non-NULL timestamp pointer might automatically set kFWNuDCLFlag_TimeStamp
              
             // Set Callback (Conditional)
-            bool isFirstPacketInGroup = (p == 0);  // Changed: first packet instead of last
+            bool isLastPacketInGroup = (p == config_.packetsPerGroup - 1);  // LAST packet
             bool isCallbackGroup = ((g + 1) % config_.callbackGroupInterval == 0);
 
-            if (isFirstPacketInGroup && isCallbackGroup) {  // Changed: use isFirstPacketInGroup
+            if (isLastPacketInGroup && isCallbackGroup) {
                 (*nuDCLPool_)->SetDCLCallback(currentDCL, DCLComplete_Helper);
                 (*nuDCLPool_)->SetDCLRefcon(currentDCL, &callbackInfos_[g]); // Pass group info struct addr
                 logger_->warn("  Set callback for G={}, P={} (DCL {:p})", g, p, (void*)currentDCL);

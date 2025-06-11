@@ -9,6 +9,8 @@
 #include <CoreServices/CoreServices.h> // For endian swap
 #include <vector>
 #include <chrono>                  // For timing/sleep
+
+#define DEBUG 0
 #include <os/log.h>
 
 namespace FWA {
@@ -108,7 +110,7 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
         } // End initial prep loop
 
         // Check for error from the loop
-        if (error_code != IOKitError::Success) {
+        if (error_code != IOKitError::Success) {    
             return std::unexpected(error_code);
         }
 
@@ -275,8 +277,7 @@ void AmdtpTransmitter::handleDCLOverrun() {
 // --- IMPLEMENTATION OF handleDCLComplete (Instance Method) ---
 // This is the core real-time loop function called from the RunLoop via the static helper
 void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
-
-    // EVEN MORE DEBUG LOGGING
+    #if DEBUG
     // --- Callback Rate Monitoring ---
     static thread_local uint64_t callbackCountSinceLastLog = 0;
     static thread_local auto lastRateLogTime = std::chrono::steady_clock::now();
@@ -288,50 +289,32 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
     auto elapsedSinceLastRateLog = nowForRateLog - lastRateLogTime;
 
     if (elapsedSinceLastRateLog >= loggingInterval) {
-        // Calculate the actual elapsed time in seconds (as a double for precision)
         double elapsedSeconds = std::chrono::duration<double>(elapsedSinceLastRateLog).count();
-
-        // Calculate the rate
         double callbacksPerSecond = 0.0;
-        if (elapsedSeconds > 0) { // Avoid division by zero if interval is tiny (unlikely but safe)
+        if (elapsedSeconds > 0) {
             callbacksPerSecond = static_cast<double>(callbackCountSinceLastLog) / elapsedSeconds;
         }
-
-        // Log the rate
-        // You can use logger_->info, logger_->debug, or os_log depending on preference
         logger_->info("DCLComplete Rate: {:.2f} callbacks/sec ({} callbacks in {:.3f}s)",
                     callbacksPerSecond,
                     callbackCountSinceLastLog,
                     elapsedSeconds);
-        // os_log(OS_LOG_DEFAULT, "DCLComplete Rate: %.2f callbacks/sec (%llu callbacks in %.3f s)",
-        //        callbacksPerSecond,
-        //        callbackCountSinceLastLog,
-        //        elapsedSeconds);
-
-
-        // Reset for the next logging interval
         callbackCountSinceLastLog = 0;
-        lastRateLogTime = nowForRateLog; // Or just `lastRateLogTime = std::chrono::steady_clock::now();`
+        lastRateLogTime = nowForRateLog;
     }
     // --- End Callback Rate Monitoring ---
-
     // DEBUG LOGGING
     // uint32_t cycleTime;
     // IOReturn result = (*interface_)->GetCycleTime(interface_, &cycleTime);
-    
     // logger_->info("Callback: group={}, cycle={:08x}", completedGroupIndex, cycleTime);
-    
-    // // Check if we're being called too often
     // static uint32_t lastCycle = 0;
     // uint32_t cycleDiff = (cycleTime >> 12) - (lastCycle >> 12);
     // if (cycleDiff == 0) {
     //     // logger_->error("🚨 Multiple callbacks in same cycle!");
     // }
     // lastCycle = cycleTime;
-
-    
     // os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::handleDCLComplete FIRED");
     // logger_->critical("<<<<< AmdtpTransmitter::handleDCLComplete ENTERED for Group: {} >>>>>", completedGroupIndex);
+    #endif
     // --- 1. State Check ---
     // Check running state *without* lock first for performance optimisation
     if (!running_.load(std::memory_order_relaxed)) {
@@ -373,9 +356,11 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
     // the currently executing segments. With a callback interval of 1,
     // when group N completes, the hardware might be starting group N+1.
     // We should prepare group N+2 to ensure double buffering.
-    uint32_t fillGroupIndex = (completedGroupIndex + 2) % config_.numGroups;
+    uint32_t fillGroupIndex = (completedGroupIndex + kGroupsPerCallback) % config_.numGroups;
+    #if DEBUG
     logger_->debug("handleDCLComplete: Completed Group = {}, Preparing Group = {}",
                    completedGroupIndex, fillGroupIndex);
+    #endif
 
     // --- 4. Prepare Next Segment Loop ---
     // Iterate through all packets within the 'fillGroupIndex' segment
@@ -391,7 +376,9 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         }
 
         if (!cipHdrPtrExp || !audioDataTargetPtr) {
+            #if DEBUG
             logger_->error("handleDCLComplete: Failed to get buffer pointers for G={}, P={}. Skipping packet.", fillGroupIndex, p);
+            #endif
             continue;
         }
 
@@ -472,9 +459,11 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         // The isochronous header is handled by the hardware now, so we only update the data ranges.
         auto updateExp = dclManager_->updateDCLPacket(fillGroupIndex, p, ranges, numRanges);
         if (!updateExp) {
+            #if DEBUG
             logger_->error("handleDCLComplete: Failed to update DCL packet ranges for G={}, P={}: {}",
                 fillGroupIndex, p,
                 iokit_error_category().message(static_cast<int>(updateExp.error())));
+            #endif
         }
     } // --- End packet loop (p) ---
 
@@ -488,9 +477,11 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
 
     auto notifyContentExp = dclManager_->notifySegmentUpdate(localPort, fillGroupIndex);
     if (!notifyContentExp) {
+        #if DEBUG
         logger_->error("handleDCLComplete: Failed to notify segment content update for G={}: {}",
                        fillGroupIndex,
                        iokit_error_category().message(static_cast<int>(notifyContentExp.error())));
+        #endif
         // Handle error - might lead to hardware sending stale data.
     }
 
@@ -513,12 +504,15 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
 
     // Log if duration exceeds threshold (e.g., 1ms for real-time audio)
     static const double kWarningThresholdMs = 1.0; // 1ms is quite strict for real-time audio
+    #if DEBUG
     // if (durationMs > kWarningThresholdMs) {
     //     logger_->warn("handleDCLComplete: Long processing time for G={}: {:.3f}ms",
     //                   completedGroupIndex, durationMs);
     // }
+    #endif
 
 
+    #if DEBUG
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastPacketLogTime_);
     if (elapsed.count() >= 1) {
@@ -527,6 +521,7 @@ void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
         logger_->info("Packets last second: data={}  no_data={} total= {}", dCnt, nCnt, (dCnt + nCnt));
         lastPacketLogTime_ = now;
     }
+    #endif
 }
 
 // --- Static Callbacks ---
