@@ -3,7 +3,8 @@
 #include "Isoch/core/IsochPacketProvider.hpp"
 #include <CoreServices/CoreServices.h>
 #include <cstring>
-#include <algorithm>
+#include <algorithm>    
+#include <os/log.h>
 
 namespace FWA {
 namespace Isoch {
@@ -486,7 +487,12 @@ void IsochPacketProvider::adjustSafetyMargin() {
 void IsochPacketProvider::generateProactiveSilence(uint8_t* targetBuffer, size_t targetBufferSize, 
                                                    PreparedPacketData& result, const TransmitPacketInfo& info) {
     safetyMarginHolds_++;
-    
+    // log ERROR Immediatly to os_log
+    os_log(OS_LOG_DEFAULT, "IsochPacketProvider: ERROR! Silence generated! That should not happen! Maybe to insufficient SHM fill level. Or other issue. "
+                           "Segment: %d, Packet: %d, Absolute Packet: %d, Safety Margin: %d chunks",
+                           info.segmentIndex, info.packetIndexInGroup, info.absolutePacketIndex,
+                           safetyMarginChunks_.load());
+
     // Generate silence
     std::memset(targetBuffer, 0, targetBufferSize);
     result.generatedSilence = true;

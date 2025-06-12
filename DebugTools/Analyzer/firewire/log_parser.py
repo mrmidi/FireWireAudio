@@ -13,7 +13,7 @@ def parse_log_content(content: str) -> list[CIPPacket]:
 
     # Updated regex for the specific FireBug format
     header_re = re.compile(
-        r"^\d+:\d+:\d+\s+Isoch channel (\d+), tag (\d+), sy (\d+), size (\d+)\s+\[actual (\d+)\]"
+        r"^(\d+):(\d+):(\d+)\s+Isoch channel (\d+), tag (\d+), sy (\d+), size (\d+)\s+\[actual (\d+)\]"
     )
     hex_word_re = re.compile(r'\b[0-9a-fA-F]{8}\b')
 
@@ -27,11 +27,14 @@ def parse_log_content(content: str) -> list[CIPPacket]:
                 packets.append(CIPPacket(current_packet_dict))
             
             current_packet_dict = {
-                'channel': int(header_match.group(1)),
-                'tag': int(header_match.group(2)),
-                'sy': int(header_match.group(3)),
-                'size': int(header_match.group(4)),
-                'actual_size': int(header_match.group(5)),
+                'timestamp_cycle': int(header_match.group(1)),
+                'timestamp_second': int(header_match.group(2)),
+                'timestamp_count': int(header_match.group(3)),
+                'channel': int(header_match.group(4)),
+                'tag': int(header_match.group(5)),
+                'sy': int(header_match.group(6)),
+                'size': int(header_match.group(7)),
+                'actual_size': int(header_match.group(8)),
             }
             hex_data = []
             continue

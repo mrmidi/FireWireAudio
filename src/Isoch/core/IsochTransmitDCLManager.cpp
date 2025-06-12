@@ -117,7 +117,7 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
              FWA::Isoch::CIPHeader* cipHdr = reinterpret_cast<FWA::Isoch::CIPHeader*>(cipHdrPtr);
              bzero(cipHdr, kTransmitCIPHeaderSize);
              cipHdr->fmt_eoh1 = FWA::Isoch::CIP::kFmtEohValue;
-             cipHdr->fdf = FWA::Isoch::CIP::kFDF_NoDat;
+             cipHdr->fdf = FWA::Isoch::CIP::kFDF_48k;  // Always use sample rate, never 0xFF
              cipHdr->syt = FWA::Isoch::CIP::makeBigEndianSyt(FWA::Isoch::CIP::kSytNoData);
 
              // Audio Payload (Zero it out initially)

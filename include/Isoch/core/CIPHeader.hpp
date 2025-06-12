@@ -39,9 +39,9 @@ static_assert(sizeof(CIPHeader) == 8, "CIPHeader must be packed to 8 bytes");
 // Constants for filling the CIP Header, improving readability
 namespace CIP {
     // FDF (Format Dependent Field) values for sample rate
+    // CRITICAL: FDF always contains sample rate, NEVER changes for NO-DATA packets!
     constexpr uint8_t kFDF_44k1  = 0x01;
     constexpr uint8_t kFDF_48k   = 0x02;
-    constexpr uint8_t kFDF_NoDat = 0xFF; // Used for NO_DATA packets
 
     // Format (FMT) and End-of-Header (EOH) values
     constexpr uint8_t kFmtMBLA   = 0x24; // FMT=0x24 for MBLA - Duet format
@@ -53,6 +53,11 @@ namespace CIP {
 
     // Special value for the SYT field in NO_DATA packets
     constexpr uint16_t kSytNoData = 0xFFFF;
+    
+    // Helper to check if packet is NO-DATA based on SYT value
+    inline bool isNoDataPacket(uint16_t syt) {
+        return syt == kSytNoData;
+    }
 }
 
 } // namespace Isoch

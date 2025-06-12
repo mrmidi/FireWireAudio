@@ -107,8 +107,8 @@ fi
 # Modified mode: collect all modified files from git status
 if [[ "$MODE" == "modified" ]]; then
     rm -f "$OUTPUT_FILE"
-    echo "Creating $OUTPUT_FILE with all modified files from git..."
-    git status --porcelain | grep -E '^( M|A |AM|MM|\?\?)' | cut -c4- | while read -r file; do
+    echo "Creating $OUTPUT_FILE with all modified and untracked files from git..."
+    git status --porcelain | grep -E '^( M|M |A |AM|MM|\?\?)' | cut -c4- | while read -r file; do
         if [ -f "$file" ]; then
             echo "=== $file ===" >> "$OUTPUT_FILE"
             cat "$file" >> "$OUTPUT_FILE"

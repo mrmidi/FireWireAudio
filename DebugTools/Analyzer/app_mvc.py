@@ -99,8 +99,8 @@ with tab_detail:
     filtered_packets = controller.filter_packets(channel_filter, packet_type_filter, max_packets)
     
     # Display packet pattern
-    pattern_analysis = controller.get_packet_pattern_analysis(num_packets=50)
-    DetailedPacketView.render_packet_pattern(pattern_analysis)
+    pattern = controller.get_packet_pattern(num_packets=50)
+    DetailedPacketView.render_packet_pattern(pattern)
     
     # Display statistics
     stats = controller.calculate_packet_statistics(filtered_packets)

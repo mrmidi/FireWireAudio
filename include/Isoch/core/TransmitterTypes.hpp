@@ -55,7 +55,7 @@ struct TransmitterConfig {
     uint32_t numStartupCycleMatchBits{0}; ///< For cycle-matching start (0 usually sufficient for transmitter).
 
     // NEW: Transmission Type
-    TransmissionType transmissionType{TransmissionType::NonBlocking}; // Default to current behavior
+    TransmissionType transmissionType{TransmissionType::Blocking}; // Default to current behavior
 };
 
 // --- Messages & Callbacks ---

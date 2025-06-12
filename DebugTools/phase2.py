@@ -125,7 +125,7 @@ if __name__ == "__main__":
         label = "DATA" if is_data else "NO-DATA"
         print(f"{i:2d}:  {label}")
 
-    print(f"\nFirst {N} packets → LINUX ideal_nonblocking algorithm:")
+    print(f"\nFirst {N} packets → LINUX blocking algorithm:")
     for i, is_data in enumerate(linux_sequence(N), start=1):
         label = "DATA" if is_data else "NO-DATA"
         print(f"{i:2d}:  {label}")
@@ -139,7 +139,7 @@ if __name__ == "__main__":
     print(f"  Total packets/sec:   {a_tot:.4f}")
     print(f"  Data/No-Data ratio:  {a_ratio:.6f}")
 
-    print("\nLINUX ideal_nonblocking algorithm:")
+    print("\nLINUX blocking algorithm:")
     l_data, l_no, l_tot, l_ratio = simulate(linux_sequence, D)
     print(f"  Data  packets/sec: {l_data:.4f}")
     print(f"  No-Data packets/sec: {l_no:.4f}")

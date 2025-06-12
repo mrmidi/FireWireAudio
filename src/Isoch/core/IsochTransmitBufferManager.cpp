@@ -62,9 +62,16 @@ void IsochTransmitBufferManager::calculateBufferLayout() {
     size_t timestampsSize = config_.numGroups * kTimestampSize; // Only need one per group/segment completion
     // --- End Sizes calculation ---
 
-    // Align each section
+    // Align each section (ensure CIP headers are cache-line aligned for optimal pre-calc performance)
+    static constexpr size_t kCacheLineSize = 64;
     clientBufferSize_aligned_ = (clientDataSize + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-    cipHeaderTotalSize_aligned_ = (cipHeadersSize + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    
+    // Cache-line align CIP headers for optimal pre-calculator performance
+    cipHeaderTotalSize_aligned_ = (cipHeadersSize + kCacheLineSize - 1) & ~(kCacheLineSize - 1);
+    if (cipHeaderTotalSize_aligned_ < PAGE_SIZE) {
+        cipHeaderTotalSize_aligned_ = PAGE_SIZE; // Minimum page alignment
+    }
+    
     isochHeaderTotalSize_aligned_ = (isochHeadersSize + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     timestampTotalSize_aligned_ = (timestampsSize + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 

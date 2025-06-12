@@ -18,6 +18,7 @@
 
 #include "FWA/Error.h"
 #include "Isoch/core/CIPHeader.hpp"
+#include "Isoch/core/CIPPreCalculator.hpp"
 #include "Isoch/core/TransmitterTypes.hpp"
 #include "Isoch/interfaces/ITransmitBufferManager.hpp"
 #include "Isoch/interfaces/ITransmitDCLManager.hpp"
@@ -113,6 +114,14 @@ private:
         // --- LOGGING/DIAGNOSTICS ---
     std::atomic<uint64_t> dataPacketsSent_{0};
     std::atomic<uint64_t> noDataPacketsSent_{0};
+    
+    // Performance monitoring for pre-calc integration
+    struct PerfStats {
+        std::atomic<uint64_t> totalCallbacks{0};
+        std::atomic<uint64_t> slowCallbacks{0};  // >10μs
+        std::atomic<uint64_t> missedPrecalc{0};  // Emergency inline headers
+        std::atomic<uint64_t> maxCallbackNs{0};
+    } perfStats_;
 
     // We’ll also keep a timestamp so we only log once per second:
     std::chrono::steady_clock::time_point lastPacketLogTime_{ std::chrono::steady_clock::now() };
@@ -126,6 +135,7 @@ private:
 
     // Internal DCL callback handlers (instance methods)
     void handleDCLComplete(uint32_t completedGroupIndex);
+    void handleDCLCompleteFastPath(uint32_t completedGroupIndex);  // New fast path
     void handleDCLOverrun();
     
     // === ADD: Apple's methods ===
@@ -144,6 +154,9 @@ private:
     void logAppleStyleStats() const;
     bool shouldLogStats() const;
     #endif
+    
+    // Performance monitoring for pre-calc integration
+    void logPerformanceStatistics() const;
 
     // Static callback helpers (forward to instance methods)
     static void DCLCompleteCallback_Helper(uint32_t completedGroupIndex, void* refCon);
@@ -187,6 +200,9 @@ private:
     std::unique_ptr<ITransmitDCLManager> dclManager_;
     std::unique_ptr<IsochTransportManager> transportManager_;     // Reusable
     std::unique_ptr<ITransmitPacketProvider> packetProvider_;
+    
+    // CIP Pre-calculator for background header generation
+    std::unique_ptr<CIPPreCalculator> cipPreCalc_;
 
     // RunLoop
     CFRunLoopRef runLoopRef_{nullptr};
@@ -221,6 +237,9 @@ private:
 
     // Interface
     IOFireWireLibNubRef interface_{nullptr}; // The FireWire nub interface
+    
+    // Store nodeID for emergency headers
+    uint16_t nodeID_{0};
 
     // Static constants for SYT calc (44.1kHz)
     static constexpr uint32_t SYT_PHASE_MOD = 147;

@@ -40,6 +40,9 @@ add_compile_options(
 )
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# --- Optimization setup ---
+option(ENABLE_MAXIMUM_OPTIMIZATION "Enable maximum optimization for daemon targets" OFF)
+
 # --- Sanitizer setup ---
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
@@ -47,6 +50,44 @@ option(ENABLE_TSAN "Enable ThreadSanitizer (cannot use with ASan)" OFF)
 
 if(ENABLE_ASAN AND ENABLE_TSAN)
   message(FATAL_ERROR "ASan and TSan cannot be enabled simultaneously.")
+endif()
+
+if(ENABLE_MAXIMUM_OPTIMIZATION AND (ENABLE_ASAN OR ENABLE_UBSAN OR ENABLE_TSAN))
+  message(WARNING "Maximum optimization is enabled with sanitizers. This may interfere with debugging and sanitizer effectiveness.")
+endif()
+
+# --- Setup optimization flags ---
+set(OPTIMIZATION_COMPILE_FLAGS_LIST "")
+set(OPTIMIZATION_LINK_FLAGS_LIST "")
+
+if(ENABLE_MAXIMUM_OPTIMIZATION)
+  message(STATUS "🚀 Maximum optimization enabled for daemon targets")
+  
+  # Aggressive optimization flags for maximum performance
+  list(APPEND OPTIMIZATION_COMPILE_FLAGS_LIST 
+    "-O3"                      # Maximum optimization level
+    "-DNDEBUG"                 # Disable debug assertions
+    "-flto"                    # Link-time optimization
+    "-march=native"            # Optimize for current CPU architecture
+    "-mtune=native"            # Tune for current CPU
+    "-ffast-math"              # Enable fast math optimizations
+    "-funroll-loops"           # Unroll loops for performance
+    "-finline-functions"       # Inline functions aggressively
+    "-fomit-frame-pointer"     # Omit frame pointer for better performance
+    # "-fno-stack-protector"   # Disable stack protection - may conflict with macOS security
+    # "-fno-exceptions"        # Disable exception handling - commented out for ObjC++ compatibility
+    # "-fno-rtti"              # Disable RTTI - commented out for ObjC++ compatibility
+    # "-fstrict-aliasing"        # Enable strict aliasing optimizations
+    # "-fvectorize"            # Enable auto-vectorization - redundant with -O3
+    # "-fslp-vectorize"        # Enable SLP vectorization - redundant with -O3
+  )
+  
+  # Link-time optimization flags
+  list(APPEND OPTIMIZATION_LINK_FLAGS_LIST
+    "-flto"                    # Link-time optimization
+    "-Wl,-dead_strip"          # Remove dead code (macOS specific)
+    # "-Wl,-no_eh_frame_hdr"   # Not available on macOS - Linux only
+  )
 endif()
 
 set(SANITIZER_FLAGS "")
@@ -200,6 +241,14 @@ target_include_directories(${XPC_SERVICE_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/xpc/FWADaemon
 )
 
+# add optimization flags if enabled
+if(OPTIMIZATION_COMPILE_FLAGS_LIST)
+  target_compile_options(${XPC_SERVICE_NAME} PRIVATE ${OPTIMIZATION_COMPILE_FLAGS_LIST})
+endif()
+if(OPTIMIZATION_LINK_FLAGS_LIST)
+  target_link_options(${XPC_SERVICE_NAME} PRIVATE ${OPTIMIZATION_LINK_FLAGS_LIST})
+endif()
+
 # add ASAN/UBSAN flags if enabled
 if(SANITIZER_COMPILE_FLAGS_LIST) # Check if the list is not empty
   target_compile_options(${XPC_SERVICE_NAME} PRIVATE ${SANITIZER_COMPILE_FLAGS_LIST})
@@ -229,7 +278,16 @@ add_custom_command(TARGET ${XPC_SERVICE_NAME} POST_BUILD
 
 # --- Standalone CLI daemon ---
 add_executable(FirewireAudioDaemon src/main.cpp)
-# ...
+
+# add optimization flags if enabled
+if(OPTIMIZATION_COMPILE_FLAGS_LIST)
+  target_compile_options(FirewireAudioDaemon PRIVATE ${OPTIMIZATION_COMPILE_FLAGS_LIST})
+endif()
+if(OPTIMIZATION_LINK_FLAGS_LIST)
+  target_link_options(FirewireAudioDaemon PRIVATE ${OPTIMIZATION_LINK_FLAGS_LIST})
+endif()
+
+# add sanitizer flags if enabled
 if(SANITIZER_COMPILE_FLAGS_LIST)
   target_compile_options(FirewireAudioDaemon PRIVATE ${SANITIZER_COMPILE_FLAGS_LIST})
 endif()

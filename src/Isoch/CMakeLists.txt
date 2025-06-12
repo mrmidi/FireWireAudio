@@ -5,6 +5,7 @@ add_library(FWAIsoch STATIC
     SharedManagers.cpp
     core/AmdtpReceiver.cpp
     core/AmdtpTransmitter.cpp
+    core/CIPPreCalculator.cpp
     core/IsochBufferManager.cpp
     core/IsochTransportManager.cpp
     core/IsochPacketProcessor.cpp
