@@ -1,3 +1,5 @@
+// TODO: Fix receiver to get rid of this buffer: should be removed possibly.
+
 // Copyright 2007-2012 David Robillard <d@drobilla.net>
 // SPDX-License-Identifier: GPL-3.0-or-later
 #ifndef RAUL_RINGBUFFER_HPP

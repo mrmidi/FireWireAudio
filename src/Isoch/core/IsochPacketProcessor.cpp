@@ -329,7 +329,7 @@ std::expected<void, IOKitError> IsochPacketProcessor::processPacket(
                 if (sample24_R & 0x00800000) { sample24_R |= 0xFF000000; }
                 float sampleFloatR = static_cast<float>(sample24_R) / MAX_24BIT_SIGNED_FLOAT;
 
-                packetSamples.push_back({sampleFloatL, sampleFloatR, frameAbsSampleIndex});
+                packetSamples.emplace_back(sampleFloatL, sampleFloatR, frameAbsSampleIndex);
             }
         }
         // Increment absolute sample counter AFTER processing samples

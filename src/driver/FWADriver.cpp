@@ -26,36 +26,14 @@ std::shared_ptr<aspl::Driver> CreateDriver()
     deviceParams.Name = "FWA Firewire Audio";
     deviceParams.CanBeDefault = true;
     deviceParams.CanBeDefaultForSystemSounds = true;
-    deviceParams.EnableRealtimeTracing = true;
+    deviceParams.EnableRealtimeTracing = false;
     deviceParams.SampleRate = SampleRate;
     deviceParams.ChannelCount = ChannelCount;
 
     aspl::StreamParameters streamParams;
     streamParams.Direction = aspl::Direction::Output;
     streamParams.StartingChannel = 1;
-    // streamParams.Format = {
-    //     .mSampleRate = 44100,
-    //     .mFormatID = kAudioFormatLinearPCM,
-    //     .mFormatFlags = kAudioFormatFlagIsSignedInteger,
-    //     .mBitsPerChannel = 24,
-    //     .mChannelsPerFrame = 2,
-    //     .mBytesPerFrame = 8,
-    //     .mFramesPerPacket = 1,
-    //     .mBytesPerPacket = 8,
-    // };
-
-            streamParams.StartingChannel = 1;                 // Explicitly set starting channel
-            // streamParams.Format = {
-            //     .mSampleRate = 44100,
-            //     .mFormatID = kAudioFormatLinearPCM,
-            //     .mFormatFlags = kAudioFormatFlagIsSignedInteger, 
-            //     .mBitsPerChannel = 24,
-            //     .mChannelsPerFrame = 2,
-            //     .mBytesPerFrame = 8,
-            //     .mFramesPerPacket = 1,
-            //     .mBytesPerPacket = 8,                  
-            // };
-
+ 
 
     streamParams.Format = {
         .mSampleRate       = 44100.0,
@@ -69,29 +47,6 @@ std::shared_ptr<aspl::Driver> CreateDriver()
         .mFramesPerPacket  = 1,
         .mBytesPerPacket   = 8
     };
-
-    // streamParams.Format = {
-    //     .mSampleRate       = 44100,
-    //     .mFormatID         = kAudioFormatLinearPCM,
-    //     .mFormatFlags      = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
-    //     .mBitsPerChannel   = 24,
-    //     .mChannelsPerFrame = 2,
-    //     .mBytesPerFrame    = 6,      // 3 bytes * 2 channels
-    //     .mFramesPerPacket  = 1,
-    //     .mBytesPerPacket   = 6
-    // };
-
-//    streamParams.Format = {
-//        .mSampleRate       = 44100,
-//        .mFormatID         = kAudioFormatLinearPCM,
-//        .mFormatFlags      = kAudioFormatFlagIsSignedInteger |
-//                            kAudioFormatFlagIsBigEndian,
-//        .mBitsPerChannel   = 24,
-//        .mChannelsPerFrame = 2,
-//        .mBytesPerFrame    = 8,     // 4 bytes × 2 chn
-//        .mFramesPerPacket  = 1,
-//        .mBytesPerPacket   = 8,
-//    };
 
     auto device = std::make_shared<FWADriverDevice>(context, deviceParams);
     device->AddStreamWithControlsAsync(streamParams);
