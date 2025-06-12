@@ -178,10 +178,10 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
     // === NEW 5. Adaptive Safety Margin Adjustment ===
     adjustSafetyMargin();
 
-    // === 6. Copy from SHM ring into targetBuffer (PRESERVED EXISTING LOGIC) ===
+    // === 6. Copy from SHM ring into targetBuffer ===
     uint8_t* writePtr = targetBuffer;
     size_t   remaining = targetBufferSize;
-    bool     gotAllData = true;
+    bool     underrunOccurred = false;
 
     // Optional periodic stats logging
     #if DEBUG
@@ -203,11 +203,12 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
     #endif
 
     while (remaining > 0) {
-        // If current chunk is exhausted, try to pop next one
+        // If current chunk is exhausted, try to pop the next one.
         if (currentChunk_.remainingBytes() == 0) {
+            // popNextChunk() now only checks if wr > rd (no safety margin check)
             if (!popNextChunk()) {
-                // Underrun: no more valid audio chunks
-                gotAllData = false;
+                // This is a TRUE underrun. No more chunks are available.
+                underrunOccurred = true;
                 break;
             }
         }
@@ -219,12 +220,7 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
         bool wasPartialConsumption = (currentChunk_.consumedBytes == 0 &&
                                       toCopy < currentChunk_.totalBytes);
 
-        std::memcpy(
-            writePtr,
-            currentChunk_.audioDataPtr + currentChunk_.consumedBytes,
-            toCopy
-        );
-
+        std::memcpy(writePtr, currentChunk_.audioDataPtr + currentChunk_.consumedBytes, toCopy);
         writePtr += toCopy;
         remaining -= toCopy;
         currentChunk_.consumedBytes += static_cast<uint32_t>(toCopy);
@@ -235,16 +231,17 @@ PreparedPacketData IsochPacketProvider::fillPacketData(
         }
     }
 
-    // === 7. If we got a full buffer, convert in-place to AM824; else zero-fill & note underrun ===
-    if (gotAllData && remaining == 0) {
+    // === 7. After the loop, if we couldn't get all the data, fill the rest with silence ===
+    if (remaining > 0) {
+        std::memset(writePtr, 0, remaining);
+        result.generatedSilence = true; // Mark that some/all was silence.
+        if (underrunOccurred) {
+            handleUnderrun(info);
+        }
+    } else {
+        // We got all data, convert it.
         formatToAM824InPlace(targetBuffer, targetBufferSize);
         result.generatedSilence = false;
-    } else {
-        // Partial or complete underrun: fill remainder with silence
-        if (remaining > 0) {
-            std::memset(writePtr, 0, remaining);
-        }
-        handleUnderrun(info);
     }
 
     result.dataLength = targetBufferSize;
@@ -263,24 +260,11 @@ bool IsochPacketProvider::popNextChunk() {
         return false;
     }
 
-    // === NEW: Secondary Safety Check (Defense in Depth) ===
-    if (!hasMinimumFillLevel()) {
-        if (logger_) {
-            // Throttled logging to avoid spam
-            static thread_local uint32_t logCounter = 0;
-            if ((logCounter++ % 1000) == 0) {
-                logger_->debug("popNextChunk called when below safety margin (count: {})", logCounter);
-            }
-        }
-        currentChunk_.invalidate();
-        return false;
-    }
-
     AudioTimeStamp timestamp;
     uint32_t dataBytes;
     const std::byte* audioPtr;
 
-    // Use your zero-copy pop API
+    // Use your zero-copy pop API - this only checks if wr > rd
     if (!RTShmRing::pop(*shmControlBlock_, shmRingArray_, timestamp, dataBytes, audioPtr)) {
         shmUnderrunCount_++;
         currentChunk_.invalidate();
