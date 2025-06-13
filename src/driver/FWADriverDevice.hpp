@@ -36,7 +36,13 @@ public:
         return kAudioDeviceTransportTypeFireWire;
     }
 
-    // --- IO Operation Override ---
+    // --- IO Operation Overrides ---
+    OSStatus WillDoIOOperation(AudioObjectID inDeviceObjectID,
+                              UInt32 inClientID,
+                              UInt32 inOperationID,
+                              Boolean* outWillDo,
+                              Boolean* outWillDoInPlace) override;
+                              
     OSStatus DoIOOperation(AudioObjectID objectID,
                            AudioObjectID streamID,
                            UInt32 clientID,

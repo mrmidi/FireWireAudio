@@ -48,18 +48,11 @@ public:
         uint64_t partialChunkConsumptions;
         double avgFillPacketDurationUs;
         uint32_t currentShmFillPercent;
-        // --- NEW: Safety Margin Diagnostics ---
-        uint64_t safetyMarginHolds;
-        uint32_t currentSafetyMarginChunks;
-        uint64_t safetyMarginAdjustments;
-    };
+        };
     
     DiagnosticStats getDiagnostics() const;
     void resetDiagnostics();
 
-    // --- NEW: Safety Margin Configuration ---
-    void setSafetyMarginChunks(uint32_t chunks);
-    uint32_t getSafetyMarginChunks() const { return safetyMarginChunks_; }
 
 private:
 
@@ -94,36 +87,23 @@ private:
     mutable std::atomic<uint64_t> fillPacketCallCount_{0};
     mutable std::atomic<uint64_t> totalFillPacketTimeNs_{0};
 
-    // --- NEW: Safety Margin State ---
-    mutable std::atomic<uint32_t> safetyMarginChunks_{4};  // Default 4 chunks safety margin
-    mutable std::atomic<uint64_t> safetyMarginHolds_{0};   // Count of times we held back due to safety
-    mutable std::atomic<uint64_t> safetyMarginAdjustments_{0}; // Count of safety margin changes
-    mutable std::chrono::steady_clock::time_point lastSafetyAdjustTime_;
+    // Cache for SHM state to reduce expensive atomic loads.
+    struct ShmStateCache {
+        uint64_t writeIndex{0};
+        uint32_t availableChunks{0};
+        uint32_t updateCounter{0};
+    };
 
-    // Configuration/Constants
-    static constexpr uint32_t AM824_LABEL = 0x40;     // 24-bit audio label
-    static constexpr uint32_t LABEL_SHIFT = 24;       // Shift for 24-bit label
-    static constexpr size_t INITIAL_FILL_TARGET_PERCENT = 25;
-
-    // --- NEW: Safety Margin Constants ---
-    static constexpr uint32_t MIN_SAFETY_MARGIN = 2;      // Absolute minimum safety margin
-    static constexpr uint32_t MAX_SAFETY_MARGIN_PERCENT = 25; // Max 25% of capacity as safety margin
-    static constexpr uint32_t SAFETY_ADJUST_INTERVAL_MS = 1000; // Adjust safety margin every 1 second
-    static constexpr uint32_t HIGH_WATER_MARK_PERCENT = 75;    // 75% full - increase safety
-    static constexpr uint32_t LOW_WATER_MARK_PERCENT = 25;     // 25% full - decrease safety
+    static thread_local ShmStateCache shmCache_;
+    static constexpr uint32_t kCacheUpdateInterval = 16;
+    // A minimal, 1-chunk safety buffer to absorb scheduler jitter.
+    static constexpr uint32_t kSafetyHedgeChunks = 1;
 
     // --- Helper Methods ---
     bool popNextChunk();
     void handleUnderrun(const TransmitPacketInfo& info);
-    void formatToAM824InPlace(uint8_t* buffer, size_t bufferSize) const;
     uint32_t getCurrentShmFillLevel() const;
     bool validateShmFormat() const;
-
-    // --- NEW: Safety Margin Helper Methods ---
-    bool hasMinimumFillLevel() const;
-    void adjustSafetyMargin();
-    void generateProactiveSilence(uint8_t* targetBuffer, size_t targetBufferSize, 
-                                  PreparedPacketData& result, const TransmitPacketInfo& info);
 };
 
 } // namespace Isoch

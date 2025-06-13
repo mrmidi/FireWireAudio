@@ -49,17 +49,3 @@ OSStatus FWADriverInit::OnInitialize() {
 
     return kAudioHardwareNoError;
 }
-
-// void FWADriverInit::OnFinalize() {
-//     os_log(OS_LOG_DEFAULT, "%sFWADriverInit: OnFinalize called.", LogPrefix);
-
-//     // Get the XPC manager singleton
-//     auto& xpcManager = DriverXPCManager::instance();
-
-//     // Notify daemon that the driver is disappearing (best effort)
-//     if (xpcManager.isConnected()) {
-//         xpcManager.setPresenceStatus(false);
-//     }
-//     // Disconnect XPC
-//     xpcManager.disconnect();
-// }

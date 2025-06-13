@@ -1,0 +1,1715 @@
+!!! OLD!!!
+
+=== src/driver/FWADriverXPCBridge.mm ===
+#import "FWADriverXPCBridge.h"
+#import <os/log.h>
+
+// Stub implementations for XPC bridge functions
+
+bool FWADriver_HandshakeWithDaemon(void) {
+    os_log(OS_LOG_DEFAULT, "FWADriverXPCBridge: Handshake with daemon (stub)");
+    // TODO: Implement real XPC handshake
+    return true;
+}
+
+bool FWADriver_SendCommand(int command) {
+    os_log(OS_LOG_DEFAULT, "FWADriverXPCBridge: SendCommand %d (stub)", command);
+    // TODO: Implement real XPC command send
+    return true;
+}
+
+void FWADriver_NotifyDataAvailable(void) {
+    os_log(OS_LOG_DEFAULT, "FWADriverXPCBridge: NotifyDataAvailable (stub)");
+    // TODO: Implement real XPC notification
+}
+
+OSStatus FWADriver_QueryZeroTimestamp(uint64_t* outHostTime, double* outSampleTime, uint64_t* outSeed) {
+    os_log(OS_LOG_DEFAULT, "FWADriverXPCBridge: QueryZeroTimestamp (stub)");
+    // TODO: Implement real XPC query
+    if (outHostTime) *outHostTime = 0;
+    if (outSampleTime) *outSampleTime = 0.0;
+    if (outSeed) *outSeed = 0;
+    return kAudioHardwareNoError;
+}
+
+
+
+=== src/driver/FWADriverInit.cpp ===
+#include "FWADriverInit.hpp"
+#include "FWADriverHandler.hpp"
+#include <os/log.h>
+// Include the XPC Manager
+#include "DriverXPCManager.hpp"
+
+constexpr const char* LogPrefix = "FWADriverASPL: ";
+
+// Implement the new constructor
+FWADriverInit::FWADriverInit(std::shared_ptr<FWADriverHandler> ioHandler)
+    : ioHandler_(ioHandler)
+{
+    // Constructor body (if needed)
+}
+
+OSStatus FWADriverInit::OnInitialize() {
+    os_log(OS_LOG_DEFAULT, "%sFWADriverInit: OnInitialize called.", LogPrefix);
+
+    // Get the XPC manager singleton
+    auto& xpcManager = DriverXPCManager::instance();
+
+    // Attempt to connect to the daemon via XPC
+    bool connected = xpcManager.connect();
+
+    if (connected) {
+        os_log(OS_LOG_DEFAULT, "%sFWADriverInit: Successfully connected to daemon via XPC.", LogPrefix);
+        // Notify daemon that the driver is present
+        xpcManager.setPresenceStatus(true);
+        // --- SHM Setup Implementation ---
+        std::string shmName = xpcManager.getSharedMemoryName();
+        if (!shmName.empty() && ioHandler_) {
+            os_log(OS_LOG_DEFAULT, "%sFWADriverInit: Attempting to set up shared memory: %s", LogPrefix, shmName.c_str());
+            if (!ioHandler_->SetupSharedMemory(shmName)) {
+                os_log_error(OS_LOG_DEFAULT, "%sFWADriverInit: FAILED to setup shared memory via handler.", LogPrefix);
+                // Consider returning an error if SHM is critical for function
+                // return kAudioHardwareUnspecifiedError;
+            } else {
+                os_log(OS_LOG_DEFAULT, "%sFWADriverInit: Shared memory setup call successful.", LogPrefix);
+            }
+        } else {
+            os_log_error(OS_LOG_DEFAULT, "%sFWADriverInit: Could not get SHM name via XPC or ioHandler_ is null.", LogPrefix);
+            // return kAudioHardwareUnspecifiedError;
+        }
+        // --- End SHM Setup Implementation ---
+    } else {
+        os_log_error(OS_LOG_DEFAULT, "%sFWADriverInit: FAILED to connect to daemon via XPC. Driver may not function correctly.", LogPrefix);
+        // For now, let it load but log the error.
+    }
+
+    return kAudioHardwareNoError;
+}
+
+// void FWADriverInit::OnFinalize() {
+//     os_log(OS_LOG_DEFAULT, "%sFWADriverInit: OnFinalize called.", LogPrefix);
+
+//     // Get the XPC manager singleton
+//     auto& xpcManager = DriverXPCManager::instance();
+
+//     // Notify daemon that the driver is disappearing (best effort)
+//     if (xpcManager.isConnected()) {
+//         xpcManager.setPresenceStatus(false);
+//     }
+//     // Disconnect XPC
+//     xpcManager.disconnect();
+// }
+
+
+
+=== src/driver/FWADriverDevice.hpp ===
+#ifndef FWADRIVERDEVICE_HPP
+#define FWADRIVERDEVICE_HPP
+
+#include <aspl/Device.hpp>
+#include <CoreAudio/AudioServerPlugIn.h> // Needed for AudioObjectPropertyAddress
+#include <memory>
+#include <vector> // Needed for std::vector
+
+class FWADriverDevice : public aspl::Device {
+public:
+    FWADriverDevice(std::shared_ptr<const aspl::Context> context,
+                    const aspl::DeviceParameters& params);
+
+    // --- Property Dispatch Overrides ---
+    Boolean HasProperty(AudioObjectID objectID,
+        pid_t clientPID,
+        const AudioObjectPropertyAddress* address) const override;
+
+    OSStatus GetPropertyDataSize(AudioObjectID objectID,
+        pid_t clientPID,
+        const AudioObjectPropertyAddress* address,
+        UInt32 qualifierDataSize,
+        const void* qualifierData,
+        UInt32* outDataSize) const override;
+
+    OSStatus GetPropertyData(AudioObjectID objectID,
+        pid_t clientPID,
+        const AudioObjectPropertyAddress* address,
+        UInt32 qualifierDataSize,
+        const void* qualifierData,
+        UInt32 inDataSize,
+        UInt32* outDataSize,
+        void* outData) const override;
+
+    UInt32 GetTransportType() const override {
+        return kAudioDeviceTransportTypeFireWire;
+    }
+
+    // --- IO Operation Override ---
+    OSStatus DoIOOperation(AudioObjectID objectID,
+                           AudioObjectID streamID,
+                           UInt32 clientID,
+                           UInt32 operationID,
+                           UInt32 ioBufferFrameSize,
+                           const AudioServerPlugInIOCycleInfo* ioCycleInfo,
+                           void* ioMainBuffer,
+                           void* ioSecondaryBuffer) override;
+
+private:
+    // Helper to get the simulated supported rates
+    std::vector<AudioValueRange> GetSimulatedAvailableSampleRates() const;
+};
+
+#endif // FWADRIVERDEVICE_HPP
+
+
+
+=== src/driver/FWADriverHandler.hpp ===
+#ifndef FWADRIVERHANDLER_HPP
+#define FWADRIVERHANDLER_HPP
+
+#include <aspl/Driver.hpp>
+#include <aspl/Stream.hpp>
+#include <aspl/ControlRequestHandler.hpp>
+#include <aspl/IORequestHandler.hpp>
+#include <memory>
+#include <shared/SharedMemoryStructures.hpp> // Include the new header
+#include <vector>
+
+class FWADriverHandler : public aspl::ControlRequestHandler, public aspl::IORequestHandler {
+public:
+    FWADriverHandler(); // Constructor
+    ~FWADriverHandler(); // Destructor for cleanup
+
+    OSStatus OnStartIO() override;
+    void OnStopIO() override;
+
+    // Remove OnWriteMixedOutput (will move logic to Device)
+    // Add shared memory setup/teardown
+    bool SetupSharedMemory(const std::string& shmName);
+    void TeardownSharedMemory();
+
+    // Helper for device to check SHM state
+    bool IsSharedMemoryReady() const { return controlBlock_ && ringBuffer_; }
+    // Helper for device to push audio data
+    bool PushToSharedMemory(const AudioBufferList* src, const AudioTimeStamp& ts, uint32_t frames, uint32_t bytesPerFrame);
+
+private:
+    // Shared Memory state
+    void* shmPtr_ = nullptr; // Raw pointer to the mapped memory
+    int shmFd_ = -1;         // File descriptor for POSIX shared memory
+    size_t shmSize_ = 0;     // Total size of the mapped region
+    RTShmRing::ControlBlock_POD* controlBlock_ = nullptr; // Pointer into shmPtr_
+    RTShmRing::AudioChunk_POD*   ringBuffer_ = nullptr;   // Pointer into shmPtr_
+
+    // Local non-atomic counter for RT thread (see recommendation 2.8)
+    uint32_t localOverrunCounter_ = 0;
+    // Add timer mechanism later to periodically update shared atomic counter
+};
+
+#endif // FWADRIVERHANDLER_HPP
+
+
+
+=== src/driver/FWADriverXPCBridge.h ===
+#pragma once
+#include <stdbool.h>
+#include <stdint.h>
+#include <CoreAudio/AudioServerPlugIn.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// XPC Command constants (example)
+enum {
+    kXPCCommand_StartStream = 1,
+    kXPCCommand_StopStream = 2,
+};
+
+// Handshake with the daemon, returns true on success
+bool FWADriver_HandshakeWithDaemon(void);
+
+// Send a command to the daemon (start/stop stream, etc.)
+bool FWADriver_SendCommand(int command);
+
+// Notify the daemon that new data is available in shared memory
+void FWADriver_NotifyDataAvailable(void);
+
+// Query the daemon for the current zero timestamp
+OSStatus FWADriver_QueryZeroTimestamp(uint64_t* outHostTime, double* outSampleTime, uint64_t* outSeed);
+
+#ifdef __cplusplus
+}
+#endif
+
+
+
+=== src/driver/DriverXPCManager.mm ===
+#import "DriverXPCManager.hpp"
+#import <Foundation/Foundation.h>
+#import <os/log.h>
+#import "shared/xpc/FWADaemonControlProtocol.h"
+
+constexpr const char* LogPrefix = "FWADriverASPL: ";
+
+DriverXPCManager& DriverXPCManager::instance() {
+    static DriverXPCManager singletonInstance;
+    return singletonInstance;
+}
+
+DriverXPCManager::DriverXPCManager() {
+    os_log_info(OS_LOG_DEFAULT, "%sDriverXPCManager: Singleton created.", LogPrefix);
+}
+
+DriverXPCManager::~DriverXPCManager() {
+    os_log_info(OS_LOG_DEFAULT, "%sDriverXPCManager: Singleton destroyed.", LogPrefix);
+    disconnect();
+}
+
+bool DriverXPCManager::connect() {
+    if (isConnected_.load()) {
+        os_log_info(OS_LOG_DEFAULT, "%sDriverXPCManager: Already connected.", LogPrefix);
+        return true;
+    }
+    if (xpcConnection_ != nullptr) {
+         os_log_info(OS_LOG_DEFAULT, "%sDriverXPCManager: Connection attempt already in progress or failed.", LogPrefix);
+         return false;
+    }
+    os_log_info(OS_LOG_DEFAULT, "%sDriverXPCManager: Attempting to connect to daemon '%s'...", LogPrefix, daemonServiceName_.c_str());
+    @try {
+        xpcConnection_ = [[NSXPCConnection alloc] initWithMachServiceName:@(daemonServiceName_.c_str())
+                                                                  options:NSXPCConnectionPrivileged];
+        if (!xpcConnection_) {
+             os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: Failed to create NSXPCConnection object.", LogPrefix);
+             return false;
+        }
+        xpcConnection_.remoteObjectInterface = [NSXPCInterface interfaceWithProtocol:@protocol(FWADaemonControlProtocol)];
+        DriverXPCManager* weakSelf = this;
+        xpcConnection_.interruptionHandler = ^{
+            os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: Daemon connection interrupted.", LogPrefix);
+            if (weakSelf) {
+                weakSelf->handleDaemonDisconnect("interrupted");
+            }
+        };
+        xpcConnection_.invalidationHandler = ^{
+            os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: Daemon connection invalidated.", LogPrefix);
+            if (weakSelf) {
+                weakSelf->handleDaemonDisconnect("invalidated");
+            }
+        };
+        [xpcConnection_ resume];
+        daemonProxy_ = [xpcConnection_ remoteObjectProxyWithErrorHandler:^(NSError * _Nonnull error) {
+            os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: XPC proxy error: %{public}@", LogPrefix, error);
+            if (weakSelf) {
+                weakSelf->handleDaemonDisconnect("proxy error");
+            }
+        }];
+        if (!daemonProxy_) {
+            os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: Failed to get remote object proxy.", LogPrefix);
+            [xpcConnection_ invalidate];
+            xpcConnection_ = nullptr;
+            return false;
+        }
+        isConnected_.store(true);
+        os_log_info(OS_LOG_DEFAULT, "%sDriverXPCManager: XPC connection established and proxy obtained.", LogPrefix);
+        return true;
+    } @catch (NSException *exception) {
+        os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: Exception during XPC connect: %{public}@ - %{public}@", LogPrefix, exception.name, exception.reason);
+        if (xpcConnection_) {
+            [xpcConnection_ invalidate];
+            xpcConnection_ = nullptr;
+        }
+        daemonProxy_ = nullptr;
+        isConnected_.store(false);
+        return false;
+    }
+}
+
+void DriverXPCManager::disconnect() {
+    if (!isConnected_.load() && xpcConnection_ == nullptr) {
+        os_log_info(OS_LOG_DEFAULT, "%sDriverXPCManager: Already disconnected.", LogPrefix);
+        return;
+    }
+    os_log_info(OS_LOG_DEFAULT, "%sDriverXPCManager: Disconnecting from daemon...", LogPrefix);
+    handleDaemonDisconnect("manual disconnect");
+}
+
+void DriverXPCManager::handleDaemonDisconnect(const char* reason) {
+    os_log_info(OS_LOG_DEFAULT, "%sDriverXPCManager: Handling disconnect (%s).", LogPrefix, reason);
+    isConnected_.store(false);
+    daemonProxy_ = nullptr;
+    if (xpcConnection_ != nullptr) {
+        xpcConnection_.interruptionHandler = nil;
+        xpcConnection_.invalidationHandler = nil;
+        [xpcConnection_ invalidate];
+        xpcConnection_ = nullptr;
+    }
+}
+
+bool DriverXPCManager::isConnected() const {
+    return isConnected_.load() && (xpcConnection_ != nullptr);
+}
+
+void DriverXPCManager::setPresenceStatus(bool isPresent) {
+    if (!isConnected()) {
+        os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: Cannot set presence status, not connected to daemon.", LogPrefix);
+        return;
+    }
+    if (!daemonProxy_) {
+         os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: Cannot set presence status, daemon proxy is nil.", LogPrefix);
+         handleDaemonDisconnect("proxy nil on setPresenceStatus");
+         return;
+    }
+    os_log_info(OS_LOG_DEFAULT, "%sDriverXPCManager: Setting driver presence status to %d via XPC.", LogPrefix, isPresent);
+    @try {
+        id<FWADaemonControlProtocol> proxy = daemonProxy_;
+        [proxy setDriverPresenceStatus:isPresent];
+    } @catch (NSException *exception) {
+        os_log_error(OS_LOG_DEFAULT, "%sDriverXPCManager: Exception calling setDriverPresenceStatus: %{public}@ - %{public}@", LogPrefix, exception.name, exception.reason);
+        handleDaemonDisconnect("exception on setPresenceStatus");
+    }
+}
+
+#include <dispatch/dispatch.h>
+#define SHM_NAME_TIMEOUT_NS (5 * NSEC_PER_SEC)
+
+std::string DriverXPCManager::getSharedMemoryName() {
+    if (!isConnected_.load() || !xpcConnection_ || !daemonProxy_) {
+        os_log_error(OS_LOG_DEFAULT, "%sCannot get SHM name - not connected.", LogPrefix);
+        return "";
+    }
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    __block NSString* receivedName = nil;
+    __block bool success = false;
+    os_log_debug(OS_LOG_DEFAULT, "%sRequesting shared memory name from daemon...", LogPrefix);
+    id<FWADaemonControlProtocol> proxy = daemonProxy_;
+    if (!proxy) {
+        os_log_error(OS_LOG_DEFAULT, "%sDaemon proxy is nil, cannot call getSharedMemoryName.", LogPrefix);
+        dispatch_semaphore_signal(sema);
+        dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_MSEC));
+        return "";
+    }
+    @try {
+        [proxy getSharedMemoryNameWithReply:^(NSString * _Nullable shmName) {
+            if (shmName && [shmName length] > 0) {
+                os_log_info(OS_LOG_DEFAULT, "%sReceived SHM name: %{public}@", LogPrefix, shmName);
+                receivedName = [shmName copy];
+                success = true;
+            } else {
+                os_log_error(OS_LOG_DEFAULT, "%sDaemon replied with nil or empty SHM name.", LogPrefix);
+                success = false;
+            }
+            dispatch_semaphore_signal(sema);
+        }];
+    } @catch (NSException *exception) {
+        os_log_error(OS_LOG_DEFAULT, "%sException calling getSharedMemoryNameWithReply: %{public}@", LogPrefix, exception);
+        success = false;
+        dispatch_semaphore_signal(sema);
+    }
+    long waitResult = dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, SHM_NAME_TIMEOUT_NS));
+    if (waitResult != 0) {
+        os_log_error(OS_LOG_DEFAULT, "%sTimed out waiting for SHM name reply from daemon.", LogPrefix);
+        return "";
+    }
+    if (success && receivedName) {
+        return std::string([receivedName UTF8String]);
+    } else {
+        os_log_error(OS_LOG_DEFAULT, "%sFailed to get valid SHM name from daemon (success=%d).", LogPrefix, success);
+        return "";
+    }
+}
+
+
+
+=== src/driver/FWADriver.cpp ===
+// FWADriver.cpp
+
+#include <memory>
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreAudio/AudioServerPlugIn.h>
+#include <aspl/Driver.hpp>
+#include "FWADriverDevice.hpp"
+#include "FWADriverHandler.hpp"
+#include "FWADriverInit.hpp"
+#include <aspl/Tracer.hpp>
+
+constexpr UInt32 SampleRate = 44100;
+constexpr UInt32 ChannelCount = 2;
+constexpr const char* LogPrefix = "FWADriverASPL: ";
+
+std::shared_ptr<aspl::Driver> CreateDriver()
+{
+    auto tracer = std::make_shared<aspl::Tracer>(
+        aspl::Tracer::Mode::Syslog,
+        aspl::Tracer::Style::Flat
+    );
+    auto context = std::make_shared<aspl::Context>(tracer);
+    context->Tracer->Message("%sCreating driver...", LogPrefix);
+
+    aspl::DeviceParameters deviceParams;
+    deviceParams.Name = "FWA Firewire Audio";
+    deviceParams.CanBeDefault = true;
+    deviceParams.CanBeDefaultForSystemSounds = true;
+    deviceParams.EnableRealtimeTracing = true;
+    deviceParams.SampleRate = SampleRate;
+    deviceParams.ChannelCount = ChannelCount;
+
+    aspl::StreamParameters streamParams;
+    streamParams.Direction = aspl::Direction::Output;
+    streamParams.StartingChannel = 1;
+    // streamParams.Format = {
+    //     .mSampleRate = 44100,
+    //     .mFormatID = kAudioFormatLinearPCM,
+    //     .mFormatFlags = kAudioFormatFlagIsSignedInteger,
+    //     .mBitsPerChannel = 24,
+    //     .mChannelsPerFrame = 2,
+    //     .mBytesPerFrame = 8,
+    //     .mFramesPerPacket = 1,
+    //     .mBytesPerPacket = 8,
+    // };
+
+            streamParams.StartingChannel = 1;                 // Explicitly set starting channel
+            // streamParams.Format = {
+            //     .mSampleRate = 44100,
+            //     .mFormatID = kAudioFormatLinearPCM,
+            //     .mFormatFlags = kAudioFormatFlagIsSignedInteger, 
+            //     .mBitsPerChannel = 24,
+            //     .mChannelsPerFrame = 2,
+            //     .mBytesPerFrame = 8,
+            //     .mFramesPerPacket = 1,
+            //     .mBytesPerPacket = 8,                  
+            // };
+
+
+    streamParams.Format = {
+        .mSampleRate       = 44100.0,
+        .mFormatID         = kAudioFormatLinearPCM,
+        .mFormatFlags      = kAudioFormatFlagIsSignedInteger   |
+                            kAudioFormatFlagIsAlignedHigh     |   // 24 valid bits in 32-bit word
+                            kAudioFormatFlagsNativeEndian,
+        .mBitsPerChannel   = 24,      // 24 valid bits
+        .mChannelsPerFrame = 2,
+        .mBytesPerFrame    = 8,       // 4 bytes × 2 channels
+        .mFramesPerPacket  = 1,
+        .mBytesPerPacket   = 8
+    };
+
+    // streamParams.Format = {
+    //     .mSampleRate       = 44100,
+    //     .mFormatID         = kAudioFormatLinearPCM,
+    //     .mFormatFlags      = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+    //     .mBitsPerChannel   = 24,
+    //     .mChannelsPerFrame = 2,
+    //     .mBytesPerFrame    = 6,      // 3 bytes * 2 channels
+    //     .mFramesPerPacket  = 1,
+    //     .mBytesPerPacket   = 6
+    // };
+
+//    streamParams.Format = {
+//        .mSampleRate       = 44100,
+//        .mFormatID         = kAudioFormatLinearPCM,
+//        .mFormatFlags      = kAudioFormatFlagIsSignedInteger |
+//                            kAudioFormatFlagIsBigEndian,
+//        .mBitsPerChannel   = 24,
+//        .mChannelsPerFrame = 2,
+//        .mBytesPerFrame    = 8,     // 4 bytes × 2 chn
+//        .mFramesPerPacket  = 1,
+//        .mBytesPerPacket   = 8,
+//    };
+
+    auto device = std::make_shared<FWADriverDevice>(context, deviceParams);
+    device->AddStreamWithControlsAsync(streamParams);
+    auto handler = std::make_shared<FWADriverHandler>();
+    device->SetControlHandler(handler);
+    device->SetIOHandler(handler);
+
+
+    auto plugin = std::make_shared<aspl::Plugin>(context);
+    plugin->AddDevice(device);
+
+    std::shared_ptr<aspl::Driver> driver = std::make_shared<aspl::Driver>(context, plugin);
+    // Pass handler to FWADriverInit
+    auto initHandler = std::make_shared<FWADriverInit>(handler);
+    driver->SetDriverHandler(initHandler);
+    context->Tracer->Message("%sDriver configuration complete.", LogPrefix);
+    return driver;
+}
+
+/**
+ * @brief Core Audio Server Plugin entry point
+ *
+ * This function is called by Core Audio to instantiate the driver.
+ * It validates the plugin type and returns a reference to the driver instance.
+ *
+ * @param allocator Memory allocator (unused)
+ * @param typeUUID UUID of the plugin type being requested
+ * @return void* Reference to the driver instance or nullptr if type doesn't match
+ */
+extern "C" void* EntryPoint(CFAllocatorRef allocator, CFUUIDRef typeUUID)
+{
+    os_log(OS_LOG_DEFAULT, "FWADriverASPL: EntryPoint called!");
+    if (!CFEqual(typeUUID, kAudioServerPlugInTypeUUID)) {
+        os_log(OS_LOG_DEFAULT, "%sEntryPoint: Incorrect typeUUID requested.", LogPrefix);
+        return nullptr;
+    }
+
+    static std::shared_ptr<aspl::Driver> driver = CreateDriver();
+
+    if (!driver) {
+        os_log(OS_LOG_DEFAULT, "%sEntryPoint: CreateDriver failed to return a driver instance.", LogPrefix);
+        return nullptr;
+    }
+
+    os_log(OS_LOG_DEFAULT, "%sEntryPoint: Driver created, returning reference.", LogPrefix);
+    return driver->GetReference();
+}
+
+
+
+=== src/driver/DriverXPCManager.hpp ===
+// src/driver/DriverXPCManager.hpp
+#ifndef DRIVERXPCMANAGER_HPP
+#define DRIVERXPCMANAGER_HPP
+
+#include <memory>
+#include <string>
+#include <atomic>
+//#include "shared/xpc/FWADaemonControlProtocol.h"
+
+#ifdef __OBJC__
+@class NSXPCConnection;
+@protocol FWADaemonControlProtocol;
+#else
+class NSXPCConnection;
+typedef struct objc_object FWADaemonControlProtocol;
+#endif
+
+class DriverXPCManager {
+public:
+    static DriverXPCManager& instance();
+    bool connect();
+    void disconnect();
+    bool isConnected() const;
+    void setPresenceStatus(bool isPresent);
+
+    /**
+     * @brief Synchronously requests the shared memory name from the daemon via XPC.
+     * @return The shared memory name string provided by the daemon, or an empty string on error or timeout.
+     */
+    std::string getSharedMemoryName();
+
+private:
+    DriverXPCManager();
+    ~DriverXPCManager();
+    DriverXPCManager(const DriverXPCManager&) = delete;
+    DriverXPCManager& operator=(const DriverXPCManager&) = delete;
+#ifdef __OBJC__
+    NSXPCConnection* xpcConnection_ = nullptr;
+    id<FWADaemonControlProtocol> daemonProxy_;
+#else
+    void* xpcConnection_ = nullptr;
+    void* daemonProxy_ = nullptr;
+#endif
+    std::atomic<bool> isConnected_{false};
+    const std::string daemonServiceName_ = "net.mrmidi.FWADaemon";
+    const std::string clientID_ = "FWADriverASPL";
+    void handleDaemonDisconnect(const char* reason);
+};
+
+#endif // DRIVERXPCMANAGER_HPP
+
+
+
+=== src/driver/FWADriverInit.hpp ===
+#ifndef FWADRIVERINIT_HPP
+#define FWADRIVERINIT_HPP
+
+#include <aspl/Driver.hpp>
+#include <aspl/DriverRequestHandler.hpp>
+#include <memory>
+#include <os/log.h>
+#include "FWADriverHandler.hpp" // Include the handler header
+
+class FWADriverInit : public aspl::DriverRequestHandler {
+public:
+    // Constructor now accepts handler
+    FWADriverInit(std::shared_ptr<FWADriverHandler> ioHandler);
+    OSStatus OnInitialize() override;
+    // void OnFinalize() override;
+private:
+    std::shared_ptr<FWADriverHandler> ioHandler_;
+};
+
+#endif // FWADRIVERINIT_HPP
+
+
+
+=== src/driver/FWADriverDevice.cpp ===
+#include "FWADriverDevice.hpp"
+#include <aspl/Device.hpp> // Include necessary ASPL headers
+#include <aspl/Tracer.hpp>
+#include <aspl/Context.hpp>
+#include <string>
+#include <algorithm>       // For std::min, std::copy
+#include <cstring>
+#include <libkern/OSByteOrder.h>
+#include <limits>
+#include <cassert>
+#include "FWADriverHandler.hpp"
+#include <CoreAudio/AudioServerPlugIn.h>
+// os_log
+#include <os/log.h>
+
+constexpr const char* LogPrefix = "FWADriverASPL: ";
+
+// --- Local Helper Function ---
+static inline std::string FormatFourCharCode(UInt32 code) {
+    char chars[5];
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    UInt32 beCode = OSSwapHostToBigInt32(code);
+#else
+    UInt32 beCode = code;
+#endif
+    memcpy(chars, &beCode, 4);
+    for (int i = 0; i < 4; ++i) {
+        if (chars[i] < 32 || chars[i] > 126) {
+            chars[i] = '?';
+        }
+    }
+    chars[4] = '\0';
+    return std::string("'") + chars + "'";
+}
+
+FWADriverDevice::FWADriverDevice(std::shared_ptr<const aspl::Context> context,
+                                 const aspl::DeviceParameters& params)
+    : aspl::Device(context, params) // Forward to base class
+{
+    GetContext()->Tracer->Message("%sFWADriverDevice[%u]: Constructed with name '%s'", LogPrefix, GetID(), params.Name.c_str());
+    // Custom initialization if needed
+}
+
+// --- Property Dispatch Implementations ---
+
+Boolean FWADriverDevice::HasProperty(AudioObjectID objectID,
+                                    pid_t clientPID,
+                                    const AudioObjectPropertyAddress* address) const
+{
+    std::string selectorStr = address ? FormatFourCharCode(address->mSelector) : "NULL";
+    // Check if it's a property we handle specifically
+    if (address && address->mSelector == kAudioDevicePropertyAvailableNominalSampleRates &&
+        address->mScope == kAudioObjectPropertyScopeGlobal &&
+        address->mElement == kAudioObjectPropertyElementMain) // Use Main
+    {
+        GetContext()->Tracer->Message("%sFWADriverDevice[%u]::HasProperty(Selector: %s): YES", LogPrefix, GetID(), selectorStr.c_str());
+        return true;
+    }
+
+    // Otherwise, let the base class handle it
+    bool baseHas = aspl::Device::HasProperty(objectID, clientPID, address);
+    return baseHas;
+}
+
+OSStatus FWADriverDevice::GetPropertyDataSize(AudioObjectID objectID,
+                                            pid_t clientPID,
+                                            const AudioObjectPropertyAddress* address,
+                                            UInt32 qualifierDataSize,
+                                            const void* qualifierData,
+                                            UInt32* outDataSize) const
+{
+    std::string selectorStr = address ? FormatFourCharCode(address->mSelector) : "NULL";
+    if (!address || !outDataSize) {
+        GetContext()->Tracer->Message("%sERROR: FWADriverDevice[%u]::GetPropertyDataSize - Invalid address or outDataSize pointer.", LogPrefix, GetID());
+        return kAudioHardwareBadObjectError;
+    }
+
+    // Handle our specific property
+    if (address->mSelector == kAudioDevicePropertyAvailableNominalSampleRates &&
+        address->mScope == kAudioObjectPropertyScopeGlobal &&
+        address->mElement == kAudioObjectPropertyElementMain) // Use Main
+    {
+        // Simulate getting rates (replace with XPC call later)
+        auto rates = GetSimulatedAvailableSampleRates();
+        size_t requiredSize_t = rates.size() * sizeof(AudioValueRange);
+        if (requiredSize_t > std::numeric_limits<UInt32>::max()) {
+            GetContext()->Tracer->Message("%sERROR: FWADriverDevice[%u]::GetPropertyDataSize(Selector: %s) - Required size (%zu) exceeds UINT32_MAX.", LogPrefix, GetID(), selectorStr.c_str(), requiredSize_t);
+            *outDataSize = 0;
+            return kAudioHardwareUnspecifiedError;
+        }
+        *outDataSize = static_cast<UInt32>(requiredSize_t);
+        GetContext()->Tracer->Message("%sFWADriverDevice[%u]::GetPropertyDataSize(Selector: %s): %u bytes", LogPrefix, GetID(), selectorStr.c_str(), *outDataSize);
+        return kAudioHardwareNoError;
+    }
+
+    // Let the base class handle others
+    return aspl::Device::GetPropertyDataSize(objectID, clientPID, address, qualifierDataSize, qualifierData, outDataSize);
+}
+
+OSStatus FWADriverDevice::GetPropertyData(AudioObjectID objectID,
+                                        pid_t clientPID,
+                                        const AudioObjectPropertyAddress* address,
+                                        UInt32 qualifierDataSize,
+                                        const void* qualifierData,
+                                        UInt32 inDataSize,
+                                        UInt32* outDataSize,
+                                        void* outData) const
+{
+    std::string selectorStr = address ? FormatFourCharCode(address->mSelector) : "NULL";
+     if (!address || !outDataSize || !outData) {
+        GetContext()->Tracer->Message("%sERROR: FWADriverDevice[%u]::GetPropertyData - Invalid address, outDataSize, or outData pointer.", LogPrefix, GetID());
+        return kAudioHardwareBadObjectError;
+    }
+
+    // Handle our specific property
+    if (address->mSelector == kAudioDevicePropertyAvailableNominalSampleRates &&
+        address->mScope == kAudioObjectPropertyScopeGlobal &&
+        address->mElement == kAudioObjectPropertyElementMain) // Use Main
+    {
+        // Simulate getting rates (replace with XPC call later)
+        auto rates = GetSimulatedAvailableSampleRates();
+        size_t requiredSize_t = rates.size() * sizeof(AudioValueRange);
+        if (requiredSize_t > std::numeric_limits<UInt32>::max()) {
+            GetContext()->Tracer->Message("%sERROR: FWADriverDevice[%u]::GetPropertyData(Selector: %s) - Required size (%zu) exceeds UINT32_MAX.", LogPrefix, GetID(), selectorStr.c_str(), requiredSize_t);
+            *outDataSize = 0;
+            return kAudioHardwareUnspecifiedError;
+        }
+        UInt32 calculatedSize = static_cast<UInt32>(requiredSize_t);
+
+        UInt32 bytesToWrite = std::min(inDataSize, calculatedSize);
+        *outDataSize = bytesToWrite; // Return how much we *actually* wrote
+
+        if (bytesToWrite > 0) {
+             GetContext()->Tracer->Message("%sFWADriverDevice[%u]::GetPropertyData(Selector: %s): Writing %u bytes (of %u needed)", LogPrefix, GetID(), selectorStr.c_str(), bytesToWrite, calculatedSize);
+             memcpy(outData, rates.data(), bytesToWrite);
+        } else if (inDataSize == 0) {
+             GetContext()->Tracer->Message("%sWARNING: FWADriverDevice[%u]::GetPropertyData(Selector: %s): Zero-size buffer provided.", LogPrefix, GetID(), selectorStr.c_str());
+             *outDataSize = 0;
+        } else {
+             GetContext()->Tracer->Message("%sWARNING: FWADriverDevice[%u]::GetPropertyData(Selector: %s): Buffer too small (needed %u, got %u), wrote 0 bytes.", LogPrefix, GetID(), selectorStr.c_str(), calculatedSize, inDataSize);
+             *outDataSize = 0;
+        }
+         return kAudioHardwareNoError;
+    }
+
+    // Let the base class handle others
+    return aspl::Device::GetPropertyData(objectID, clientPID, address, qualifierDataSize, qualifierData, inDataSize, outDataSize, outData);
+}
+
+// --- Helper Implementation ---
+
+std::vector<AudioValueRange> FWADriverDevice::GetSimulatedAvailableSampleRates() const
+{
+    // !! Placeholder !! Replace this with an XPC call to the daemon later
+    return {
+        {44100.0, 44100.0},
+        {48000.0, 48000.0},
+        {88200.0, 88200.0},
+        {96000.0, 96000.0}
+    };
+}
+
+// Helper function to log an AudioTimeStamp (optional, but keeps DoIOOperation cleaner)
+static void LogAudioTimeStamp(const char* prefix, const AudioTimeStamp& ts) {
+    // Check for valid flags to determine what to print
+    std::string flagsStr;
+    if (ts.mFlags & kAudioTimeStampSampleTimeValid) flagsStr += "SampleTimeValid ";
+    if (ts.mFlags & kAudioTimeStampHostTimeValid) flagsStr += "HostTimeValid ";
+    if (ts.mFlags & kAudioTimeStampRateScalarValid) flagsStr += "RateScalarValid ";
+    if (ts.mFlags & kAudioTimeStampWordClockTimeValid) flagsStr += "WordClockTimeValid ";
+    if (ts.mFlags & kAudioTimeStampSMPTETimeValid) flagsStr += "SMPTETimeValid ";
+    if (ts.mFlags & kAudioTimeStampSampleHostTimeValid) flagsStr += "SampleHostTimeValid "; // macOS 10.15+
+
+    os_log_debug(OS_LOG_DEFAULT, "%s%s: Flags=[%s], SampleTime=%.0f, HostTime=%llu, RateScalar=%.6f",
+                 LogPrefix, // Your existing LogPrefix
+                 prefix,
+                 flagsStr.empty() ? "None" : flagsStr.c_str(),
+                 (ts.mFlags & kAudioTimeStampSampleTimeValid) ? ts.mSampleTime : -1.0,
+                 (ts.mFlags & kAudioTimeStampHostTimeValid) ? ts.mHostTime : 0ULL,
+                 (ts.mFlags & kAudioTimeStampRateScalarValid) ? ts.mRateScalar : 0.0);
+
+    // For SMPTETime, you'd need to break down mSMPTETime structure
+    // For WordClockTime, it's just a UInt64
+}
+
+
+OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
+                                        AudioObjectID streamID,
+                                        UInt32 clientID,
+                                        UInt32 operationID,
+                                        UInt32 ioBufferFrameSize,
+                                        const AudioServerPlugInIOCycleInfo* ioCycleInfo,
+                                        void* ioMainBuffer,
+                                        void* ioSecondaryBuffer)
+{
+    static uint64_t g_frameCounter = 0;
+    if ((g_frameCounter++ & 0xFFF) == 0) {
+        os_log(OS_LOG_DEFAULT,
+            "%sIO cycle %llu  opID=%u  frames=%u",
+            LogPrefix, g_frameCounter, operationID, ioBufferFrameSize);
+    }
+
+    // Only handle WriteMix and ReadInput
+    if (operationID == kAudioServerPlugInIOOperationWriteMix)
+    {
+        auto stream  = GetStreamByID(streamID);
+        AudioStreamBasicDescription fmt = stream->GetVirtualFormat();
+        const bool nonInterleaved = (fmt.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
+        const uint32_t bytesPerFrame = fmt.mBytesPerFrame;
+
+        FWADriverHandler* ioHandler = static_cast<FWADriverHandler*>(GetIOHandler());
+        if (!ioHandler || !ioHandler->IsSharedMemoryReady())
+            return kAudioHardwareUnspecifiedError;
+
+        if (nonInterleaved)
+        {
+            // --- existing path ---
+            const AudioBufferList* abl =
+                static_cast<const AudioBufferList*>(ioMainBuffer);
+            ioHandler->PushToSharedMemory(abl,
+                                          ioCycleInfo->mOutputTime,
+                                          ioBufferFrameSize,
+                                          bytesPerFrame);
+        }
+        else
+        {
+            // --- NEW: build a fake ABL with one interleaved buffer ---
+            AudioBufferList abl;
+            abl.mNumberBuffers          = 1;
+            abl.mBuffers[0].mNumberChannels = fmt.mChannelsPerFrame;
+            abl.mBuffers[0].mData           = const_cast<void*>(ioMainBuffer);
+            abl.mBuffers[0].mDataByteSize   = ioBufferFrameSize * bytesPerFrame;
+
+            // Log the packet with os_log
+            // LogAudioTimeStamp("DoIOOperation WriteMix", ioCycleInfo->mOutputTime);
+            
+
+            ioHandler->PushToSharedMemory(&abl,
+                                          ioCycleInfo->mOutputTime,
+                                          ioBufferFrameSize,
+                                          bytesPerFrame);
+        }
+        return kAudioHardwareNoError;
+    } else if (operationID == kAudioServerPlugInIOOperationReadInput) {
+        // Provide silence for input
+        AudioBufferList* inputBufferList = static_cast<AudioBufferList*>(ioMainBuffer);
+        for (UInt32 i = 0; i < inputBufferList->mNumberBuffers; ++i) {
+            if (inputBufferList->mBuffers[i].mData) {
+                memset(inputBufferList->mBuffers[i].mData, 0, inputBufferList->mBuffers[i].mDataByteSize);
+            }
+        }
+        return kAudioHardwareNoError;
+    }
+    // Ignore other operations
+    return kAudioHardwareNoError;
+}
+
+
+
+=== src/driver/FWADriverHandler.cpp ===
+#include "FWADriverHandler.hpp"
+#include <os/log.h>
+#include <sys/mman.h>   // For mmap, munmap, shm_open, shm_unlink
+#include <fcntl.h>      // For O_RDWR
+#include <unistd.h>     // For close
+#include <stdexcept>
+#include <cerrno>
+#include <cstring>
+
+constexpr const char* LogPrefix = "FWADriverASPL: ";
+
+FWADriverHandler::FWADriverHandler() {
+    localOverrunCounter_ = 0;
+}
+
+FWADriverHandler::~FWADriverHandler() {
+    TeardownSharedMemory();
+}
+
+bool FWADriverHandler::SetupSharedMemory(const std::string& shmName) {
+    os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: Setting up shared memory '%s'", LogPrefix, shmName.c_str());
+    if (shmPtr_) {
+        os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: Shared memory already set up.", LogPrefix);
+        return true;
+    }
+    shmFd_ = shm_open(shmName.c_str(), O_RDWR, 0);
+    if (shmFd_ == -1) {
+        os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: shm_open failed for '%s': %{errno}d", LogPrefix, shmName.c_str(), errno);
+        return false;
+    }
+    shmSize_ = sizeof(RTShmRing::SharedRingBuffer_POD);
+    shmPtr_ = mmap(nullptr, shmSize_, PROT_READ | PROT_WRITE, MAP_SHARED, shmFd_, 0);
+    if (shmPtr_ == MAP_FAILED) {
+        os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: mmap failed: %{errno}d", LogPrefix, errno);
+        close(shmFd_);
+        shmFd_ = -1;
+        shmPtr_ = nullptr;
+        return false;
+    }
+    if (mlock(shmPtr_, shmSize_) != 0) {
+        os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: WARNING - mlock failed: %{errno}d. Real-time performance may suffer.", LogPrefix, errno);
+    }
+    os_log_info(OS_LOG_DEFAULT, "%sFWADriverHandler: Hinting kernel to prefetch pages (MADV_WILLNEED).", LogPrefix);
+    if (madvise(shmPtr_, shmSize_, MADV_WILLNEED) != 0) {
+        os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: WARNING - madvise(MADV_WILLNEED) failed: %{errno}d", LogPrefix, errno);
+        // This is just a hint, so failure isn't critical, just log it.
+    }
+    RTShmRing::SharedRingBuffer_POD* sharedRegion = static_cast<RTShmRing::SharedRingBuffer_POD*>(shmPtr_);
+    controlBlock_ = &(sharedRegion->control);
+    ringBuffer_ = sharedRegion->ring;
+    if (controlBlock_->abiVersion != kShmVersion || controlBlock_->capacity != kRingCapacityPow2) {
+        os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: ERROR - Shared memory header mismatch (abiVersion: %u, capacity: %u). Tearing down.",
+            LogPrefix, controlBlock_->abiVersion, controlBlock_->capacity);
+        TeardownSharedMemory();
+        return false;
+    }
+    os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: Shared memory setup successful (Capacity: %u, ABI: %u).", LogPrefix, controlBlock_->capacity, controlBlock_->abiVersion);
+    return true;
+}
+
+void FWADriverHandler::TeardownSharedMemory() {
+    os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: Tearing down shared memory.", LogPrefix);
+    if (shmPtr_ != nullptr) {
+        if (munlock(shmPtr_, shmSize_) != 0) {
+            os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: WARNING - munlock failed: %{errno}d", LogPrefix, errno);
+        }
+        if (munmap(shmPtr_, shmSize_) != 0) {
+            os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: munmap failed: %{errno}d", LogPrefix, errno);
+        }
+        shmPtr_ = nullptr;
+    }
+    if (shmFd_ != -1) {
+        close(shmFd_);
+        shmFd_ = -1;
+    }
+    controlBlock_ = nullptr;
+    ringBuffer_ = nullptr;
+    shmSize_ = 0;
+    os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: Shared memory teardown complete.", LogPrefix);
+}
+
+bool FWADriverHandler::PushToSharedMemory(const AudioBufferList* src, const AudioTimeStamp& ts, uint32_t frames, uint32_t bytesPerFrame) {
+    if (!controlBlock_ || !ringBuffer_) return false;
+
+    // ----------------------------------------------
+    // ➊ if ring full *and* streams not yet active →
+    //    advance rd one slot (overwrite oldest)
+    // ----------------------------------------------
+    if (controlBlock_->streamActive == 0) {
+        auto wr = RTShmRing::WriteIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+        auto rd = RTShmRing::ReadIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+        if (wr - rd >= controlBlock_->capacity) {
+            // Drop the oldest chunk to make room
+            RTShmRing::ReadIndexProxy(*controlBlock_)
+                .store(rd + 1, std::memory_order_release);
+        }
+    }
+
+    bool success = RTShmRing::push(*controlBlock_, ringBuffer_, src, ts, frames, bytesPerFrame);
+    
+    // Log only after streams are active
+    if (!success && controlBlock_->streamActive) {
+        auto wr = RTShmRing::WriteIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+        auto rd = RTShmRing::ReadIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+        os_log_error(OS_LOG_DEFAULT,
+            "%sPUSH FAIL  wr=%llu rd=%llu used=%llu  frames=%u bytesPerFrame=%u",
+            LogPrefix, wr, rd, wr-rd, frames, bytesPerFrame);
+        
+        localOverrunCounter_++;
+        if ((localOverrunCounter_ & 0xFF) == 0) {
+            os_log_error(OS_LOG_DEFAULT, "%sPushToSharedMemory: Ring buffer OVERRUN! Count: %u", LogPrefix, localOverrunCounter_);
+        }
+    }
+    return success;
+}
+
+OSStatus FWADriverHandler::OnStartIO() {
+    os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: OnStartIO called.", LogPrefix);
+    if (!controlBlock_ || !ringBuffer_) {
+        os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: ERROR - Cannot StartIO, shared memory not set up.", LogPrefix);
+        return kAudioHardwareUnspecifiedError;
+    }
+    localOverrunCounter_ = 0;
+    os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: STUB - Assuming Daemon started IO successfully.", LogPrefix);
+    return kAudioHardwareNoError;
+}
+
+void FWADriverHandler::OnStopIO() {
+    os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: OnStopIO called.", LogPrefix);
+    // Optionally update shared atomic counters here
+}
+
+
+
+=== src/shared/FWADaemonControlProtol.mm ===
+#include "shared/xpc/FWADaemonControlProtol.hpp"
+
+
+=== src/shared/SharedMemoryStructures.cpp ===
+#include <shared/SharedMemoryStructures.hpp>
+
+
+=== include/shared/SharedMemoryStructures.hpp ===
+// SharedMemoryStructures.hpp (refactored)
+#pragma once
+#include <CoreAudio/AudioServerPlugIn.h> 
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+constexpr std::size_t kDestructiveCL     = 64;
+constexpr std::size_t kMaxFramesPerChunk = 1024; 
+constexpr std::size_t kMaxChannels       = 2;
+constexpr std::size_t kMaxBytesPerSample = 4;
+constexpr std::size_t kMaxBytesPerFrame  = kMaxChannels * kMaxBytesPerSample;
+constexpr std::size_t kRingCapacityPow2  = 512; // TEST
+static_assert((kRingCapacityPow2 & (kRingCapacityPow2 - 1)) == 0);
+constexpr std::size_t kAudioDataBytes = kMaxFramesPerChunk * kMaxBytesPerFrame;
+constexpr uint32_t    kShmVersion     = 3;
+
+namespace RTShmRing {
+
+// --- POD Structures ---
+
+struct alignas(kDestructiveCL) AudioChunk_POD {
+    AudioTimeStamp timeStamp{};
+    uint32_t       frameCount{0};
+    uint32_t       dataBytes{0};
+    uint64_t       sequence{0};
+    std::byte      audio[kAudioDataBytes]{};
+};
+// static_assert(sizeof(AudioChunk_POD) <= 4096);
+static_assert(sizeof(AudioChunk_POD) % kDestructiveCL == 0);
+
+
+
+
+// struct alignas(kDestructiveCL) ControlBlock_POD {
+//     uint32_t abiVersion;      // = 2
+//     uint32_t capacity;        // ring length
+//     uint32_t sampleRateHz;    // e.g. 44100
+//     uint32_t channelCount;    // e.g. 2
+//     uint32_t bytesPerFrame;   // = channelCount * bytesPerSample
+//     uint64_t writeIndex;
+//     char     pad0[kDestructiveCL
+//                    - sizeof(uint32_t)*5
+//                    - sizeof(uint64_t)];
+//     uint64_t readIndex;
+//     char     pad1[kDestructiveCL - sizeof(uint64_t)];
+//     uint32_t overrunCount;
+//     uint32_t underrunCount;
+//     uint32_t streamActive;    // 0 = idle, 1 = running
+//     uint32_t reserved;        // keep 64-byte alignment
+// };
+
+struct alignas(kDestructiveCL) ControlBlock_POD {
+    uint32_t abiVersion;      // 0
+    uint32_t capacity;        // 4
+    uint32_t sampleRateHz;    // 8
+    uint32_t channelCount;    // 12
+    uint32_t bytesPerFrame;   // 16
+    uint32_t _padWriteAlign;  // 20 - NEW: explicit padding
+    uint64_t writeIndex;      // 24 - now 8-byte aligned
+    char     pad0[kDestructiveCL - 6*sizeof(uint32_t) - sizeof(uint64_t)];
+    uint64_t readIndex;       // Already aligned due to cache line boundary
+    char     pad1[kDestructiveCL - sizeof(uint64_t)];
+    uint32_t overrunCount;
+    uint32_t underrunCount;
+    uint32_t streamActive;
+    uint32_t reserved;
+};
+
+// Add compile-time verification
+static_assert(offsetof(ControlBlock_POD, writeIndex) % 8 == 0, "writeIndex must be 8-byte aligned");
+static_assert(offsetof(ControlBlock_POD, readIndex) % 8 == 0, "readIndex must be 8-byte aligned");
+
+
+static_assert(sizeof(ControlBlock_POD) % kDestructiveCL == 0);
+
+struct alignas(kDestructiveCL) SharedRingBuffer_POD
+{
+    ControlBlock_POD control;
+    AudioChunk_POD   ring[kRingCapacityPow2];
+};
+
+// --- Format Validation Helpers ---
+inline bool ValidateFormat(const ControlBlock_POD& cb) noexcept {
+    if (cb.abiVersion != kShmVersion) return false;
+    if (cb.sampleRateHz == 0 || cb.channelCount == 0) return false;
+    if (cb.channelCount > kMaxChannels) return false;
+    if (cb.bytesPerFrame != cb.channelCount * kMaxBytesPerSample) return false;
+    
+    // NEW: Validate capacity is power-of-two and reasonable
+    if (cb.capacity == 0) return false;
+    if ((cb.capacity & (cb.capacity - 1)) != 0) return false;  // Must be power of 2
+    if (cb.capacity > 65536) return false;  // Reasonable upper limit
+    
+    return true;
+}
+
+// --- Atomic Proxies ---
+inline std::atomic<uint64_t>& WriteIndexProxy(ControlBlock_POD& cb) noexcept {
+    return *reinterpret_cast<std::atomic<uint64_t>*>(&cb.writeIndex);
+}
+inline std::atomic<uint64_t>& ReadIndexProxy(ControlBlock_POD& cb) noexcept {
+    return *reinterpret_cast<std::atomic<uint64_t>*>(&cb.readIndex);
+}
+inline std::atomic<uint64_t>& SequenceProxy(AudioChunk_POD& c) noexcept {
+    return *reinterpret_cast<std::atomic<uint64_t>*>(&c.sequence);
+}
+inline std::atomic<uint32_t>& OverrunCountProxy(ControlBlock_POD& cb) noexcept {
+    return *reinterpret_cast<std::atomic<uint32_t>*>(&cb.overrunCount);
+}
+inline std::atomic<uint32_t>& UnderrunCountProxy(ControlBlock_POD& cb) noexcept {
+    return *reinterpret_cast<std::atomic<uint32_t>*>(&cb.underrunCount);
+}
+
+// --- push → unchanged except format check ---
+inline bool push(ControlBlock_POD&       cb,
+                 AudioChunk_POD*         ring,
+                 const AudioBufferList*  src,
+                 const AudioTimeStamp&   ts,
+                 uint32_t                frames,
+                 uint32_t                bpf) noexcept
+{
+    if (!ValidateFormat(cb)) return false;
+    if (!src || !ring || frames==0 || frames>kMaxFramesPerChunk) return false;
+    auto rd = ReadIndexProxy(cb).load(std::memory_order_acquire);
+    auto wr = WriteIndexProxy(cb).load(std::memory_order_relaxed);
+    if (wr - rd >= cb.capacity) return false;
+
+    auto slot = wr & (cb.capacity-1);
+    auto& c   = ring[slot];
+    auto totalBytes = frames * bpf;
+    if (totalBytes > kAudioDataBytes) return false;
+
+    c.timeStamp  = ts;
+    c.frameCount = frames;
+    c.dataBytes  = totalBytes;
+
+    auto dst = c.audio;
+    for (UInt32 i=0; i<src->mNumberBuffers; ++i) {
+        auto& b = src->mBuffers[i];
+        if (!b.mData || b.mDataByteSize==0)
+            std::memset(dst,0,b.mDataByteSize);
+        else
+            std::memcpy(dst,b.mData,b.mDataByteSize);
+        dst += b.mDataByteSize;
+    }
+
+    std::atomic_thread_fence(std::memory_order_release);
+    SequenceProxy(c).store(wr+1, std::memory_order_release);
+    WriteIndexProxy(cb).store(wr+1, std::memory_order_release);
+    return true;
+}
+
+// --- zero-copy pop → new API for packet provider ---
+// FIXED pop() function - remove const parameters to avoid const_cast
+inline bool pop(ControlBlock_POD&       cb,           // CHANGED: remove const
+                AudioChunk_POD*         ring,         // CHANGED: remove const  
+                AudioTimeStamp&         tsOut,
+                uint32_t&               bytesOut,
+                const std::byte*&       audioPtrOut) noexcept
+{
+    if (!ValidateFormat(cb)) return false;
+
+    static thread_local bool inUnderrun = false;
+
+    
+    // CRITICAL FIX: Use WriteIndexProxy for wr, not ReadIndexProxy!
+    const uint64_t wr = WriteIndexProxy(cb).load(std::memory_order_acquire);
+    const uint64_t rd = ReadIndexProxy(cb).load(std::memory_order_relaxed);
+    if (rd == wr) {
+        // only bump once per contiguous underrun run
+        if (!inUnderrun) {
+            UnderrunCountProxy(cb).fetch_add(1, std::memory_order_relaxed);
+            inUnderrun = true;
+        }
+        return false;
+    }
+    inUnderrun = false;            // we have data again
+
+    const uint64_t slot = rd & (cb.capacity - 1);
+    AudioChunk_POD& c = ring[slot];
+    
+    if (SequenceProxy(c).load(std::memory_order_acquire) != rd + 1)
+        return false;
+
+    tsOut       = c.timeStamp;
+    bytesOut    = c.dataBytes;
+    audioPtrOut = c.audio;
+
+    ReadIndexProxy(cb).store(rd + 1, std::memory_order_release);
+    return true;
+}
+
+inline std::atomic<uint32_t>& StreamActiveProxy(ControlBlock_POD& cb) noexcept {
+    return *reinterpret_cast<std::atomic<uint32_t>*>(&cb.streamActive);
+}
+
+} // namespace RTShmRing
+
+
+=== include/shared/xpc/FWAClientNotificationProtocol.h ===
+//
+//  FWAClientNotificationProtocol.h
+//  FWADaemon
+//
+//  Created by Alexander Shabelnikov on 26.04.2025.
+//
+
+#import <Foundation/Foundation.h>
+#import "FWAXPCCommonTypes.h"
+
+NS_ASSUME_NONNULL_BEGIN
+
+@protocol FWAClientNotificationProtocol <NSObject>
+
+@required
+
+// --- Daemon Handshake ---
+/**
+ * @brief Called by the daemon after client registration to confirm the callback channel is working.
+ * @param reply The client should call this reply block with YES.
+ */
+- (void)daemonHandshake:(void(^)(BOOL clientAcknowledged))reply;
+
+
+// --- Device Discovery Notifications ---
+
+/**
+ * @brief Notifies the client that a new FireWire audio device has been discovered and initialized.
+ * @param deviceSummary A dictionary containing basic information (GUID, name, vendor).
+ *                      More detailed info can be requested via getDetailedDeviceInfoJSONForGUID.
+ */
+- (void)deviceAdded:(NSDictionary<NSString *, id> *)deviceSummary;
+
+/**
+ * @brief Notifies the client that a previously discovered device has been removed.
+ * @param guid The GUID of the removed device.
+ */
+- (void)deviceRemoved:(uint64_t)guid;
+
+/**
+ * @brief Notifies the client that detailed information or status for a device has been updated.
+ * (Optional, if daemon proactively sends updates after initial discovery).
+ * @param guid The GUID of the updated device.
+ * @param updatedInfoJSON A new JSON string containing the updated detailed device information.
+ */
+- (void)deviceInfoUpdated:(uint64_t)guid newInfoJSON:(NSString *)updatedInfoJSON;
+
+
+// --- Isochronous Stream Status Notifications ---
+
+/**
+ * @brief Notifies the client about a change in the streaming status for a device.
+ * @param guid The GUID of the device whose stream status changed.
+ * @param isStreaming YES if streams are now active, NO if they stopped.
+ * @param error An optional NSError object if the status change was due to an error.
+ */
+- (void)streamStatusChangedForDevice:(uint64_t)guid
+                         isStreaming:(BOOL)isStreaming
+                               error:(nullable NSError *)error;
+
+
+// --- Logging Notifications ---
+
+/**
+ * @brief Forwards a log message originating from within the daemon (FWA/Isoch C++ libraries).
+ * @param senderID A string indicating the source of the log within the daemon (e.g., "FWA::DeviceParser", "Isoch::AmdtpReceiver").
+ * @param level The log level as Int32.
+ * @param message The log message string.
+ */
+- (void)didReceiveLogMessage:(NSString *)senderID
+                       level:(int32_t)level
+                     message:(NSString *)message;
+
+/**
+ * @brief Legacy method: Forwards a log message with FWAXPCLoglevel for daemon internal use.
+ * @param message The log message string.
+ * @param level The FWAXPCLoglevel of the message.
+ * @param senderID A string indicating the source of the log within the daemon.
+ */
+- (void)didReceiveLogMessageFrom:(NSString *)senderID
+                           level:(FWAXPCLoglevel)level
+                         message:(NSString *)message;
+
+
+// --- Legacy Device Notification Methods for Swift Compatibility ---
+
+/**
+ * @brief Legacy method: Notifies about device connection status changes.
+ * @param guid The GUID of the device.
+ * @param isConnected Whether the device is connected.
+ * @param isInitialized Whether the device is initialized.
+ * @param deviceName The device name.
+ * @param vendorName The vendor name.
+ */
+- (void)daemonDidUpdateDeviceConnectionStatus:(uint64_t)guid
+                                 isConnected:(BOOL)isConnected
+                               isInitialized:(BOOL)isInitialized
+                                  deviceName:(NSString * _Nullable)deviceName
+                                  vendorName:(NSString * _Nullable)vendorName;
+
+/**
+ * @brief Legacy method: Notifies about device configuration changes.
+ * @param guid The GUID of the device.
+ * @param configInfo The configuration information dictionary.
+ */
+- (void)daemonDidUpdateDeviceConfiguration:(uint64_t)guid
+                                configInfo:(NSDictionary<id, id> *)configInfo;
+
+// --- Driver Status Notification ---
+/**
+ * @brief Notifies the client (typically GUI) that the main audio driver's overall connection status to the daemon has changed.
+ * This is distinct from individual device connections.
+ * @param isConnected YES if the driver is now considered connected/present by the daemon, NO otherwise.
+ */
+- (void)driverConnectionStatusDidChange:(BOOL)isConnected;
+
+
+// --- Control Callbacks (Daemon forwarding requests from one client to another, e.g., Driver -> Daemon -> GUI) ---
+// These methods mirror the requests in FWADaemonControlProtocol that might be initiated by one client (e.g., driver)
+// and require action/confirmation from another (e.g., GUI, which then talks to hardware via FWA C++ lib within daemon).
+// The GUI client would implement these, perform the action by calling ITS OWN XPC methods on the daemon
+// (which then call the C++ core), and then call the reply block.
+//
+// **NOTE:** This creates a potential round-trip: Driver -> Daemon -> GUI -> Daemon -> Hardware.
+// If the daemon's C++ core can handle these directly, these specific forwarding methods might be simplified or removed,
+// and the daemon would reply directly to the initiating client.
+// For now, including them to match the pattern of daemon as a message broker.
+
+/**
+ * @brief Daemon forwards a request (e.g., from the driver) to the client (e.g., GUI) to set a device's nominal sample rate.
+ * The client should attempt the operation (likely by making another XPC call back to the daemon
+ * which then uses its internal C++ FWA library) and then call the reply block.
+ */
+- (void)performSetNominalSampleRate:(uint64_t)guid
+                               rate:(double)rate
+                          withReply:(void (^)(BOOL success))reply;
+
+- (void)performSetClockSource:(uint64_t)guid
+                clockSourceID:(uint32_t)clockSourceID
+                    withReply:(void (^)(BOOL success))reply;
+
+- (void)performSetMasterVolumeScalar:(uint64_t)guid
+                               scope:(uint32_t)scope
+                             element:(uint32_t)element
+                         scalarValue:(float)scalarValue
+                           withReply:(void (^)(BOOL success))reply;
+
+- (void)performSetMasterMute:(uint64_t)guid
+                       scope:(uint32_t)scope
+                     element:(uint32_t)element
+                   muteState:(BOOL)muteState
+                   withReply:(void (^)(BOOL success))reply;
+
+/**
+ * @brief Daemon forwards a request to the client to start I/O for a device.
+ */
+- (void)performStartIO:(uint64_t)guid
+             withReply:(void (^)(BOOL success))reply;
+
+/**
+ * @brief Daemon forwards a request to the client to stop I/O for a device (fire-and-forget).
+ */
+- (void)performStopIO:(uint64_t)guid;
+
+@end
+
+NS_ASSUME_NONNULL_END
+
+
+=== include/shared/xpc/FWADaemon.h ===
+// FWADaemon.h (Objective-C++ version)
+#ifndef FWADaemon_h
+#define FWADaemon_h
+
+#import <Foundation/Foundation.h>
+#import "shared/xpc/FWADaemonControlProtocol.h" // Protocol it implements
+
+// --- C++ Forward Declaration for PImpl-like pattern if strictly needed ---
+// If you want to keep FWADaemon.h pure Objective-C, you'd use a void*
+// and an opaque struct forward declaration.
+// However, for std::unique_ptr, it's common to make the .h ObjC++.
+#ifdef __cplusplus
+#include <memory> // For std::unique_ptr
+namespace FWA { class DaemonCore; } // Forward declare C++ class
+#endif
+
+@interface FWADaemon : NSObject <FWADaemonControlProtocol>
+{
+#ifdef __cplusplus
+    std::unique_ptr<FWA::DaemonCore> _cppCore;
+#else
+    // If FWADaemon.h must be pure Obj-C (more complex bridging)
+    // void* _cppCore_opaque;
+#endif
+}
+
++ (instancetype)sharedService;
+
+// Methods for GuiCallbackSink (already present, keep them)
+- (BOOL)hasActiveGuiClients;
+- (void)forwardLogMessageToClients:(NSString *)senderID level:(int32_t)level message:(NSString *)message;
+
+@end
+
+#endif /* FWADaemon_h */
+
+
+=== include/shared/xpc/FWAXPCCommonTypes.h ===
+//
+//  FWAXPCCommonTypes.h
+//  FWADaemon
+//
+//  Created by Alexander Shabelnikov on 24.05.2025.
+//
+
+#ifndef FWA_XPC_COMMON_TYPES_H
+#define FWA_XPC_COMMON_TYPES_H
+
+#import <Foundation/Foundation.h>
+
+// Define an enum for log levels that matches the FWALogLevel enum values from fwa_capi.h
+typedef NS_ENUM(NSInteger, FWAXPCLoglevel) {
+    FWAXPCLoglevelTrace = 0,
+    FWAXPCLoglevelDebug = 1,
+    FWAXPCLoglevelInfo = 2,
+    FWAXPCLoglevelWarn = 3,
+    FWAXPCLoglevelError = 4,
+    FWAXPCLoglevelCritical = 5,
+    FWAXPCLoglevelOff = 6
+};
+
+// Add extern NSString * const FWADaemonErrorDomain; here too later
+
+#endif /* FWA_XPC_COMMON_TYPES_H */
+
+
+
+=== include/shared/xpc/MixedAudioBuffer.h ===
+// //
+// //  MixedAudioBuffer.h
+// //  FWADaemon
+// //
+// //  Created by Alexander Shabelnikov on 13.02.2025.
+// //
+
+// #ifndef MixedAudioBuffer_h
+// #define MixedAudioBuffer_h
+
+// #import <Foundation/Foundation.h>
+
+// @interface MixedAudioBuffer : NSObject <NSSecureCoding>
+
+// @property (nonatomic, readonly) double zeroTimestamp;
+// @property (nonatomic, readonly) double timestamp;
+// @property (nonatomic, readonly) NSData *pcmData;
+
+// - (instancetype)initWithZeroTimestamp:(double)zeroTimestamp
+//                             timestamp:(double)timestamp
+//                               pcmData:(NSData *)pcmData NS_DESIGNATED_INITIALIZER;
+
+// @end
+
+// #endif /* MixedAudioBuffer_h */
+
+
+
+=== include/shared/xpc/FWADaemonControlProtocol.h ===
+//
+//  FWADaemonControlProtocol.h
+//  FWADaemon
+//
+//  Created by Alexander Shabelnikov on 26.04.2025.
+//
+
+#import <Foundation/Foundation.h>
+#import "FWAXPCCommonTypes.h"
+
+NS_ASSUME_NONNULL_BEGIN
+
+// Forward declaration for the client notification protocol
+@protocol FWAClientNotificationProtocol;
+
+@protocol FWADaemonControlProtocol <NSObject>
+
+@required
+
+// --- Engine Lifecycle & Discovery ---
+
+/**
+ * @brief Legacy method for backward compatibility with existing Swift client code.
+ * Registers a client and starts discovery with an older interface.
+ * @param clientID A unique identifier for this client.
+ * @param clientNotificationEndpoint The XPC listener endpoint for notifications back to this client.
+ * @param reply Reply block called with YES on success, NO on failure, and optional daemon info.
+ */
+- (void)registerClient:(NSString *)clientID
+clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
+             withReply:(void (^)(BOOL success, NSDictionary * _Nullable daemonInfo))reply;
+
+/**
+ * @brief Tells the daemon to initialize its FWA components and start device discovery.
+ * The daemon will use its FWAClientNotificationProtocol to send deviceAdded/deviceRemoved notifications.
+ * @param clientID A unique identifier for this client.
+ * @param clientNotificationEndpoint The XPC listener endpoint the daemon can use to send notifications back to this client.
+ * @param reply Reply block called with YES on success, NO on failure, and an optional error.
+ */
+- (void)registerClientAndStartEngine:(NSString *)clientID
+          clientNotificationEndpoint:(NSXPCListenerEndpoint *)clientNotificationEndpoint
+                           withReply:(void (^)(BOOL success, NSError * _Nullable error))reply;
+
+/**
+ * @brief Tells the daemon to stop device discovery and release FWA engine resources.
+ * This might not immediately stop active audio streams if other clients are using them,
+ * but it stops this client from receiving further discovery notifications.
+ * @param clientID The client ID to unregister.
+ * @param reply Reply block.
+ */
+- (void)unregisterClientAndStopEngine:(NSString *)clientID
+                            withReply:(void (^)(BOOL success, NSError * _Nullable error))reply;
+
+
+// --- Device Information ---
+
+/**
+ * @brief Requests a list of summaries for currently connected and known devices.
+ * A device summary might include GUID, device name, vendor name.
+ * @param reply Reply block with an array of dictionaries (device summaries) or an error.
+ */
+- (void)getConnectedDeviceSummariesWithReply:(void (^)(NSArray<NSDictionary *> * _Nullable deviceSummaries, NSError * _Nullable error))reply;
+
+/**
+ * @brief Requests detailed information for a specific device, serialized as a JSON string.
+ * The daemon will perform necessary FWA parsing if info isn't cached.
+ * @param guid The GUID of the device.
+ * @param reply Reply block with the device info JSON string or an error.
+ */
+- (void)getDetailedDeviceInfoJSONForGUID:(uint64_t)guid
+                               withReply:(void (^)(NSString * _Nullable deviceInfoJSON, NSError * _Nullable error))reply;
+
+
+// --- AV/C Commands ---
+
+/**
+ * @brief Sends a raw AV/C command to a specific device.
+ * @param guid The GUID of the target device.
+ * @param commandData The NSData object containing the AV/C command bytes.
+ * @param reply Reply block with the NSData response from the device or an error.
+ */
+- (void)sendAVCCommandToDevice:(uint64_t)guid
+                       command:(NSData *)commandData
+                     withReply:(void (^)(NSData * _Nullable responseData, NSError * _Nullable error))reply;
+
+
+// --- Isochronous Stream Control ---
+
+/**
+ * @brief Requests the daemon to start isochronous audio streams for a specific device.
+ * @param guid The GUID of the device.
+ * @param reply Reply block indicating success/failure and an optional error.
+ */
+- (void)startAudioStreamsForDevice:(uint64_t)guid
+                         withReply:(void (^)(BOOL success, NSError * _Nullable error))reply;
+
+/**
+ * @brief Requests the daemon to stop isochronous audio streams for a specific device.
+ * @param guid The GUID of the device.
+ * @param reply Reply block indicating success/failure and an optional error.
+ */
+- (void)stopAudioStreamsForDevice:(uint64_t)guid
+                        withReply:(void (^)(BOOL success, NSError * _Nullable error))reply;
+
+
+// --- Logging Control ---
+
+/**
+ * @brief Sets the logging level for the FWA/Isoch components running within the daemon.
+ * @param level The desired FWAXPCLoglevel.
+ * @param reply Reply block indicating success.
+ */
+- (void)setDaemonLogLevel:(FWAXPCLoglevel)level
+                withReply:(void (^)(BOOL success))reply;
+
+/**
+ * @brief Gets the current logging level of the FWA/Isoch components within the daemon.
+ * @param reply Reply block with the current FWAXPCLoglevel.
+ */
+- (void)getDaemonLogLevelWithReply:(void (^)(FWAXPCLoglevel currentLevel))reply;
+
+
+// --- Driver Interaction (from GUI to Daemon, then Daemon talks to Driver via its own XPC if needed) ---
+
+/**
+ * @brief Informs the daemon about the overall presence/absence of the driver.
+ * This would typically be called by the driver itself during its init/finalize.
+ * GUI might call this if it's managing a manual driver load/unload simulation or for testing.
+ * @param isPresent YES if the driver is loaded and ready, NO otherwise.
+ */
+- (void)setDriverPresenceStatus:(BOOL)isPresent; // Fire-and-forget from client
+
+/**
+ * @brief Requests the current driver presence status known by the daemon.
+ * @param reply Block called with YES if the daemon believes the driver is present.
+ */
+- (void)getIsDriverConnectedWithReply:(void (^)(BOOL isConnected))reply;
+
+
+// --- Shared Memory (primarily for the Driver client) ---
+
+/**
+ * @brief Requests the name of the shared memory segment the daemon has set up for audio data.
+ * Primarily for the ASPL driver to connect to the correct SHM.
+ * @param reply Reply block with the shared memory name (e.g., "/fwa_daemon_shm_v1") or nil if not available.
+ */
+- (void)getSharedMemoryNameWithReply:(void (^)(NSString * _Nullable shmName))reply;
+
+
+// --- Legacy Methods for Swift Client Compatibility ---
+
+/**
+ * @brief Legacy method: Get list of connected device GUIDs.
+ * @param reply Reply block with array of NSNumber objects containing UInt64 GUIDs.
+ */
+- (void)getConnectedDeviceGUIDsWithReply:(void (^)(NSArray<NSNumber *> * _Nullable guids))reply;
+
+/**
+ * @brief Legacy method: Get device connection status.
+ * @param guid The GUID of the device.
+ * @param reply Reply block with status info dictionary.
+ */
+- (void)getDeviceConnectionStatus:(uint64_t)guid withReply:(void (^)(NSDictionary * _Nullable statusInfo))reply;
+
+/**
+ * @brief Legacy method: Get device configuration.
+ * @param guid The GUID of the device.
+ * @param reply Reply block with config info dictionary.
+ */
+- (void)getDeviceConfiguration:(uint64_t)guid withReply:(void (^)(NSDictionary * _Nullable configInfo))reply;
+
+/**
+ * @brief Legacy method: Request to set nominal sample rate.
+ * @param guid The GUID of the device.
+ * @param rate The sample rate to set.
+ * @param reply Reply block with success status.
+ */
+- (void)requestSetNominalSampleRate:(uint64_t)guid rate:(double)rate withReply:(void (^)(BOOL success))reply;
+
+/**
+ * @brief Legacy method: Request to start IO.
+ * @param guid The GUID of the device.
+ * @param reply Reply block with success status.
+ */
+- (void)requestStartIO:(uint64_t)guid withReply:(void (^)(BOOL success))reply;
+
+/**
+ * @brief Legacy method: Request to stop IO (fire-and-forget).
+ * @param guid The GUID of the device.
+ */
+- (void)requestStopIO:(uint64_t)guid;
+
+@end
+
+NS_ASSUME_NONNULL_END
+
+
+

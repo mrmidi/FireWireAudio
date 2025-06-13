@@ -66,7 +66,7 @@ private:
     static constexpr uint32_t PHASE_MOD = 147;            // 44.1 kHz jitter period
     static constexpr uint32_t BASE_INC_441 = 1386;
     static constexpr uint8_t  SYT_INTERVAL = 8;           // frames per packet
-    static constexpr size_t   kBufferDepth = 4;
+    static constexpr size_t   kBufferDepth = 12;
     static constexpr uint64_t kMaxPreparedAge = 2'000'000ULL; // ~2ms
 
     // Triple buffer

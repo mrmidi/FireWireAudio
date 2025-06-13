@@ -26,8 +26,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         -m|--mode)
             MODE="$2"
-            if [[ "$MODE" != "isoch" && "$MODE" != "fwa" && "$MODE" != "modified" && "$MODE" != "swift" && "$MODE" != "driver" && "$MODE" != "xpc" && "$MODE" != "transmit" ]]; then
-                echo "Error: Mode must be either 'isoch', 'fwa', 'modified', 'swift', 'driver', 'xpc', or 'transmit'"
+            if [[ "$MODE" != "isoch" && "$MODE" != "fwa" && "$MODE" != "modified" && "$MODE" != "swift" && "$MODE" != "driver" && "$MODE" != "xpc" && "$MODE" != "transmit" && "$MODE" != "optimize" ]]; then
+                echo "Error: Mode must be either 'isoch', 'fwa', 'modified', 'swift', 'driver', 'xpc', 'transmit', or 'optimize'"
                 exit 1
             fi
             # Set default output file based on mode if not explicitly specified
@@ -43,12 +43,14 @@ while [[ $# -gt 0 ]]; do
                 OUTPUT_FILE="xpc.txt"
             elif [[ "$OUTPUT_FILE" == "isoch.txt" && "$MODE" == "transmit" ]]; then
                 OUTPUT_FILE="transmit.txt"
+            elif [[ "$OUTPUT_FILE" == "isoch.txt" && "$MODE" == "optimize" ]]; then
+                OUTPUT_FILE="optimize.txt"
             fi
             shift 2
             ;;
         -h|--help)
             echo "Usage: $0 [-m|--mode mode] [-e|--extract file_to_extract] [-i|--input input_file] [-o|--output output_file]"
-            echo "  -m, --mode       Specify the code stack to gather: 'isoch' (default), 'fwa', 'modified', 'swift', 'driver', 'xpc', or 'transmit'"
+            echo "  -m, --mode       Specify the code stack to gather: 'isoch' (default), 'fwa', 'modified', 'swift', 'driver', 'xpc', 'transmit', or 'optimize'"
             echo "  -e, --extract    Specify a file to extract from the input file"
             echo "  -i, --input      Specify the input file (default: isoch.txt, fwa.txt, or modified.txt based on mode)"
             echo "  -o, --output     Specify the output file (default: isoch.txt, fwa.txt, or modified.txt based on mode)"
@@ -181,6 +183,40 @@ if [[ "$MODE" == "transmit" ]]; then
     
     # Process each file
     for file in "${TRANSMIT_FILES[@]}"; do
+        if [ -f "$file" ]; then
+            echo "=== $file ===" >> "$OUTPUT_FILE"
+            cat "$file" >> "$OUTPUT_FILE"
+            echo -e "\n\n" >> "$OUTPUT_FILE"
+        else
+            echo "Warning: $file not found!"
+        fi
+    done
+    
+    chmod +x "$0"
+    echo "Done! Created $OUTPUT_FILE"
+    exit 0
+fi
+
+# Optimize mode: gather specific optimization-related files
+if [[ "$MODE" == "optimize" ]]; then
+    rm -f "$OUTPUT_FILE"
+    echo "Creating $OUTPUT_FILE with optimization-related source files..."
+    
+    # Define the specific files to include for optimization work
+    OPTIMIZE_FILES=(
+        "src/Driver/FWADriver.cpp"
+        "src/Driver/FWADriverDevice.cpp"
+        "include/Isoch/core/IsochPacketProvider.hpp"
+        "src/Isoch/core/IsochPacketProvider.cpp"
+        "include/shared/SharedMemoryStructures.hpp"
+        "src/Driver/FWAStream.hpp"
+        "src/Driver/FWAStream.cpp"
+        "src/Driver/FWADriverHandler.hpp"
+        "src/Driver/FWADriverHandler.cpp"
+    )
+    
+    # Process each file
+    for file in "${OPTIMIZE_FILES[@]}"; do
         if [ -f "$file" ]; then
             echo "=== $file ===" >> "$OUTPUT_FILE"
             cat "$file" >> "$OUTPUT_FILE"

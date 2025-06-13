@@ -1,0 +1,1451 @@
+=== src/Driver/FWADriver.cpp ===
+// FWADriver.cpp - Final Refactored Version
+
+#include <memory>
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreAudio/AudioServerPlugIn.h>
+#include <aspl/Driver.hpp>
+#include "FWADriverDevice.hpp"
+#include "FWADriverHandler.hpp"
+#include "FWADriverInit.hpp"
+#include "FWAStream.hpp" // Your custom stream class
+#include <aspl/Tracer.hpp>
+
+constexpr UInt32 SampleRate = 44100;
+constexpr UInt32 ChannelCount = 2;
+constexpr const char* LogPrefix = "FWADriverASPL: ";
+
+std::shared_ptr<aspl::Driver> CreateDriver()
+{
+    auto tracer = std::make_shared<aspl::Tracer>(
+        aspl::Tracer::Mode::Syslog,
+        aspl::Tracer::Style::Flat
+    );
+    auto context = std::make_shared<aspl::Context>(tracer);
+    context->Tracer->Message("%sCreating driver...", LogPrefix);
+
+    aspl::DeviceParameters deviceParams;
+    deviceParams.Name = "FWA Firewire Audio";
+    deviceParams.CanBeDefault = true;
+    deviceParams.CanBeDefaultForSystemSounds = true;
+    deviceParams.EnableRealtimeTracing = false;
+    deviceParams.SampleRate = SampleRate;
+    deviceParams.ChannelCount = ChannelCount;
+
+    aspl::StreamParameters streamParams;
+    streamParams.Direction = aspl::Direction::Output;
+    streamParams.StartingChannel = 1;
+ 
+    // THIS IS THE FINAL, CORRECTED PHYSICAL FORMAT:
+    // We request the final format Core Audio should convert TO.
+    // By declaring this as the physical format and having FWAStream override
+    // GetVirtualFormat() to return Float32, we trigger the Core Audio
+    // conversion pipeline correctly.
+    streamParams.Format = {
+        .mSampleRate       = 44100.0,
+        .mFormatID         = kAudioFormatLinearPCM,
+        .mFormatFlags      = kAudioFormatFlagIsBigEndian |
+                           kAudioFormatFlagIsSignedInteger,
+        .mBitsPerChannel   = 32, // The number of valid bits of audio data.
+        .mChannelsPerFrame = 2,
+        .mBytesPerFrame    = 8,  // The size of the container: 4 bytes × 2 channels.
+        .mFramesPerPacket  = 1,
+        .mBytesPerPacket   = 8
+    };
+
+    // LOG STREAM FORMAT
+    os_log(OS_LOG_DEFAULT, "%sCreating FWAStream with format: SampleRate=%.2f, FormatID=%u, Flags=%u, BitsPerChannel=%u, ChannelsPerFrame=%u, BytesPerFrame=%u",
+           LogPrefix,
+           streamParams.Format.mSampleRate,
+           streamParams.Format.mFormatID,
+           streamParams.Format.mFormatFlags,
+           streamParams.Format.mBitsPerChannel,
+           streamParams.Format.mChannelsPerFrame,
+           streamParams.Format.mBytesPerFrame);
+
+    auto device = std::make_shared<FWADriverDevice>(context, deviceParams);
+
+    if (!device) {
+        os_log(OS_LOG_DEFAULT, "%sFailed to create FWADriverDevice instance.", LogPrefix);
+    }
+
+    // Manually create and add an instance of our custom FWAStream.
+    auto stream = std::make_shared<FWAStream>(context, device, streamParams);
+
+    if (!stream) {
+        os_log(OS_LOG_DEFAULT, "%sFailed to create FWAStream instance.", LogPrefix);
+        return nullptr;
+    } else {
+        os_log(OS_LOG_DEFAULT, "%sFWAStream instance created successfully.", LogPrefix);
+    }
+
+    // // LOG STREAM DETAILS
+    // os_log(OS_LOG_DEFAULT, "%sFWAStream created with SampleRate=%.2f, Channels=%u, FormatID=%u",
+    //        LogPrefix,
+    //        stream->GetSampleRate(),
+    //        stream->GetChannelCount(),
+    //        stream->GetPhysicalFormat().mFormatID);
+    
+    // Add default mute/volume controls to ensure compatibility.
+//    stream->AddDefaultControls();
+    
+    device->AddStreamAsync(stream);
+
+    // make sure that streams are created before we set the handler
+    auto streams = device->GetStreamCount(aspl::Direction::Output);
+    if (streams == 0) {
+        os_log(OS_LOG_DEFAULT, "%sNo streams created for device.", LogPrefix);
+        return nullptr;
+    } else {
+        os_log(OS_LOG_DEFAULT, "%sDevice has %u streams created.", LogPrefix, streams);
+    }
+
+    
+    auto handler = std::make_shared<FWADriverHandler>();
+    device->SetControlHandler(handler);
+    device->SetIOHandler(handler);
+
+    auto plugin = std::make_shared<aspl::Plugin>(context);
+    plugin->AddDevice(device);
+
+    std::shared_ptr<aspl::Driver> driver = std::make_shared<aspl::Driver>(context, plugin);
+
+    if (!driver) {
+        os_log(OS_LOG_DEFAULT, "%sFailed to create FWADriver instance.", LogPrefix);
+        return nullptr;
+    }
+
+    os_log(OS_LOG_DEFAULT, "%sDriver created successfully.", LogPrefix);
+    
+    auto initHandler = std::make_shared<FWADriverInit>(handler);
+    if (!initHandler) {
+        os_log(OS_LOG_DEFAULT, "%sFailed to create FWADriverInit instance.", LogPrefix);
+        return nullptr;
+    } else {
+        os_log(OS_LOG_DEFAULT, "%sFWADriverInit instance created successfully.", LogPrefix);
+    }
+    driver->SetDriverHandler(initHandler);
+    
+    context->Tracer->Message("%sDriver configuration complete.", LogPrefix);
+    os_log(OS_LOG_DEFAULT, "%sDriver created and configured successfully.", LogPrefix);
+    return driver;
+}
+
+/**
+ * @brief Core Audio Server Plugin entry point
+ *
+ * This function is called by Core Audio to instantiate the driver.
+ * It validates the plugin type and returns a reference to the driver instance.
+ *
+ * @param allocator Memory allocator (unused)
+ * @param typeUUID UUID of the plugin type being requested
+ * @return void* Reference to the driver instance or nullptr if type doesn't match
+ */
+extern "C" void* EntryPoint(CFAllocatorRef allocator, CFUUIDRef typeUUID)
+{
+    os_log(OS_LOG_DEFAULT, "FWADriverASPL: EntryPoint called!");
+    if (!CFEqual(typeUUID, kAudioServerPlugInTypeUUID)) {
+        os_log(OS_LOG_DEFAULT, "%sEntryPoint: Incorrect typeUUID requested.", LogPrefix);
+        return nullptr;
+    }
+
+    static std::shared_ptr<aspl::Driver> driver = CreateDriver();
+
+    if (!driver) {
+        os_log(OS_LOG_DEFAULT, "%sEntryPoint: CreateDriver failed to return a driver instance.", LogPrefix);
+        return nullptr;
+    }
+
+    os_log(OS_LOG_DEFAULT, "%sEntryPoint: Driver created, returning reference.", LogPrefix);
+    return driver->GetReference();
+}
+
+
+
+=== src/Driver/FWADriverDevice.cpp ===
+#include "FWADriverDevice.hpp"
+#include <aspl/Device.hpp> // Include necessary ASPL headers
+#include <aspl/Tracer.hpp>
+#include <aspl/Context.hpp>
+#include <string>
+#include <algorithm>       // For std::min, std::copy
+#include <cstring>
+#include <libkern/OSByteOrder.h>
+#include <limits>
+#include <cassert>
+#include "FWADriverHandler.hpp"
+#include "FWAStream.hpp"
+#include <CoreAudio/AudioServerPlugIn.h>
+#include <atomic>
+
+#define DEBUG 0
+#include <os/log.h>
+
+// Dedicated logging subsystem
+static os_log_t gLog = os_log_create("com.mrmidi.fwa", "driver");
+#define LOG_ERR(fmt, ...)  os_log_error(gLog, fmt, ##__VA_ARGS__)
+#define LOG_DBG(fmt, ...)  os_log_debug(gLog, fmt, ##__VA_ARGS__)
+
+constexpr const char* LogPrefix = "FWADriverASPL: ";
+
+// --- Local Helper Function ---
+static inline std::string FormatFourCharCode(UInt32 code) {
+    char chars[5];
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    UInt32 beCode = OSSwapHostToBigInt32(code);
+#else
+    UInt32 beCode = code;
+#endif
+    memcpy(chars, &beCode, 4);
+    for (int i = 0; i < 4; ++i) {
+        if (chars[i] < 32 || chars[i] > 126) {
+            chars[i] = '?';
+        }
+    }
+    chars[4] = '\0';
+    return std::string("'") + chars + "'";
+}
+
+FWADriverDevice::FWADriverDevice(std::shared_ptr<const aspl::Context> context,
+                                 const aspl::DeviceParameters& params)
+    : aspl::Device(context, params) // Forward to base class
+{
+    GetContext()->Tracer->Message("%sFWADriverDevice[%u]: Constructed with name '%s'", LogPrefix, GetID(), params.Name.c_str());
+    // Custom initialization if needed
+}
+
+// --- Property Dispatch Implementations ---
+
+Boolean FWADriverDevice::HasProperty(AudioObjectID objectID,
+                                    pid_t clientPID,
+                                    const AudioObjectPropertyAddress* address) const
+{
+    std::string selectorStr = address ? FormatFourCharCode(address->mSelector) : "NULL";
+    // Check if it's a property we handle specifically
+    if (address && address->mSelector == kAudioDevicePropertyAvailableNominalSampleRates &&
+        address->mScope == kAudioObjectPropertyScopeGlobal &&
+        address->mElement == kAudioObjectPropertyElementMain) // Use Main
+    {
+        GetContext()->Tracer->Message("%sFWADriverDevice[%u]::HasProperty(Selector: %s): YES", LogPrefix, GetID(), selectorStr.c_str());
+        return true;
+    }
+
+    // Otherwise, let the base class handle it
+    bool baseHas = aspl::Device::HasProperty(objectID, clientPID, address);
+    return baseHas;
+}
+
+OSStatus FWADriverDevice::GetPropertyDataSize(AudioObjectID objectID,
+                                            pid_t clientPID,
+                                            const AudioObjectPropertyAddress* address,
+                                            UInt32 qualifierDataSize,
+                                            const void* qualifierData,
+                                            UInt32* outDataSize) const
+{
+    std::string selectorStr = address ? FormatFourCharCode(address->mSelector) : "NULL";
+    if (!address || !outDataSize) {
+        LOG_ERR("%sFWADriverDevice[%u]::GetPropertyDataSize - Invalid address or outDataSize pointer.", LogPrefix, GetID());
+        return kAudioHardwareBadObjectError;
+    }
+
+    // Handle our specific property
+    if (address->mSelector == kAudioDevicePropertyAvailableNominalSampleRates &&
+        address->mScope == kAudioObjectPropertyScopeGlobal &&
+        address->mElement == kAudioObjectPropertyElementMain) // Use Main
+    {
+        // Simulate getting rates (replace with XPC call later)
+        auto rates = GetSimulatedAvailableSampleRates();
+        size_t requiredSize_t = rates.size() * sizeof(AudioValueRange);
+        if (requiredSize_t > std::numeric_limits<UInt32>::max()) {
+            LOG_ERR("%sFWADriverDevice[%u]::GetPropertyDataSize(Selector: %s) - Required size (%zu) exceeds UINT32_MAX.", LogPrefix, GetID(), selectorStr.c_str(), requiredSize_t);
+            *outDataSize = 0;
+            return kAudioHardwareUnspecifiedError;
+        }
+        *outDataSize = static_cast<UInt32>(requiredSize_t);
+        LOG_DBG("%sFWADriverDevice[%u]::GetPropertyDataSize(Selector: %s): %u bytes", LogPrefix, GetID(), selectorStr.c_str(), *outDataSize);
+        return kAudioHardwareNoError;
+    }
+
+    // Let the base class handle others
+    OSStatus result = aspl::Device::GetPropertyDataSize(objectID, clientPID, address, qualifierDataSize, qualifierData, outDataSize);
+    if (result != kAudioHardwareNoError) {
+        LOG_ERR("%sGetPropertyDataSize failed for selector %s: %#x", LogPrefix, selectorStr.c_str(), result);
+    }
+    return result;
+}
+
+OSStatus FWADriverDevice::GetPropertyData(AudioObjectID objectID,
+                                        pid_t clientPID,
+                                        const AudioObjectPropertyAddress* address,
+                                        UInt32 qualifierDataSize,
+                                        const void* qualifierData,
+                                        UInt32 inDataSize,
+                                        UInt32* outDataSize,
+                                        void* outData) const
+{
+    std::string selectorStr = address ? FormatFourCharCode(address->mSelector) : "NULL";
+     if (!address || !outDataSize || !outData) {
+        LOG_ERR("%sFWADriverDevice[%u]::GetPropertyData - Invalid address, outDataSize, or outData pointer.", LogPrefix, GetID());
+        return kAudioHardwareBadObjectError;
+    }
+
+    // Handle our specific property
+    if (address->mSelector == kAudioDevicePropertyAvailableNominalSampleRates &&
+        address->mScope == kAudioObjectPropertyScopeGlobal &&
+        address->mElement == kAudioObjectPropertyElementMain) // Use Main
+    {
+        // Simulate getting rates (replace with XPC call later)
+        auto rates = GetSimulatedAvailableSampleRates();
+        size_t requiredSize_t = rates.size() * sizeof(AudioValueRange);
+        if (requiredSize_t > std::numeric_limits<UInt32>::max()) {
+            LOG_ERR("%sFWADriverDevice[%u]::GetPropertyData(Selector: %s) - Required size (%zu) exceeds UINT32_MAX.", LogPrefix, GetID(), selectorStr.c_str(), requiredSize_t);
+            *outDataSize = 0;
+            return kAudioHardwareUnspecifiedError;
+        }
+        UInt32 calculatedSize = static_cast<UInt32>(requiredSize_t);
+
+        UInt32 bytesToWrite = std::min(inDataSize, calculatedSize);
+        *outDataSize = bytesToWrite; // Return how much we *actually* wrote
+
+        if (bytesToWrite > 0) {
+             LOG_DBG("%sFWADriverDevice[%u]::GetPropertyData(Selector: %s): Writing %u bytes (of %u needed)", LogPrefix, GetID(), selectorStr.c_str(), bytesToWrite, calculatedSize);
+             memcpy(outData, rates.data(), bytesToWrite);
+        } else if (inDataSize == 0) {
+             LOG_DBG("%sWARNING: FWADriverDevice[%u]::GetPropertyData(Selector: %s): Zero-size buffer provided.", LogPrefix, GetID(), selectorStr.c_str());
+             *outDataSize = 0;
+        } else {
+             LOG_DBG("%sWARNING: FWADriverDevice[%u]::GetPropertyData(Selector: %s): Buffer too small (needed %u, got %u), wrote 0 bytes.", LogPrefix, GetID(), selectorStr.c_str(), calculatedSize, inDataSize);
+             *outDataSize = 0;
+        }
+         return kAudioHardwareNoError;
+    }
+
+    // Let the base class handle others
+    OSStatus result = aspl::Device::GetPropertyData(objectID, clientPID, address, qualifierDataSize, qualifierData, inDataSize, outDataSize, outData);
+    if (result != kAudioHardwareNoError) {
+        LOG_ERR("%sGetPropertyData failed for selector %s: %#x", LogPrefix, selectorStr.c_str(), result);
+    }
+    return result;
+}
+
+// --- Helper Implementation ---
+
+std::vector<AudioValueRange> FWADriverDevice::GetSimulatedAvailableSampleRates() const
+{
+    // !! Placeholder !! Replace this with an XPC call to the daemon later
+    return {
+        {44100.0, 44100.0},
+        {48000.0, 48000.0},
+        {88200.0, 88200.0},
+        {96000.0, 96000.0}
+    };
+}
+
+// Helper function to log an AudioTimeStamp (optional, but keeps DoIOOperation cleaner)
+static void LogAudioTimeStamp(const char* prefix, const AudioTimeStamp& ts) {
+    // Check for valid flags to determine what to print
+    std::string flagsStr;
+    if (ts.mFlags & kAudioTimeStampSampleTimeValid) flagsStr += "SampleTimeValid ";
+    if (ts.mFlags & kAudioTimeStampHostTimeValid) flagsStr += "HostTimeValid ";
+    if (ts.mFlags & kAudioTimeStampRateScalarValid) flagsStr += "RateScalarValid ";
+    if (ts.mFlags & kAudioTimeStampWordClockTimeValid) flagsStr += "WordClockTimeValid ";
+    if (ts.mFlags & kAudioTimeStampSMPTETimeValid) flagsStr += "SMPTETimeValid ";
+    if (ts.mFlags & kAudioTimeStampSampleHostTimeValid) flagsStr += "SampleHostTimeValid "; // macOS 10.15+
+
+    os_log_debug(OS_LOG_DEFAULT, "%s%s: Flags=[%s], SampleTime=%.0f, HostTime=%llu, RateScalar=%.6f",
+                 LogPrefix, // Your existing LogPrefix
+                 prefix,
+                 flagsStr.empty() ? "None" : flagsStr.c_str(),
+                 (ts.mFlags & kAudioTimeStampSampleTimeValid) ? ts.mSampleTime : -1.0,
+                 (ts.mFlags & kAudioTimeStampHostTimeValid) ? ts.mHostTime : 0ULL,
+                 (ts.mFlags & kAudioTimeStampRateScalarValid) ? ts.mRateScalar : 0.0);
+
+    // For SMPTETime, you'd need to break down mSMPTETime structure
+    // For WordClockTime, it's just a UInt64
+}
+
+
+OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
+                                       AudioObjectID streamID,
+                                       UInt32 clientID,
+                                       UInt32 operationID,
+                                       UInt32 ioBufferFrameSize,
+                                       const AudioServerPlugInIOCycleInfo* ioCycleInfo,
+                                       void* ioMainBuffer,
+                                       void* ioSecondaryBuffer)
+{
+    auto stream = GetStreamByID(streamID);
+    if (!stream) {
+        LOG_ERR("DoIOOperation: bad stream %u", streamID);
+        return kAudioHardwareBadStreamError;
+    }
+    
+    auto* fwaStream = static_cast<FWAStream*>(stream.get());
+    auto* handler = static_cast<FWADriverHandler*>(GetIOHandler());
+    
+    // CRITICAL: Use VIRTUAL format for input, PHYSICAL for output
+    const auto& virtualFmt = fwaStream->GetVirtualFormat();
+    const auto& physicalFmt = fwaStream->GetPhysicalFormat();
+    
+    const bool nonInterleaved = 
+        (virtualFmt.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
+
+    switch (operationID)
+    {
+        case kAudioServerPlugInIOOperationWriteMix:
+        {
+            if (!handler || !handler->IsSharedMemoryReady()) {
+                // Fill with silence (proper AM824 silence)
+                void* targetBuffer = ioSecondaryBuffer ? ioSecondaryBuffer : ioMainBuffer;
+                uint32_t* dst = static_cast<uint32_t*>(targetBuffer);
+                uint32_t silenceWord = OSSwapHostToBigInt32(0x40000000); // AM824 silence
+                size_t sampleCount = ioBufferFrameSize * physicalFmt.mChannelsPerFrame;
+                
+                for (size_t i = 0; i < sampleCount; ++i) {
+                    dst[i] = silenceWord;
+                }
+                return noErr;
+            }
+            
+            // Use converted data from secondary buffer if available
+            void* sourceBuffer = ioSecondaryBuffer ? ioSecondaryBuffer : ioMainBuffer;
+            
+            // Build ABL for physical format
+            AudioBufferList abl;
+            abl.mNumberBuffers = 1;
+            abl.mBuffers[0].mNumberChannels = physicalFmt.mChannelsPerFrame;
+            abl.mBuffers[0].mData = sourceBuffer;
+            abl.mBuffers[0].mDataByteSize = ioBufferFrameSize * physicalFmt.mBytesPerFrame;
+            
+            handler->PushToSharedMemory(&abl,
+                                      ioCycleInfo->mOutputTime,
+                                      ioBufferFrameSize,
+                                      physicalFmt.mBytesPerFrame);
+            return noErr;
+        }
+
+        case kAudioServerPlugInIOOperationReadInput:
+            // Handle read input
+            return noErr;
+
+        case kAudioServerPlugInIOOperationConvertMix:
+            // This is where float -> AM824 conversion happens
+            if (!ioSecondaryBuffer) {
+                LOG_ERR("ConvertMix requires secondary buffer");
+                return kAudioHardwareBadObjectError;
+            }
+            
+            if (nonInterleaved) {
+                // Handle non-interleaved
+                auto* in_abl = static_cast<const AudioBufferList*>(ioMainBuffer);
+                auto* out_abl = static_cast<AudioBufferList*>(ioSecondaryBuffer);
+                
+                // Ensure output buffer list is properly sized
+                out_abl->mNumberBuffers = in_abl->mNumberBuffers;
+                
+                for (UInt32 i = 0; i < in_abl->mNumberBuffers; ++i) {
+                    out_abl->mBuffers[i].mNumberChannels = in_abl->mBuffers[i].mNumberChannels;
+                    out_abl->mBuffers[i].mDataByteSize = 
+                        ioBufferFrameSize * physicalFmt.mBytesPerFrame;
+                    
+                    fwaStream->ConvertToHardwareFormat(
+                        static_cast<const Float32*>(in_abl->mBuffers[i].mData),
+                        out_abl->mBuffers[i].mData,
+                        ioBufferFrameSize,
+                        in_abl->mBuffers[i].mNumberChannels);
+                }
+            } else {
+                // Handle interleaved
+                fwaStream->ConvertToHardwareFormat(
+                    static_cast<const Float32*>(ioMainBuffer),
+                    ioSecondaryBuffer,
+                    ioBufferFrameSize,
+                    virtualFmt.mChannelsPerFrame);
+            }
+            return noErr;
+        
+        default:
+            // Unknown operation
+            return noErr;
+    }
+}
+
+
+
+=== include/Isoch/core/IsochPacketProvider.hpp ===
+// IsochPacketProvider.hpp - Direct SHM Implementation with Safety Margin
+#pragma once
+
+#include "Isoch/interfaces/ITransmitPacketProvider.hpp"
+#include "shared/SharedMemoryStructures.hpp"
+#include <atomic>
+#include <chrono>
+#include <spdlog/spdlog.h>
+
+namespace FWA {
+namespace Isoch {
+
+class IsochPacketProvider : public ITransmitPacketProvider {
+private:
+    mutable std::mutex bindMutex_;  // Protect bind/unbind operations
+public:
+    explicit IsochPacketProvider(std::shared_ptr<spdlog::logger> logger);
+    ~IsochPacketProvider() override;
+
+    // Prevent Copy
+    IsochPacketProvider(const IsochPacketProvider&) = delete;
+    IsochPacketProvider& operator=(const IsochPacketProvider&) = delete;
+
+    // --- NEW: Direct SHM Binding Interface ---
+    bool bindSharedMemory(RTShmRing::ControlBlock_POD* controlBlock,
+                          RTShmRing::AudioChunk_POD* ringArray);
+    void unbindSharedMemory();
+    bool isBound() const { return shmControlBlock_ != nullptr; }
+
+    // --- ITransmitPacketProvider Interface ---
+    bool pushAudioData(const void* buffer, size_t bufferSizeInBytes) override;
+    
+    PreparedPacketData fillPacketData(
+        uint8_t* targetBuffer,
+        size_t targetBufferSize,
+        const TransmitPacketInfo& info
+    ) override;
+
+    bool isReadyForStreaming() const override;
+    void reset() override;
+
+    // --- Enhanced Diagnostics ---
+    struct DiagnosticStats {
+        uint64_t totalBytesConsumed;
+        uint64_t shmPopCount;
+        uint64_t shmUnderrunCount;
+        uint64_t formatValidationErrors;
+        uint64_t partialChunkConsumptions;
+        double avgFillPacketDurationUs;
+        uint32_t currentShmFillPercent;
+        };
+    
+    DiagnosticStats getDiagnostics() const;
+    void resetDiagnostics();
+
+
+private:
+
+    // --- SHM Cursor State ---
+    RTShmRing::ControlBlock_POD* shmControlBlock_ {nullptr};
+    RTShmRing::AudioChunk_POD*   shmRingArray_    {nullptr};
+    
+    // Current chunk cache to minimize SHM access
+    struct ChunkCache {
+        AudioTimeStamp timeStamp;
+        uint32_t totalBytes;
+        const std::byte* audioDataPtr;
+        uint32_t consumedBytes;
+        bool valid;
+        
+        void invalidate() { valid = false; consumedBytes = 0; audioDataPtr = nullptr; }
+        uint32_t remainingBytes() const { return valid ? (totalBytes - consumedBytes) : 0; }
+    } currentChunk_;
+
+    // --- Core Components ---
+    std::shared_ptr<spdlog::logger> logger_;
+    
+    // --- Diagnostics & State ---
+    mutable std::atomic<uint64_t> totalBytesConsumed_{0};
+    mutable std::atomic<uint64_t> shmPopCount_{0};
+    mutable std::atomic<uint64_t> shmUnderrunCount_{0};
+    mutable std::atomic<uint64_t> formatValidationErrors_{0};
+    mutable std::atomic<uint64_t> partialChunkConsumptions_{0};
+    
+    // Performance timing
+    mutable std::chrono::steady_clock::time_point lastStatsTime_;
+    mutable std::atomic<uint64_t> fillPacketCallCount_{0};
+    mutable std::atomic<uint64_t> totalFillPacketTimeNs_{0};
+
+    // Cache for SHM state to reduce expensive atomic loads.
+    struct ShmStateCache {
+        uint64_t writeIndex{0};
+        uint32_t availableChunks{0};
+        uint32_t updateCounter{0};
+    };
+
+    static thread_local ShmStateCache shmCache_;
+    static constexpr uint32_t kCacheUpdateInterval = 16;
+    // A minimal, 1-chunk safety buffer to absorb scheduler jitter.
+    static constexpr uint32_t kSafetyHedgeChunks = 1;
+
+    // --- Helper Methods ---
+    bool popNextChunk();
+    void handleUnderrun(const TransmitPacketInfo& info);
+    uint32_t getCurrentShmFillLevel() const;
+    bool validateShmFormat() const;
+};
+
+} // namespace Isoch
+} // namespace FWA
+
+
+=== src/Isoch/core/IsochPacketProvider.cpp ===
+#define DEBUG 0
+// IsochPacketProvider.cpp - Direct SHM Implementation with Safety Margin
+#include "Isoch/core/IsochPacketProvider.hpp"
+#include <CoreServices/CoreServices.h>
+#include <cstring>
+#include <algorithm>    
+#include <os/log.h>
+
+namespace FWA {
+namespace Isoch {
+
+thread_local IsochPacketProvider::ShmStateCache IsochPacketProvider::shmCache_;
+
+IsochPacketProvider::IsochPacketProvider(std::shared_ptr<spdlog::logger> logger)
+    : logger_(std::move(logger))
+{
+    if (!logger_) {
+        logger_ = spdlog::default_logger();
+    }
+    
+    currentChunk_.invalidate();
+    lastStatsTime_ = std::chrono::steady_clock::now();
+    
+    if (logger_) {
+        logger_->debug("IsochPacketProvider created in direct SHM mode");
+    }
+    
+    reset();
+}
+
+IsochPacketProvider::~IsochPacketProvider() {
+    unbindSharedMemory();
+    if (logger_) {
+        logger_->debug("IsochPacketProvider destroyed");
+    }
+}
+
+bool IsochPacketProvider::bindSharedMemory(RTShmRing::ControlBlock_POD* controlBlock,
+                                           RTShmRing::AudioChunk_POD* ringArray) {
+    std::lock_guard<std::mutex> lock(bindMutex_);  // Thread safety
+
+    if (!controlBlock || !ringArray) {
+        if (logger_) {
+            logger_->error("bindSharedMemory: Invalid parameters (null pointers)");
+        }
+        return false;
+    }
+    
+    // Validate SHM format before binding - log every field for debugging
+    if (logger_) {
+        logger_->info("bindSharedMemory: Validating SHM format - ABI: {}, capacity: {}, sampleRate: {}, channels: {}, bytesPerFrame: {}",
+                      controlBlock->abiVersion, controlBlock->capacity, controlBlock->sampleRateHz, 
+                      controlBlock->channelCount, controlBlock->bytesPerFrame);
+    }
+    
+    if (!RTShmRing::ValidateFormat(*controlBlock)) {
+        formatValidationErrors_++;
+        if (logger_) {
+            logger_->error("bindSharedMemory: SHM format validation failed - ABI: {}, capacity: {}, sampleRate: {}, channels: {}, bytesPerFrame: {}, expected ABI: {}",
+                          controlBlock->abiVersion, controlBlock->capacity, controlBlock->sampleRateHz, 
+                          controlBlock->channelCount, controlBlock->bytesPerFrame, kShmVersion);
+        }
+        return false;
+    }
+    
+    // Unbind any existing SHM first
+    if (shmControlBlock_) {
+        unbindSharedMemory();
+    }
+    
+    shmControlBlock_ = controlBlock;
+    shmRingArray_ = ringArray;
+    
+    // *** Reset indices for a clean start ***
+    RTShmRing::WriteIndexProxy(*controlBlock).store(0, std::memory_order_relaxed);
+    RTShmRing::ReadIndexProxy(*controlBlock).store(0, std::memory_order_relaxed);
+    
+    controlBlock->streamActive = 0;        // stays idle until startAudioStreams()
+    
+    // Clear any leftover chunk-cache or stats
+    currentChunk_.invalidate();
+    reset();  // Reset bytesConsumed_, popCount_, etc. for fresh state
+    
+    if (logger_) {
+        logger_->info("SHM bound successfully: {} Hz, {} channels, {} bytes/frame, capacity: {}",
+                     controlBlock->sampleRateHz, controlBlock->channelCount, 
+                     controlBlock->bytesPerFrame, controlBlock->capacity);
+    }
+    
+    return true;
+}
+
+void IsochPacketProvider::unbindSharedMemory() {
+    std::lock_guard<std::mutex> lock(bindMutex_);  // Thread safety
+    if (shmControlBlock_) {
+        if (logger_) {
+            logger_->debug("Unbinding shared memory");
+        }
+        shmControlBlock_ = nullptr;
+        shmRingArray_ = nullptr;
+        currentChunk_.invalidate();
+    }
+}
+
+// Legacy interface - not used in direct SHM mode
+bool IsochPacketProvider::pushAudioData(const void* buffer, size_t bufferSizeInBytes) {
+    if (logger_) {
+        logger_->warn("pushAudioData called in direct SHM mode - operation not supported");
+    }
+    return false;
+}
+
+PreparedPacketData IsochPacketProvider::fillPacketData(
+    uint8_t* targetBuffer,
+    size_t targetBufferSize,
+    const TransmitPacketInfo& info)
+{
+    PreparedPacketData result;
+    result.dataPtr = targetBuffer;
+    result.dataLength = 0;
+    result.generatedSilence = true;
+
+    // === 0. Early parameter checks ===
+    if (!targetBuffer || targetBufferSize == 0) {
+        return result;
+    }
+
+    // === 1. Check SHM binding ===
+    if (!shmControlBlock_ || !shmRingArray_) {
+        std::memset(targetBuffer, 0, targetBufferSize);
+        result.dataLength = targetBufferSize;
+        return result;
+    }
+
+    // --- 1. Refresh SHM State from Cache if needed ---
+    if (++shmCache_.updateCounter >= kCacheUpdateInterval || shmCache_.availableChunks <= kSafetyHedgeChunks) {
+        if (shmControlBlock_) {
+            shmCache_.writeIndex = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+            const auto readIndex = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_relaxed);
+            shmCache_.availableChunks = (shmCache_.writeIndex > readIndex) ? (shmCache_.writeIndex - readIndex) : 0;
+        } else {
+            shmCache_.availableChunks = 0;
+        }
+        shmCache_.updateCounter = 0;
+    }
+
+    // --- 2. Core Consumption Loop ---
+    uint8_t* writePtr = targetBuffer;
+    size_t remaining = targetBufferSize;
+    bool underrunOccurred = false;
+
+    while (remaining > 0) {
+        // CORRECTED HEDGE CHECK: Check if current chunk has data FIRST.
+        if (currentChunk_.remainingBytes() == 0) {
+            if (shmCache_.availableChunks > kSafetyHedgeChunks) {
+                if (popNextChunk()) {
+                    // CLAMP FIX: Prevent underflow on race.
+                    if (shmCache_.availableChunks > 0) {
+                        shmCache_.availableChunks--;
+                    }
+                } else { 
+                    underrunOccurred = true; 
+                    break; 
+                }
+            } else { 
+                underrunOccurred = true; 
+                break; 
+            }
+        }
+        
+        uint32_t availableInChunk = currentChunk_.remainingBytes();
+        size_t toCopy = std::min(remaining, static_cast<size_t>(availableInChunk));
+
+        // The data is already in the correct format. This is now just a memcpy.
+        std::memcpy(writePtr, currentChunk_.audioDataPtr + currentChunk_.consumedBytes, toCopy);
+        
+        writePtr += toCopy;
+        remaining -= toCopy;
+        currentChunk_.consumedBytes += static_cast<uint32_t>(toCopy);
+        totalBytesConsumed_ += toCopy;
+    }
+
+    // --- 3. Finalize: Fill silence only on a true underrun ---
+    if (remaining > 0) {
+        std::memset(writePtr, 0, remaining);
+        result.generatedSilence = true;
+        if (underrunOccurred) {
+            handleUnderrun(info); // Log the true underrun event.
+        }
+    } else {
+        result.generatedSilence = false;
+    }
+
+    result.dataLength = targetBufferSize;
+    return result;
+}
+
+bool IsochPacketProvider::popNextChunk() {
+    if (!shmControlBlock_ || !shmRingArray_) {
+        return false;
+    }
+
+    AudioTimeStamp timestamp;
+    uint32_t dataBytes;
+    const std::byte* audioPtr;
+
+    // Use your zero-copy pop API - this only checks if wr > rd
+    if (!RTShmRing::pop(*shmControlBlock_, shmRingArray_, timestamp, dataBytes, audioPtr)) {
+        shmUnderrunCount_++;
+        currentChunk_.invalidate();
+        return false;
+    }
+
+    // Cache the chunk data
+    currentChunk_.timeStamp = timestamp;
+    currentChunk_.totalBytes = dataBytes;
+    currentChunk_.audioDataPtr = audioPtr;
+    currentChunk_.consumedBytes = 0;
+    currentChunk_.valid = true;
+    
+    shmPopCount_++;
+    return true;
+}
+
+bool IsochPacketProvider::isReadyForStreaming() const {
+    if (!shmControlBlock_) {
+        return false;
+    }
+    
+    auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+    auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+    
+    if (shmControlBlock_->capacity == 0) {
+        return false;
+    }
+    
+    uint64_t available = (wr >= rd) ? (wr - rd) : 0;
+    return available > kSafetyHedgeChunks;
+}
+
+void IsochPacketProvider::reset() {
+    currentChunk_.invalidate();
+    totalBytesConsumed_ = 0;
+    shmPopCount_ = 0;
+    shmUnderrunCount_ = 0;
+    formatValidationErrors_ = 0;
+    partialChunkConsumptions_ = 0;
+    fillPacketCallCount_ = 0;
+    totalFillPacketTimeNs_ = 0;
+    lastStatsTime_ = std::chrono::steady_clock::now();
+    
+    if (logger_) {
+        logger_->info("IsochPacketProvider reset (direct SHM mode)");
+    }
+}
+
+void IsochPacketProvider::handleUnderrun(const TransmitPacketInfo& info) {
+    shmUnderrunCount_++;
+    
+    // Log periodically to avoid spam
+    if ((shmUnderrunCount_ % 100) == 1) {
+        uint32_t fillLevel = getCurrentShmFillLevel();
+        if (logger_) {
+            logger_->warn("SHM underrun detected at Seg={}, Pkt={}, AbsPkt={}. Total Count={}, SHM Fill={}%",
+                         info.segmentIndex, info.packetIndexInGroup, info.absolutePacketIndex, 
+                         shmUnderrunCount_.load(), fillLevel);
+        }
+    }
+}
+
+
+uint32_t IsochPacketProvider::getCurrentShmFillLevel() const {
+    if (!shmControlBlock_) {
+        return 0;
+    }
+    
+    auto wr = RTShmRing::WriteIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+    auto rd = RTShmRing::ReadIndexProxy(*shmControlBlock_).load(std::memory_order_acquire);
+    
+    if (shmControlBlock_->capacity == 0) {
+        return 0;
+    }
+    
+    uint64_t used = (wr >= rd) ? (wr - rd) : 0;
+    return static_cast<uint32_t>((used * 100) / shmControlBlock_->capacity);
+}
+
+bool IsochPacketProvider::validateShmFormat() const {
+    if (!shmControlBlock_) {
+        return false;
+    }
+    
+    return RTShmRing::ValidateFormat(*shmControlBlock_);
+}
+
+
+IsochPacketProvider::DiagnosticStats IsochPacketProvider::getDiagnostics() const {
+    DiagnosticStats stats;
+    stats.totalBytesConsumed = totalBytesConsumed_.load();
+    stats.shmPopCount = shmPopCount_.load();
+    stats.shmUnderrunCount = shmUnderrunCount_.load();
+    stats.formatValidationErrors = formatValidationErrors_.load();
+    stats.partialChunkConsumptions = partialChunkConsumptions_.load();
+    stats.currentShmFillPercent = getCurrentShmFillLevel();
+    
+    // Calculate average fill packet duration
+    uint64_t totalCalls = fillPacketCallCount_.load();
+    uint64_t totalTimeNs = totalFillPacketTimeNs_.load();
+    stats.avgFillPacketDurationUs = totalCalls > 0 ? 
+        (static_cast<double>(totalTimeNs) / static_cast<double>(totalCalls)) / 1000.0 : 0.0;
+    
+    return stats;
+}
+
+void IsochPacketProvider::resetDiagnostics() {
+    totalBytesConsumed_ = 0;
+    shmPopCount_ = 0;
+    shmUnderrunCount_ = 0;
+    formatValidationErrors_ = 0;
+    partialChunkConsumptions_ = 0;
+    fillPacketCallCount_ = 0;
+    totalFillPacketTimeNs_ = 0;
+    lastStatsTime_ = std::chrono::steady_clock::now();
+    
+    if (logger_) {
+        logger_->debug("IsochPacketProvider diagnostics reset");
+    }
+}
+
+} // namespace Isoch
+} // namespace FWA
+
+
+
+=== include/shared/SharedMemoryStructures.hpp ===
+// SharedMemoryStructures.hpp (refactored)
+#pragma once
+#include <CoreAudio/AudioServerPlugIn.h> 
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+constexpr std::size_t kDestructiveCL     = 64;
+constexpr std::size_t kMaxFramesPerChunk = 1024; 
+constexpr std::size_t kMaxChannels       = 2;
+constexpr std::size_t kMaxBytesPerSample = 4;
+constexpr std::size_t kMaxBytesPerFrame  = kMaxChannels * kMaxBytesPerSample;
+constexpr std::size_t kRingCapacityPow2  = 128; // TEST
+static_assert((kRingCapacityPow2 & (kRingCapacityPow2 - 1)) == 0);
+constexpr std::size_t kAudioDataBytes = kMaxFramesPerChunk * kMaxBytesPerFrame;
+constexpr uint32_t    kShmVersion     = 4;
+
+namespace RTShmRing {
+
+// --- POD Structures ---
+
+struct alignas(kDestructiveCL) AudioChunk_POD {
+    AudioTimeStamp timeStamp{};
+    uint32_t       frameCount{0};
+    uint32_t       dataBytes{0};
+    uint64_t       sequence{0};
+    std::byte      audio[kAudioDataBytes]{};
+};
+// static_assert(sizeof(AudioChunk_POD) <= 4096);
+static_assert(sizeof(AudioChunk_POD) % kDestructiveCL == 0);
+
+
+struct alignas(kDestructiveCL) ControlBlock_POD {
+    uint32_t abiVersion;      // 0
+    uint32_t capacity;        // 4
+    uint32_t sampleRateHz;    // 8
+    uint32_t channelCount;    // 12
+    uint32_t bytesPerFrame;   // 16
+    uint32_t _padWriteAlign;  // 20 - NEW: explicit padding
+    uint64_t writeIndex;      // 24 - now 8-byte aligned
+    char     pad0[kDestructiveCL - 6*sizeof(uint32_t) - sizeof(uint64_t)];
+    uint64_t readIndex;       // Already aligned due to cache line boundary
+    char     pad1[kDestructiveCL - sizeof(uint64_t)];
+    uint32_t overrunCount;
+    uint32_t underrunCount;
+    uint32_t streamActive;
+    uint32_t reserved;
+};
+
+// Add compile-time verification
+static_assert(offsetof(ControlBlock_POD, writeIndex) % 8 == 0, "writeIndex must be 8-byte aligned");
+static_assert(offsetof(ControlBlock_POD, readIndex) % 8 == 0, "readIndex must be 8-byte aligned");
+
+
+static_assert(sizeof(ControlBlock_POD) % kDestructiveCL == 0);
+
+struct alignas(kDestructiveCL) SharedRingBuffer_POD
+{
+    ControlBlock_POD control;
+    AudioChunk_POD   ring[kRingCapacityPow2];
+};
+
+// --- Format Validation Helpers ---
+inline bool ValidateFormat(const ControlBlock_POD& cb) noexcept {
+    if (cb.abiVersion != kShmVersion) return false;
+    if (cb.sampleRateHz == 0 || cb.channelCount == 0) return false;
+    if (cb.channelCount > kMaxChannels) return false;
+    if (cb.bytesPerFrame != cb.channelCount * kMaxBytesPerSample) return false;
+    
+    // NEW: Validate capacity is power-of-two and reasonable
+    if (cb.capacity == 0) return false;
+    if ((cb.capacity & (cb.capacity - 1)) != 0) return false;  // Must be power of 2
+    if (cb.capacity > 65536) return false;  // Reasonable upper limit
+    
+    return true;
+}
+
+// --- Atomic Proxies ---
+inline std::atomic<uint64_t>& WriteIndexProxy(ControlBlock_POD& cb) noexcept {
+    return *reinterpret_cast<std::atomic<uint64_t>*>(&cb.writeIndex);
+}
+inline std::atomic<uint64_t>& ReadIndexProxy(ControlBlock_POD& cb) noexcept {
+    return *reinterpret_cast<std::atomic<uint64_t>*>(&cb.readIndex);
+}
+inline std::atomic<uint64_t>& SequenceProxy(AudioChunk_POD& c) noexcept {
+    return *reinterpret_cast<std::atomic<uint64_t>*>(&c.sequence);
+}
+inline std::atomic<uint32_t>& OverrunCountProxy(ControlBlock_POD& cb) noexcept {
+    return *reinterpret_cast<std::atomic<uint32_t>*>(&cb.overrunCount);
+}
+inline std::atomic<uint32_t>& UnderrunCountProxy(ControlBlock_POD& cb) noexcept {
+    return *reinterpret_cast<std::atomic<uint32_t>*>(&cb.underrunCount);
+}
+
+// --- push → unchanged except format check ---
+inline bool push(ControlBlock_POD&       cb,
+                 AudioChunk_POD*         ring,
+                 const AudioBufferList*  src,
+                 const AudioTimeStamp&   ts,
+                 uint32_t                frames,
+                 uint32_t                bpf) noexcept
+{
+    if (!ValidateFormat(cb)) return false;
+    if (!src || !ring || frames==0 || frames>kMaxFramesPerChunk) return false;
+    auto rd = ReadIndexProxy(cb).load(std::memory_order_acquire);
+    auto wr = WriteIndexProxy(cb).load(std::memory_order_relaxed);
+    if (wr - rd >= cb.capacity) return false;
+
+    auto slot = wr & (cb.capacity-1);
+    auto& c   = ring[slot];
+    auto totalBytes = frames * bpf;
+    if (totalBytes > kAudioDataBytes) return false;
+
+    c.timeStamp  = ts;
+    c.frameCount = frames;
+    c.dataBytes  = totalBytes;
+
+    auto dst = c.audio;
+    for (UInt32 i=0; i<src->mNumberBuffers; ++i) {
+        auto& b = src->mBuffers[i];
+        if (!b.mData || b.mDataByteSize==0)
+            std::memset(dst,0,b.mDataByteSize);
+        else
+            std::memcpy(dst,b.mData,b.mDataByteSize);
+        dst += b.mDataByteSize;
+    }
+
+    std::atomic_thread_fence(std::memory_order_release);
+    SequenceProxy(c).store(wr+1, std::memory_order_relaxed);
+    WriteIndexProxy(cb).store(wr+1, std::memory_order_release);
+    return true;
+}
+
+// --- zero-copy pop → new API for packet provider ---
+// FIXED pop() function - remove const parameters to avoid const_cast
+inline bool pop(ControlBlock_POD&       cb,           // CHANGED: remove const
+                AudioChunk_POD*         ring,         // CHANGED: remove const  
+                AudioTimeStamp&         tsOut,
+                uint32_t&               bytesOut,
+                const std::byte*&       audioPtrOut) noexcept
+{
+    if (!ValidateFormat(cb)) return false;
+
+    static thread_local bool inUnderrun = false;
+
+    
+    // CRITICAL FIX: Use WriteIndexProxy for wr, not ReadIndexProxy!
+    const uint64_t wr = WriteIndexProxy(cb).load(std::memory_order_acquire);
+    const uint64_t rd = ReadIndexProxy(cb).load(std::memory_order_relaxed);
+    if (rd == wr) {
+        // only bump once per contiguous underrun run
+        if (!inUnderrun) {
+            UnderrunCountProxy(cb).fetch_add(1, std::memory_order_relaxed);
+            inUnderrun = true;
+        }
+        return false;
+    }
+    inUnderrun = false;            // we have data again
+
+    const uint64_t slot = rd & (cb.capacity - 1);
+    AudioChunk_POD& c = ring[slot];
+    
+    if (SequenceProxy(c).load(std::memory_order_acquire) != rd + 1)
+        return false;
+
+    tsOut       = c.timeStamp;
+    bytesOut    = c.dataBytes;
+    audioPtrOut = c.audio;
+
+    ReadIndexProxy(cb).store(rd + 1, std::memory_order_release);
+    return true;
+}
+
+} // namespace RTShmRing
+
+
+
+
+=== src/Driver/FWAStream.hpp ===
+#pragma once
+#include <aspl/Stream.hpp>
+#include <arm_neon.h>
+
+class FWAStream : public aspl::Stream
+{
+public:
+    using aspl::Stream::Stream;          // inherit ctors
+
+    // ➊ Float-domain DSP: volume, mute, pan, etc.
+    void ApplyProcessing(Float32* frames,
+                         UInt32    frameCount,
+                         UInt32    channelCount) const override;
+
+    // ➋ NEW – lossless float→AM824 conversion
+    void ConvertToHardwareFormat(const Float32* inputFrames,
+                                 void*          outputBuffer,
+                                 UInt32         frameCount,
+                                 UInt32         channelCount) const;
+
+    // Override format-related methods for proper float/AM824 handling
+    AudioStreamBasicDescription GetVirtualFormat() const override;
+    // AudioStreamBasicDescription GetPhysicalFormat() const override;
+    // OSStatus IsPropertySettable(AudioObjectID objectID, pid_t clientPID,
+    //                             const AudioObjectPropertyAddress* address,
+    //                             Boolean* outIsSettable) const override;
+};
+
+
+=== src/Driver/FWAStream.cpp ===
+#include "FWAStream.hpp"
+#include <libkern/OSByteOrder.h>
+#include <algorithm> // For std::clamp
+#include <cmath>     // For lrintf
+#include <os/log.h>
+
+#if defined(__arm64__) || defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
+void FWAStream::ApplyProcessing(Float32* frames,
+                                UInt32    frameCount,
+                                UInt32    channelCount) const
+{
+    // no-op for now, as we are not applying any DSP processing
+    // const size_t sampleCount = static_cast<size_t>(frameCount) * channelCount;
+    // for (size_t i = 0; i < sampleCount; ++i)
+    //     frames[i] *= 1.0f;           // unity-gain placeholder (keep for future DSP)
+}
+
+// ---- NEW SIMD CONVERTER -----------------------------------------------------
+
+/*
+ *  24-bit signed audio in 32-bit big-endian words, label bit 0x40000000 set.
+ *  Input  : little-endian IEEE-754 float32, range −1.0 … +1.0
+ *  Output : uint32_t* in big-endian format for AM824 transmission
+ *           Layout per sample: [ sign-extended 24-bit << 8 ] | 0x40000000
+ *  CRITICAL: Convert to big-endian first, then apply label to MSB!
+ */
+void FWAStream::ConvertToHardwareFormat(const Float32* input,
+                                        void*          output,
+                                        UInt32         frameCount,
+                                        UInt32         channelCount) const
+{
+    const size_t total = static_cast<size_t>(frameCount) * channelCount;
+    auto* dst = static_cast<uint32_t*>(output);
+
+#if defined(__arm64__) || defined(__aarch64__)
+    // NEON fully vectorized path
+    const float32x4_t scale = vdupq_n_f32(8388607.0f);
+    const int32x4_t min_val = vdupq_n_s32(-8388608);
+    const int32x4_t max_val = vdupq_n_s32(8388607);
+    const uint32x4_t label_mask = vdupq_n_u32(0x40000000);
+
+    size_t i = 0;
+    for (; i + 3 < total; i += 4) {
+        // Load and scale float samples
+        float32x4_t f = vld1q_f32(input + i);
+        int32x4_t s = vcvtq_s32_f32(vmulq_f32(f, scale));
+        
+        // Clamp to 24-bit range
+        s = vmaxq_s32(s, min_val);
+        s = vminq_s32(s, max_val);
+        
+        // Shift left by 8 to position 24-bit audio in upper bits
+        uint32x4_t shifted = vshlq_n_u32(vreinterpretq_u32_s32(s), 8);
+        
+        // Apply AM824 label
+        uint32x4_t am824 = vorrq_u32(shifted, label_mask);
+        
+        // Convert to big-endian
+        uint32x4_t be = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(am824)));
+        
+        // Store
+        vst1q_u32(dst + i, be);
+    }
+    
+    // Handle remaining samples
+    for (; i < total; ++i) {
+        int32_t sample = std::clamp(static_cast<int32_t>(lrintf(input[i] * 8388607.0f)), 
+                                   -8388608, 8388607);
+        uint32_t audio_shifted = static_cast<uint32_t>(sample) << 8;
+        uint32_t am824_word = audio_shifted | 0x40000000;
+        dst[i] = OSSwapHostToBigInt32(am824_word);
+    }
+#else
+    // Scalar fallback (same as above)
+    for (size_t i = 0; i < total; ++i) {
+        int32_t sample = std::clamp(static_cast<int32_t>(lrintf(input[i] * 8388607.0f)), 
+                                   -8388608, 8388607);
+        uint32_t audio_shifted = static_cast<uint32_t>(sample) << 8;
+        uint32_t am824_word = audio_shifted | 0x40000000;
+        dst[i] = OSSwapHostToBigInt32(am824_word);
+    }
+#endif
+}
+AudioStreamBasicDescription FWAStream::GetVirtualFormat() const
+{
+
+    // Request 32-bit float from Core Audio
+    AudioStreamBasicDescription fmt = {};
+    fmt.mSampleRate       = GetSampleRate();
+    fmt.mFormatID         = kAudioFormatLinearPCM;
+    fmt.mFormatFlags      = kAudioFormatFlagIsFloat | 
+                           kAudioFormatFlagIsPacked |
+                           kAudioFormatFlagsNativeEndian;
+    fmt.mBitsPerChannel   = 32;
+    fmt.mChannelsPerFrame = GetChannelCount();
+    fmt.mBytesPerFrame    = sizeof(Float32) * GetChannelCount();
+    fmt.mFramesPerPacket  = 1;
+    fmt.mBytesPerPacket   = fmt.mBytesPerFrame;
+    os_log(OS_LOG_DEFAULT, "FWAStream::GetVirtualFormat() - Returning Float32 format: SampleRate=%.2f, Channels=%u",
+           fmt.mSampleRate, fmt.mChannelsPerFrame);
+    return fmt;
+}
+
+// OSStatus FWAStream::IsPropertySettable(AudioObjectID objectID, pid_t clientPID,
+//                                         const AudioObjectPropertyAddress* address,
+//                                         Boolean* outIsSettable) const
+// {
+//     // If a client asks if they can change the virtual format, tell them NO.
+//     if (address->mSelector == kAudioStreamPropertyVirtualFormat) {
+//         *outIsSettable = false;
+//         return noErr;
+//     }
+
+//     // For all other properties, defer to the base class implementation.
+//     return aspl::Stream::IsPropertySettable(objectID, clientPID, address, outIsSettable);
+// }
+
+
+=== src/Driver/FWADriverHandler.hpp ===
+#ifndef FWADRIVERHANDLER_HPP
+#define FWADRIVERHANDLER_HPP
+
+#include <aspl/Driver.hpp>
+#include <aspl/Stream.hpp>
+#include <aspl/ControlRequestHandler.hpp>
+#include <aspl/IORequestHandler.hpp>
+#include <memory>
+#include <shared/SharedMemoryStructures.hpp> // Include the new header
+#include <vector>
+
+class FWADriverHandler : public aspl::ControlRequestHandler, public aspl::IORequestHandler {
+public:
+    FWADriverHandler(); // Constructor
+    ~FWADriverHandler(); // Destructor for cleanup
+
+    OSStatus OnStartIO() override;
+    void OnStopIO() override;
+
+    // Remove OnWriteMixedOutput (will move logic to Device)
+    // Add shared memory setup/teardown
+    bool SetupSharedMemory(const std::string& shmName);
+    void TeardownSharedMemory();
+
+    // Helper for device to check SHM state
+    bool IsSharedMemoryReady() const { return controlBlock_ && ringBuffer_; }
+    // Helper for device to push audio data
+    bool PushToSharedMemory(const AudioBufferList* src, const AudioTimeStamp& ts, uint32_t frames, uint32_t bytesPerFrame);
+
+private:
+    // Shared Memory state
+    void* shmPtr_ = nullptr; // Raw pointer to the mapped memory
+    int shmFd_ = -1;         // File descriptor for POSIX shared memory
+    size_t shmSize_ = 0;     // Total size of the mapped region
+    RTShmRing::ControlBlock_POD* controlBlock_ = nullptr; // Pointer into shmPtr_
+    RTShmRing::AudioChunk_POD*   ringBuffer_ = nullptr;   // Pointer into shmPtr_
+
+    // Local non-atomic counter for RT thread (see recommendation 2.8)
+    uint32_t localOverrunCounter_ = 0;
+    // Add timer mechanism later to periodically update shared atomic counter
+};
+
+#endif // FWADRIVERHANDLER_HPP
+
+
+
+=== src/Driver/FWADriverHandler.cpp ===
+#include "FWADriverHandler.hpp"
+
+#define DEBUG 0
+#include <os/log.h>
+#include <sys/mman.h>   // For mmap, munmap, shm_open, shm_unlink
+#include <fcntl.h>      // For O_RDWR
+#include <unistd.h>     // For close
+#include <stdexcept>
+#include <cerrno>
+#include <cstring>
+
+constexpr const char* LogPrefix = "FWADriverASPL: ";
+
+FWADriverHandler::FWADriverHandler() {
+    localOverrunCounter_ = 0;
+}
+
+FWADriverHandler::~FWADriverHandler() {
+    TeardownSharedMemory();
+}
+
+bool FWADriverHandler::SetupSharedMemory(const std::string& shmName) {
+    // Not hot path: always log
+    os_log(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: Setting up shared memory '%{public}s'", LogPrefix, shmName.c_str());
+    if (shmPtr_) {
+        os_log(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: Shared memory already set up.", LogPrefix);
+        return true;
+    }
+    shmFd_ = shm_open(shmName.c_str(), O_RDWR, 0);
+    if (shmFd_ == -1) {
+        os_log_error(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: shm_open failed for '%{public}s': %{errno}d", LogPrefix, shmName.c_str(), errno);
+        return false;
+    }
+    shmSize_ = sizeof(RTShmRing::SharedRingBuffer_POD);
+    shmPtr_ = mmap(nullptr, shmSize_, PROT_READ | PROT_WRITE, MAP_SHARED, shmFd_, 0);
+    if (shmPtr_ == MAP_FAILED) {
+        os_log_error(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: mmap failed: %{errno}d", LogPrefix, errno);
+        close(shmFd_);
+        shmFd_ = -1;
+        shmPtr_ = nullptr;
+        return false;
+    }
+    if (mlock(shmPtr_, shmSize_) != 0) {
+        os_log_error(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: WARNING - mlock failed: %{errno}d. Real-time performance may suffer.", LogPrefix, errno);
+    }
+    os_log_info(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: Hinting kernel to prefetch pages (MADV_WILLNEED).", LogPrefix);
+    if (madvise(shmPtr_, shmSize_, MADV_WILLNEED) != 0) {
+        os_log_error(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: WARNING - madvise(MADV_WILLNEED) failed: %{errno}d", LogPrefix, errno);
+        // This is just a hint, so failure isn't critical, just log it.
+    }
+    RTShmRing::SharedRingBuffer_POD* sharedRegion = static_cast<RTShmRing::SharedRingBuffer_POD*>(shmPtr_);
+    controlBlock_ = &(sharedRegion->control);
+    ringBuffer_ = sharedRegion->ring;
+    if (controlBlock_->abiVersion != kShmVersion || controlBlock_->capacity != kRingCapacityPow2) {
+        os_log_error(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: ERROR - Shared memory header mismatch (abiVersion: %{public}u, capacity: %{public}u). Tearing down.",
+            LogPrefix, controlBlock_->abiVersion, controlBlock_->capacity);
+        TeardownSharedMemory();
+        return false;
+    }
+    os_log(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: Shared memory setup successful (Capacity: %{public}u, ABI: %{public}u).", LogPrefix, controlBlock_->capacity, controlBlock_->abiVersion);
+    return true;
+}
+
+void FWADriverHandler::TeardownSharedMemory() {
+    #if DEBUG
+    os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: Tearing down shared memory.", LogPrefix);
+    #endif
+    if (shmPtr_ != nullptr) {
+        if (munlock(shmPtr_, shmSize_) != 0) {
+            #if DEBUG
+            os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: WARNING - munlock failed: %{errno}d", LogPrefix, errno);
+            #endif
+        }
+        if (munmap(shmPtr_, shmSize_) != 0) {
+            #if DEBUG
+            os_log_error(OS_LOG_DEFAULT, "%sFWADriverHandler: munmap failed: %{errno}d", LogPrefix, errno);
+            #endif
+        }
+        shmPtr_ = nullptr;
+    }
+    if (shmFd_ != -1) {
+        close(shmFd_);
+        shmFd_ = -1;
+    }
+    controlBlock_ = nullptr;
+    ringBuffer_ = nullptr;
+    shmSize_ = 0;
+    #if DEBUG
+    os_log(OS_LOG_DEFAULT, "%sFWADriverHandler: Shared memory teardown complete.", LogPrefix);
+    #endif
+}
+
+bool FWADriverHandler::PushToSharedMemory(const AudioBufferList* src, const AudioTimeStamp& ts, uint32_t frames, uint32_t bytesPerFrame) {
+    if (!controlBlock_ || !ringBuffer_) return false;
+
+    // ----------------------------------------------
+    // ➊ if ring full *and* streams not yet active →
+    //    advance rd one slot (overwrite oldest)
+    // ----------------------------------------------
+    if (controlBlock_->streamActive == 0) {
+        auto wr = RTShmRing::WriteIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+        auto rd = RTShmRing::ReadIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+        if (wr - rd >= controlBlock_->capacity) {
+            // Drop the oldest chunk to make room
+            RTShmRing::ReadIndexProxy(*controlBlock_)
+                .store(rd + 1, std::memory_order_release);
+        }
+    }
+
+    bool success = RTShmRing::push(*controlBlock_, ringBuffer_, src, ts, frames, bytesPerFrame);
+    
+    // Log only after streams are active
+    #if DEBUG
+    if (!success && controlBlock_->streamActive) {
+        auto wr = RTShmRing::WriteIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+        auto rd = RTShmRing::ReadIndexProxy(*controlBlock_).load(std::memory_order_relaxed);
+        os_log_error(OS_LOG_DEFAULT,
+            "%sPUSH FAIL  wr=%llu rd=%llu used=%llu  frames=%u bytesPerFrame=%u",
+            LogPrefix, wr, rd, wr-rd, frames, bytesPerFrame);
+        
+        localOverrunCounter_++;
+        if ((localOverrunCounter_ & 0xFF) == 0) {
+            os_log_error(OS_LOG_DEFAULT, "%sPushToSharedMemory: Ring buffer OVERRUN! Count: %u", LogPrefix, localOverrunCounter_);
+        }
+    }
+    #endif
+    return success;
+}
+
+OSStatus FWADriverHandler::OnStartIO() {
+    // Not hot path: always log
+    os_log(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: OnStartIO called.", LogPrefix);
+    if (!controlBlock_ || !ringBuffer_) {
+        os_log_error(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: ERROR - Cannot StartIO, shared memory not set up.", LogPrefix);
+        return kAudioHardwareUnspecifiedError;
+    }
+    localOverrunCounter_ = 0;
+    os_log(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: STUB - Assuming Daemon started IO successfully.", LogPrefix);
+    return kAudioHardwareNoError;
+}
+
+void FWADriverHandler::OnStopIO() {
+    // Not hot path: always log
+    os_log(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: OnStopIO called.", LogPrefix);
+    // Optionally update shared atomic counters here
+}
+
+
+

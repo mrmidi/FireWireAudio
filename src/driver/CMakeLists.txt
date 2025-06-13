@@ -11,6 +11,8 @@ add_library(FWADriver MODULE
     FWADriverHandler.hpp
     FWADriverInit.cpp
     FWADriverInit.hpp
+    FWAStream.cpp
+    FWAStream.hpp
     DriverXPCManager.mm
     DriverXPCManager.hpp
 )

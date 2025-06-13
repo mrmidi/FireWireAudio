@@ -199,17 +199,63 @@ void CIPPreCalculator::calculateNextGroup() {
 }
 
 std::chrono::microseconds CIPPreCalculator::getSleepDuration() const {
-    uint32_t p = nextGroup_.load(), c = lastConsumed_.load();
-    if (p > c + kBufferDepth - 1) return std::chrono::microseconds(500);
-    if (p > c + 2)           return std::chrono::microseconds(100);
-    return std::chrono::microseconds(10);
+    uint32_t p = nextGroup_.load();
+    uint32_t c = lastConsumed_.load();
+    
+    // Calculate available buffer slots safely
+    uint32_t available = 0;
+    if (c != UINT32_MAX) {
+        if (p >= c) {
+            available = p - c;
+        } else {
+            // Handle integer overflow case  
+            available = 0;
+        }
+    }
+    
+    if (available >= kBufferDepth - 1) {
+        // Buffer nearly full - longer sleep
+        return std::chrono::microseconds(200);
+    } else if (available >= kBufferDepth / 2) {
+        // Comfortable buffer - medium sleep  
+        return std::chrono::microseconds(50);
+    } else {
+        // Buffer getting low - very short sleep
+        return std::chrono::microseconds(5);
+    }
 }
 
 void CIPPreCalculator::configureCPUAffinity() {
+    // Set thread affinity first
     thread_affinity_policy_data_t pol{1};
     thread_policy_set(mach_thread_self(), THREAD_AFFINITY_POLICY,
                       (thread_policy_t)&pol, THREAD_AFFINITY_POLICY_COUNT);
-    thread_precedence_policy_data_t pre{0};
+
+    // Calculate timing based on actual FireWire cycle timing
+    // FireWire bus runs at 8kHz = 125µs per cycle
+    // With packetsPerGroup typically 8, we get ~1ms between DCL callbacks
+    uint32_t cycleTimeNs = 125000; // 125µs in nanoseconds
+    uint32_t callbackPeriodNs = cycleTimeNs * config_.packetsPerGroup;
+    
+    thread_time_constraint_policy_data_t ttcPolicy;
+    ttcPolicy.period      = callbackPeriodNs;           // Match DCL callback period
+    ttcPolicy.computation = callbackPeriodNs / 8;       // ~12.5% of period for computation
+    ttcPolicy.constraint  = callbackPeriodNs / 2;       // Must complete within 50% of period
+    ttcPolicy.preemptible = 1;                          // Allow DCL callbacks to preempt
+    
+    kern_return_t result = thread_policy_set(mach_thread_self(),
+                                            THREAD_TIME_CONSTRAINT_POLICY,
+                                            (thread_policy_t)&ttcPolicy,
+                                            THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+    if (result != KERN_SUCCESS) {
+        os_log_error(OS_LOG_DEFAULT, "Failed to set real-time policy: %d", result);
+    } else {
+        os_log(OS_LOG_DEFAULT, "CIPPreCalculator: Set RT policy: period=%uµs, compute=%uµs, constraint=%uµs", 
+               ttcPolicy.period/1000, ttcPolicy.computation/1000, ttcPolicy.constraint/1000);
+    }
+
+    // Also set precedence for additional priority boost within the policy
+    thread_precedence_policy_data_t pre{10}; // Higher than default
     thread_policy_set(mach_thread_self(), THREAD_PRECEDENCE_POLICY,
                       (thread_policy_t)&pre, THREAD_PRECEDENCE_POLICY_COUNT);
 }

@@ -14,7 +14,7 @@ constexpr std::size_t kMaxBytesPerFrame  = kMaxChannels * kMaxBytesPerSample;
 constexpr std::size_t kRingCapacityPow2  = 128; // TEST
 static_assert((kRingCapacityPow2 & (kRingCapacityPow2 - 1)) == 0);
 constexpr std::size_t kAudioDataBytes = kMaxFramesPerChunk * kMaxBytesPerFrame;
-constexpr uint32_t    kShmVersion     = 3;
+constexpr uint32_t    kShmVersion     = 4;
 
 namespace RTShmRing {
 
@@ -30,26 +30,6 @@ struct alignas(kDestructiveCL) AudioChunk_POD {
 // static_assert(sizeof(AudioChunk_POD) <= 4096);
 static_assert(sizeof(AudioChunk_POD) % kDestructiveCL == 0);
 
-
-
-
-// struct alignas(kDestructiveCL) ControlBlock_POD {
-//     uint32_t abiVersion;      // = 2
-//     uint32_t capacity;        // ring length
-//     uint32_t sampleRateHz;    // e.g. 44100
-//     uint32_t channelCount;    // e.g. 2
-//     uint32_t bytesPerFrame;   // = channelCount * bytesPerSample
-//     uint64_t writeIndex;
-//     char     pad0[kDestructiveCL
-//                    - sizeof(uint32_t)*5
-//                    - sizeof(uint64_t)];
-//     uint64_t readIndex;
-//     char     pad1[kDestructiveCL - sizeof(uint64_t)];
-//     uint32_t overrunCount;
-//     uint32_t underrunCount;
-//     uint32_t streamActive;    // 0 = idle, 1 = running
-//     uint32_t reserved;        // keep 64-byte alignment
-// };
 
 struct alignas(kDestructiveCL) ControlBlock_POD {
     uint32_t abiVersion;      // 0
@@ -193,3 +173,4 @@ inline bool pop(ControlBlock_POD&       cb,           // CHANGED: remove const
 }
 
 } // namespace RTShmRing
+

@@ -9,11 +9,13 @@
 #include <limits>
 #include <cassert>
 #include "FWADriverHandler.hpp"
+#include "FWAStream.hpp"
 #include <CoreAudio/AudioServerPlugIn.h>
-// os_log
+#include <atomic>
 
-#define DEBUG 0
+#define DEBUG 1
 #include <os/log.h>
+#include <cstdio>
 
 constexpr const char* LogPrefix = "FWADriverASPL: ";
 
@@ -39,7 +41,9 @@ FWADriverDevice::FWADriverDevice(std::shared_ptr<const aspl::Context> context,
                                  const aspl::DeviceParameters& params)
     : aspl::Device(context, params) // Forward to base class
 {
-    GetContext()->Tracer->Message("%sFWADriverDevice[%u]: Constructed with name '%s'", LogPrefix, GetID(), params.Name.c_str());
+#if DEBUG
+    printf("FWADriverDevice::FWADriverDevice - Constructed with ID %u, Name '%s'\n", GetID(), params.Name.c_str());
+#endif
     // Custom initialization if needed
 }
 
@@ -55,7 +59,9 @@ Boolean FWADriverDevice::HasProperty(AudioObjectID objectID,
         address->mScope == kAudioObjectPropertyScopeGlobal &&
         address->mElement == kAudioObjectPropertyElementMain) // Use Main
     {
-        GetContext()->Tracer->Message("%sFWADriverDevice[%u]::HasProperty(Selector: %s): YES", LogPrefix, GetID(), selectorStr.c_str());
+#if DEBUG
+        printf("FWADriverDevice::HasProperty - Responding YES for selector %s\n", selectorStr.c_str());
+#endif
         return true;
     }
 
@@ -73,7 +79,9 @@ OSStatus FWADriverDevice::GetPropertyDataSize(AudioObjectID objectID,
 {
     std::string selectorStr = address ? FormatFourCharCode(address->mSelector) : "NULL";
     if (!address || !outDataSize) {
-        GetContext()->Tracer->Message("%sERROR: FWADriverDevice[%u]::GetPropertyDataSize - Invalid address or outDataSize pointer.", LogPrefix, GetID());
+#if DEBUG
+        printf("FWADriverDevice::GetPropertyDataSize - ERROR: Invalid address or outDataSize pointer.\n");
+#endif
         return kAudioHardwareBadObjectError;
     }
 
@@ -86,17 +94,27 @@ OSStatus FWADriverDevice::GetPropertyDataSize(AudioObjectID objectID,
         auto rates = GetSimulatedAvailableSampleRates();
         size_t requiredSize_t = rates.size() * sizeof(AudioValueRange);
         if (requiredSize_t > std::numeric_limits<UInt32>::max()) {
-            GetContext()->Tracer->Message("%sERROR: FWADriverDevice[%u]::GetPropertyDataSize(Selector: %s) - Required size (%zu) exceeds UINT32_MAX.", LogPrefix, GetID(), selectorStr.c_str(), requiredSize_t);
+#if DEBUG
+            printf("FWADriverDevice::GetPropertyDataSize - ERROR: Required size (%zu) exceeds UINT32_MAX for selector %s\n", requiredSize_t, selectorStr.c_str());
+#endif
             *outDataSize = 0;
             return kAudioHardwareUnspecifiedError;
         }
         *outDataSize = static_cast<UInt32>(requiredSize_t);
-        GetContext()->Tracer->Message("%sFWADriverDevice[%u]::GetPropertyDataSize(Selector: %s): %u bytes", LogPrefix, GetID(), selectorStr.c_str(), *outDataSize);
+#if DEBUG
+        printf("FWADriverDevice::GetPropertyDataSize - Reporting size %u for selector %s\n", *outDataSize, selectorStr.c_str());
+#endif
         return kAudioHardwareNoError;
     }
 
     // Let the base class handle others
-    return aspl::Device::GetPropertyDataSize(objectID, clientPID, address, qualifierDataSize, qualifierData, outDataSize);
+    OSStatus result = aspl::Device::GetPropertyDataSize(objectID, clientPID, address, qualifierDataSize, qualifierData, outDataSize);
+    if (result != kAudioHardwareNoError) {
+#if DEBUG
+        printf("FWADriverDevice::GetPropertyDataSize - ERROR: Base class failed for selector %s, result %#x\n", selectorStr.c_str(), result);
+#endif
+    }
+    return result;
 }
 
 OSStatus FWADriverDevice::GetPropertyData(AudioObjectID objectID,
@@ -110,7 +128,9 @@ OSStatus FWADriverDevice::GetPropertyData(AudioObjectID objectID,
 {
     std::string selectorStr = address ? FormatFourCharCode(address->mSelector) : "NULL";
      if (!address || !outDataSize || !outData) {
-        GetContext()->Tracer->Message("%sERROR: FWADriverDevice[%u]::GetPropertyData - Invalid address, outDataSize, or outData pointer.", LogPrefix, GetID());
+#if DEBUG
+        printf("FWADriverDevice::GetPropertyData - ERROR: Invalid address, outDataSize, or outData pointer.\n");
+#endif
         return kAudioHardwareBadObjectError;
     }
 
@@ -123,7 +143,9 @@ OSStatus FWADriverDevice::GetPropertyData(AudioObjectID objectID,
         auto rates = GetSimulatedAvailableSampleRates();
         size_t requiredSize_t = rates.size() * sizeof(AudioValueRange);
         if (requiredSize_t > std::numeric_limits<UInt32>::max()) {
-            GetContext()->Tracer->Message("%sERROR: FWADriverDevice[%u]::GetPropertyData(Selector: %s) - Required size (%zu) exceeds UINT32_MAX.", LogPrefix, GetID(), selectorStr.c_str(), requiredSize_t);
+#if DEBUG
+            printf("FWADriverDevice::GetPropertyData - ERROR: Required size (%zu) exceeds UINT32_MAX for selector %s\n", requiredSize_t, selectorStr.c_str());
+#endif
             *outDataSize = 0;
             return kAudioHardwareUnspecifiedError;
         }
@@ -133,20 +155,30 @@ OSStatus FWADriverDevice::GetPropertyData(AudioObjectID objectID,
         *outDataSize = bytesToWrite; // Return how much we *actually* wrote
 
         if (bytesToWrite > 0) {
-             GetContext()->Tracer->Message("%sFWADriverDevice[%u]::GetPropertyData(Selector: %s): Writing %u bytes (of %u needed)", LogPrefix, GetID(), selectorStr.c_str(), bytesToWrite, calculatedSize);
+#if DEBUG
+             printf("FWADriverDevice::GetPropertyData - Writing %u bytes (of %u needed) for selector %s\n", bytesToWrite, calculatedSize, selectorStr.c_str());
+#endif
              memcpy(outData, rates.data(), bytesToWrite);
         } else if (inDataSize == 0) {
-             GetContext()->Tracer->Message("%sWARNING: FWADriverDevice[%u]::GetPropertyData(Selector: %s): Zero-size buffer provided.", LogPrefix, GetID(), selectorStr.c_str());
+#if DEBUG
+             printf("FWADriverDevice::GetPropertyData - WARNING: Zero-size buffer provided for selector %s\n", selectorStr.c_str());
+#endif
              *outDataSize = 0;
         } else {
-             GetContext()->Tracer->Message("%sWARNING: FWADriverDevice[%u]::GetPropertyData(Selector: %s): Buffer too small (needed %u, got %u), wrote 0 bytes.", LogPrefix, GetID(), selectorStr.c_str(), calculatedSize, inDataSize);
+#if DEBUG
+             printf("FWADriverDevice::GetPropertyData - WARNING: Buffer too small for selector %s (needed %u, got %u), wrote 0 bytes\n", selectorStr.c_str(), calculatedSize, inDataSize);
+#endif
              *outDataSize = 0;
         }
          return kAudioHardwareNoError;
     }
 
     // Let the base class handle others
-    return aspl::Device::GetPropertyData(objectID, clientPID, address, qualifierDataSize, qualifierData, inDataSize, outDataSize, outData);
+    OSStatus result = aspl::Device::GetPropertyData(objectID, clientPID, address, qualifierDataSize, qualifierData, inDataSize, outDataSize, outData);
+    if (result != kAudioHardwareNoError) {
+        os_log(OS_LOG_DEFAULT, "FWADriverDevice::GetPropertyData - ERROR: Base class failed for selector %s, result %#x", selectorStr.c_str(), result);
+    }
+    return result;
 }
 
 // --- Helper Implementation ---
@@ -185,78 +217,190 @@ static void LogAudioTimeStamp(const char* prefix, const AudioTimeStamp& ts) {
     // For WordClockTime, it's just a UInt64
 }
 
+// --- IO Operation Support ---
+OSStatus FWADriverDevice::WillDoIOOperation(AudioObjectID inDeviceObjectID,
+                                           UInt32 inClientID,
+                                           UInt32 inOperationID,
+                                           Boolean* outWillDo,
+                                           Boolean* outWillDoInPlace)
+{
+    if (!outWillDo || !outWillDoInPlace) {
+        return kAudioHardwareBadObjectError;
+    }
+
+    // Tell Core Audio which operations we will handle
+    switch(inOperationID) {
+        case kAudioServerPlugInIOOperationConvertMix:
+            *outWillDo = true;
+            *outWillDoInPlace = false; // Requires secondary buffer for float->AM824 conversion
+            os_log(OS_LOG_DEFAULT, "FWADriverDevice::WillDoIOOperation - Will handle ConvertMix (not in-place)");
+            break;
+            
+        case kAudioServerPlugInIOOperationWriteMix:
+            *outWillDo = true;
+            *outWillDoInPlace = true; // Can write directly from buffer
+            os_log(OS_LOG_DEFAULT, "FWADriverDevice::WillDoIOOperation - Will handle WriteMix (in-place)");
+            break;
+            
+        case kAudioServerPlugInIOOperationProcessOutput:
+        case kAudioServerPlugInIOOperationProcessMix:
+            *outWillDo = true;
+            *outWillDoInPlace = true;
+            os_log(OS_LOG_DEFAULT, "FWADriverDevice::WillDoIOOperation - Will handle ProcessOutput/ProcessMix (in-place)");
+            break;
+            
+        default:
+            *outWillDo = false;
+            *outWillDoInPlace = false;
+            os_log(OS_LOG_DEFAULT, "FWADriverDevice::WillDoIOOperation - Will NOT handle operation %u", inOperationID);
+            break;
+    }
+    
+    return noErr;
+}
 
 OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
-                                        AudioObjectID streamID,
-                                        UInt32 clientID,
-                                        UInt32 operationID,
-                                        UInt32 ioBufferFrameSize,
-                                        const AudioServerPlugInIOCycleInfo* ioCycleInfo,
-                                        void* ioMainBuffer,
-                                        void* ioSecondaryBuffer)
+                                       AudioObjectID streamID,
+                                       UInt32 clientID,
+                                       UInt32 operationID,
+                                       UInt32 ioBufferFrameSize,
+                                       const AudioServerPlugInIOCycleInfo* ioCycleInfo,
+                                       void* ioMainBuffer,
+                                       void* ioSecondaryBuffer)
 {
-    static uint64_t g_frameCounter = 0;
-    #if DEBUG
-    if ((g_frameCounter++ & 0xFFF) == 0) {
-        os_log(OS_LOG_DEFAULT,
-            "%sIO cycle %llu  opID=%u  frames=%u",
-            LogPrefix, g_frameCounter, operationID, ioBufferFrameSize);
-    }
-    #else
-    g_frameCounter++;
-    #endif
 
-    // Only handle WriteMix and ReadInput
-    if (operationID == kAudioServerPlugInIOOperationWriteMix)
+    // --- Operation Name Logging ---
+    const char* opName = "unknown";
+    switch(operationID) {
+        case kAudioServerPlugInIOOperationThread: opName = "Thread"; break;
+        case kAudioServerPlugInIOOperationCycle: opName = "Cycle"; break;
+        case kAudioServerPlugInIOOperationReadInput: opName = "ReadInput"; break;
+        case kAudioServerPlugInIOOperationConvertInput: opName = "ConvertInput"; break;
+        case kAudioServerPlugInIOOperationProcessInput: opName = "ProcessInput"; break;
+        case kAudioServerPlugInIOOperationProcessOutput: opName = "ProcessOutput"; break;
+        case kAudioServerPlugInIOOperationMixOutput: opName = "MixOutput"; break;
+        case kAudioServerPlugInIOOperationProcessMix: opName = "ProcessMix"; break;
+        case kAudioServerPlugInIOOperationConvertMix: opName = "ConvertMix"; break;
+        case kAudioServerPlugInIOOperationWriteMix: opName = "WriteMix"; break;
+    }
+    os_log(OS_LOG_DEFAULT,  "FWADriverDevice::DoIOOperation - Operation: %s", opName);
+
+    static std::once_flag io_once_flag;
+    std::call_once(io_once_flag, [&]() {
+        os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - I/O loop has started for the first time.");
+    });
+
+    auto stream = GetStreamByID(streamID);
+    if (!stream) {
+        os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - ERROR: Bad stream ID %u", streamID);
+        return kAudioHardwareBadStreamError;
+    }
+    
+    auto* fwaStream = static_cast<FWAStream*>(stream.get());
+    auto* handler = static_cast<FWADriverHandler*>(GetIOHandler());
+    
+    // CRITICAL: Use VIRTUAL format for input, PHYSICAL for output
+    const auto& virtualFmt = fwaStream->GetVirtualFormat();
+    const auto& physicalFmt = fwaStream->GetPhysicalFormat();
+    
+    const bool nonInterleaved = 
+        (virtualFmt.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
+
+    switch (operationID)
     {
-        auto stream  = GetStreamByID(streamID);
-        AudioStreamBasicDescription fmt = stream->GetVirtualFormat();
-        const bool nonInterleaved = (fmt.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
-        const uint32_t bytesPerFrame = fmt.mBytesPerFrame;
-
-        FWADriverHandler* ioHandler = static_cast<FWADriverHandler*>(GetIOHandler());
-        if (!ioHandler || !ioHandler->IsSharedMemoryReady())
-            return kAudioHardwareUnspecifiedError;
-
-        if (nonInterleaved)
+        case kAudioServerPlugInIOOperationWriteMix:
         {
-            // --- existing path ---
-            const AudioBufferList* abl =
-                static_cast<const AudioBufferList*>(ioMainBuffer);
-            ioHandler->PushToSharedMemory(abl,
-                                          ioCycleInfo->mOutputTime,
-                                          ioBufferFrameSize,
-                                          bytesPerFrame);
-        }
-        else
-        {
-            // --- NEW: build a fake ABL with one interleaved buffer ---
-            AudioBufferList abl;
-            abl.mNumberBuffers          = 1;
-            abl.mBuffers[0].mNumberChannels = fmt.mChannelsPerFrame;
-            abl.mBuffers[0].mData           = const_cast<void*>(ioMainBuffer);
-            abl.mBuffers[0].mDataByteSize   = ioBufferFrameSize * bytesPerFrame;
+            static std::once_flag write_mix_flag;
+            std::call_once(write_mix_flag, [&](){
+                os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - Received WriteMix. ioMainBuffer=%p, ioSecondaryBuffer=%p", ioMainBuffer, ioSecondaryBuffer);
+            });
 
-            // Log the packet with os_log
-            // LogAudioTimeStamp("DoIOOperation WriteMix", ioCycleInfo->mOutputTime);
-            
-
-            ioHandler->PushToSharedMemory(&abl,
-                                          ioCycleInfo->mOutputTime,
-                                          ioBufferFrameSize,
-                                          bytesPerFrame);
-        }
-        return kAudioHardwareNoError;
-    } else if (operationID == kAudioServerPlugInIOOperationReadInput) {
-        // Provide silence for input
-        AudioBufferList* inputBufferList = static_cast<AudioBufferList*>(ioMainBuffer);
-        for (UInt32 i = 0; i < inputBufferList->mNumberBuffers; ++i) {
-            if (inputBufferList->mBuffers[i].mData) {
-                memset(inputBufferList->mBuffers[i].mData, 0, inputBufferList->mBuffers[i].mDataByteSize);
+            if (!handler || !handler->IsSharedMemoryReady()) {
+                // Fill with silence (proper AM824 silence)
+                void* targetBuffer = ioSecondaryBuffer ? ioSecondaryBuffer : ioMainBuffer;
+                uint32_t* dst = static_cast<uint32_t*>(targetBuffer);
+                uint32_t silenceWord = OSSwapHostToBigInt32(0x40000000); // AM824 silence
+                size_t sampleCount = ioBufferFrameSize * physicalFmt.mChannelsPerFrame;
+                
+                for (size_t i = 0; i < sampleCount; ++i) {
+                    dst[i] = silenceWord;
+                }
+                return noErr;
             }
+            
+            // Use converted data from secondary buffer if available
+            void* sourceBuffer = ioSecondaryBuffer ? ioSecondaryBuffer : ioMainBuffer;
+            
+            // Build ABL for physical format
+            AudioBufferList abl;
+            abl.mNumberBuffers = 1;
+            abl.mBuffers[0].mNumberChannels = physicalFmt.mChannelsPerFrame;
+            abl.mBuffers[0].mData = sourceBuffer;
+            abl.mBuffers[0].mDataByteSize = ioBufferFrameSize * physicalFmt.mBytesPerFrame;
+            
+            handler->PushToSharedMemory(&abl,
+                                      ioCycleInfo->mOutputTime,
+                                      ioBufferFrameSize,
+                                      physicalFmt.mBytesPerFrame);
+            return noErr;
         }
-        return kAudioHardwareNoError;
+
+        case kAudioServerPlugInIOOperationReadInput:
+            // Handle read input
+            return noErr;
+
+        case kAudioServerPlugInIOOperationConvertMix:
+        {
+            static std::once_flag convert_mix_flag;
+            std::call_once(convert_mix_flag, [&](){
+                os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - Received ConvertMix. ioMainBuffer=%p, ioSecondaryBuffer=%p", ioMainBuffer, ioSecondaryBuffer);
+                os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - --> About to call FWAStream::ConvertToHardwareFormat...");
+            });
+
+            // This is where float -> AM824 conversion happens
+            if (!ioSecondaryBuffer) {
+                os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - ERROR: ConvertMix requires secondary buffer, but it's null.");
+                return kAudioHardwareBadObjectError;
+            }
+            
+            if (nonInterleaved) {
+                // Handle non-interleaved
+                auto* in_abl = static_cast<const AudioBufferList*>(ioMainBuffer);
+                auto* out_abl = static_cast<AudioBufferList*>(ioSecondaryBuffer);
+                
+                // Ensure output buffer list is properly sized
+                out_abl->mNumberBuffers = in_abl->mNumberBuffers;
+                
+                for (UInt32 i = 0; i < in_abl->mNumberBuffers; ++i) {
+                    out_abl->mBuffers[i].mNumberChannels = in_abl->mBuffers[i].mNumberChannels;
+                    out_abl->mBuffers[i].mDataByteSize = 
+                        ioBufferFrameSize * physicalFmt.mBytesPerFrame;
+                    
+                    fwaStream->ConvertToHardwareFormat(
+                        static_cast<const Float32*>(in_abl->mBuffers[i].mData),
+                        out_abl->mBuffers[i].mData,
+                        ioBufferFrameSize,
+                        in_abl->mBuffers[i].mNumberChannels);
+                }
+            } else {
+                // Handle interleaved
+                fwaStream->ConvertToHardwareFormat(
+                    static_cast<const Float32*>(ioMainBuffer),
+                    ioSecondaryBuffer,
+                    ioBufferFrameSize,
+                    virtualFmt.mChannelsPerFrame);
+            }
+
+            static std::once_flag convert_done_flag;
+            std::call_once(convert_done_flag, [&](){
+                os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - --> Call to FWAStream::ConvertToHardwareFormat has COMPLETED.");
+            });
+            
+            return noErr;
+        }
+        
+        default:
+            os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - WARNING: Received unknown operationID: %u", operationID);
+            return noErr;
     }
-    // Ignore other operations
-    return kAudioHardwareNoError;
 }
