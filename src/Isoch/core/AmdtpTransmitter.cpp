@@ -619,7 +619,7 @@ void AmdtpTransmitter::handleDCLCompleteFastPath(uint32_t completedGroupIndex) {
         this->dbc_count_ = (this->dbc_count_ + (config_.packetsPerGroup * 8)) & 0xFF;
         this->wasNoData_ = true;
         
-        std::atomic_thread_fence(std::memory_order_release);
+        std::atomic_thread_fence(std::memory_order_release); // DISABLED: Seems unnecessary here
         dclManager_->notifySegmentUpdate(localPort, fillGroup);
         return;
     }

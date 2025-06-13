@@ -16,6 +16,8 @@ static_assert((kRingCapacityPow2 & (kRingCapacityPow2 - 1)) == 0);
 constexpr std::size_t kAudioDataBytes = kMaxFramesPerChunk * kMaxBytesPerFrame;
 constexpr uint32_t    kShmVersion     = 4;
 
+static constexpr uint32_t kSafetyHedgeChunks = 2; // Safety hedge for ring buffer capacity
+
 namespace RTShmRing {
 
 // --- POD Structures ---

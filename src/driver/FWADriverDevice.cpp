@@ -233,26 +233,26 @@ OSStatus FWADriverDevice::WillDoIOOperation(AudioObjectID inDeviceObjectID,
         case kAudioServerPlugInIOOperationConvertMix:
             *outWillDo = true;
             *outWillDoInPlace = false; // Requires secondary buffer for float->AM824 conversion
-            os_log(OS_LOG_DEFAULT, "FWADriverDevice::WillDoIOOperation - Will handle ConvertMix (not in-place)");
+            // os_log(OS_LOG_DEFAULT, "FWADriverDevice::WillDoIOOperation - Will handle ConvertMix (not in-place)");
             break;
             
         case kAudioServerPlugInIOOperationWriteMix:
             *outWillDo = true;
             *outWillDoInPlace = true; // Can write directly from buffer
-            os_log(OS_LOG_DEFAULT, "FWADriverDevice::WillDoIOOperation - Will handle WriteMix (in-place)");
+            // os_log(OS_LOG_DEFAULT, "FWADriverDevice::WillDoIOOperation - Will handle WriteMix (in-place)");
             break;
             
         case kAudioServerPlugInIOOperationProcessOutput:
         case kAudioServerPlugInIOOperationProcessMix:
             *outWillDo = true;
             *outWillDoInPlace = true;
-            os_log(OS_LOG_DEFAULT, "FWADriverDevice::WillDoIOOperation - Will handle ProcessOutput/ProcessMix (in-place)");
+            // os_log(OS_LOG_DEFAULT, "FWADriverDevice::WillDoIOOperation - Will handle ProcessOutput/ProcessMix (in-place)");
             break;
             
         default:
             *outWillDo = false;
             *outWillDoInPlace = false;
-            os_log(OS_LOG_DEFAULT, "FWADriverDevice::WillDoIOOperation - Will NOT handle operation %u", inOperationID);
+            // os_log(OS_LOG_DEFAULT, "FWADriverDevice::WillDoIOOperation - Will NOT handle operation %u", inOperationID);
             break;
     }
     
@@ -283,16 +283,16 @@ OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
         case kAudioServerPlugInIOOperationConvertMix: opName = "ConvertMix"; break;
         case kAudioServerPlugInIOOperationWriteMix: opName = "WriteMix"; break;
     }
-    os_log(OS_LOG_DEFAULT,  "FWADriverDevice::DoIOOperation - Operation: %s", opName);
+    // os_log(OS_LOG_DEFAULT,  "FWADriverDevice::DoIOOperation - Operation: %s", opName);
 
     static std::once_flag io_once_flag;
     std::call_once(io_once_flag, [&]() {
-        os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - I/O loop has started for the first time.");
+        // os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - I/O loop has started for the first time.");
     });
 
     auto stream = GetStreamByID(streamID);
     if (!stream) {
-        os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - ERROR: Bad stream ID %u", streamID);
+        // os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - ERROR: Bad stream ID %u", streamID);
         return kAudioHardwareBadStreamError;
     }
     
@@ -306,44 +306,10 @@ OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
     const bool nonInterleaved = 
         (virtualFmt.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
 
-    switch (operationID)
-    {
+    switch (operationID) {
         case kAudioServerPlugInIOOperationWriteMix:
-        {
-            static std::once_flag write_mix_flag;
-            std::call_once(write_mix_flag, [&](){
-                os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - Received WriteMix. ioMainBuffer=%p, ioSecondaryBuffer=%p", ioMainBuffer, ioSecondaryBuffer);
-            });
-
-            if (!handler || !handler->IsSharedMemoryReady()) {
-                // Fill with silence (proper AM824 silence)
-                void* targetBuffer = ioSecondaryBuffer ? ioSecondaryBuffer : ioMainBuffer;
-                uint32_t* dst = static_cast<uint32_t*>(targetBuffer);
-                uint32_t silenceWord = OSSwapHostToBigInt32(0x40000000); // AM824 silence
-                size_t sampleCount = ioBufferFrameSize * physicalFmt.mChannelsPerFrame;
-                
-                for (size_t i = 0; i < sampleCount; ++i) {
-                    dst[i] = silenceWord;
-                }
-                return noErr;
-            }
-            
-            // Use converted data from secondary buffer if available
-            void* sourceBuffer = ioSecondaryBuffer ? ioSecondaryBuffer : ioMainBuffer;
-            
-            // Build ABL for physical format
-            AudioBufferList abl;
-            abl.mNumberBuffers = 1;
-            abl.mBuffers[0].mNumberChannels = physicalFmt.mChannelsPerFrame;
-            abl.mBuffers[0].mData = sourceBuffer;
-            abl.mBuffers[0].mDataByteSize = ioBufferFrameSize * physicalFmt.mBytesPerFrame;
-            
-            handler->PushToSharedMemory(&abl,
-                                      ioCycleInfo->mOutputTime,
-                                      ioBufferFrameSize,
-                                      physicalFmt.mBytesPerFrame);
+            // no-op: data already written in ConvertMix
             return noErr;
-        }
 
         case kAudioServerPlugInIOOperationReadInput:
             // Handle read input
@@ -351,56 +317,36 @@ OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
 
         case kAudioServerPlugInIOOperationConvertMix:
         {
-            static std::once_flag convert_mix_flag;
-            std::call_once(convert_mix_flag, [&](){
-                os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - Received ConvertMix. ioMainBuffer=%p, ioSecondaryBuffer=%p", ioMainBuffer, ioSecondaryBuffer);
-                os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - --> About to call FWAStream::ConvertToHardwareFormat...");
-            });
-
-            // This is where float -> AM824 conversion happens
-            if (!ioSecondaryBuffer) {
-                os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - ERROR: ConvertMix requires secondary buffer, but it's null.");
-                return kAudioHardwareBadObjectError;
+            // Reserve a slot in shared memory
+            uint32_t* hwPtr = handler->reserveRingSlot(
+                ioBufferFrameSize,
+                ioCycleInfo->mOutputTime
+            );
+            // Fallback to local buffer if reservation fails
+            if (!hwPtr) {
+                hwPtr = static_cast<uint32_t*>(ioSecondaryBuffer);
+                std::fill_n(hwPtr,
+                            ioBufferFrameSize * physicalFmt.mChannelsPerFrame,
+                            OSSwapHostToBigInt32(0x40000000));
             }
-            
-            if (nonInterleaved) {
-                // Handle non-interleaved
-                auto* in_abl = static_cast<const AudioBufferList*>(ioMainBuffer);
-                auto* out_abl = static_cast<AudioBufferList*>(ioSecondaryBuffer);
-                
-                // Ensure output buffer list is properly sized
-                out_abl->mNumberBuffers = in_abl->mNumberBuffers;
-                
-                for (UInt32 i = 0; i < in_abl->mNumberBuffers; ++i) {
-                    out_abl->mBuffers[i].mNumberChannels = in_abl->mBuffers[i].mNumberChannels;
-                    out_abl->mBuffers[i].mDataByteSize = 
-                        ioBufferFrameSize * physicalFmt.mBytesPerFrame;
-                    
-                    fwaStream->ConvertToHardwareFormat(
-                        static_cast<const Float32*>(in_abl->mBuffers[i].mData),
-                        out_abl->mBuffers[i].mData,
-                        ioBufferFrameSize,
-                        in_abl->mBuffers[i].mNumberChannels);
-                }
-            } else {
-                // Handle interleaved
-                fwaStream->ConvertToHardwareFormat(
-                    static_cast<const Float32*>(ioMainBuffer),
-                    ioSecondaryBuffer,
-                    ioBufferFrameSize,
-                    virtualFmt.mChannelsPerFrame);
+            // Convert floats to AM824 directly into hwPtr
+            fwaStream->ConvertToHardwareFormat(
+                static_cast<const Float32*>(ioMainBuffer),
+                hwPtr,
+                ioBufferFrameSize,
+                virtualFmt.mChannelsPerFrame
+            );
+            // Commit if using shared memory
+            if (hwPtr != ioSecondaryBuffer) {
+                handler->commitRingSlot();
             }
-
-            static std::once_flag convert_done_flag;
-            std::call_once(convert_done_flag, [&](){
-                os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - --> Call to FWAStream::ConvertToHardwareFormat has COMPLETED.");
-            });
-            
             return noErr;
         }
-        
+
         default:
-            os_log(OS_LOG_DEFAULT, "FWADriverDevice::DoIOOperation - WARNING: Received unknown operationID: %u", operationID);
+            // os_log(OS_LOG_DEFAULT,
+            //        "FWADriverDevice::DoIOOperation - WARNING: Received unknown operationID: %u",
+            //        operationID);
             return noErr;
     }
 }

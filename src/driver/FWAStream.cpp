@@ -41,7 +41,6 @@ void FWAStream::ConvertToHardwareFormat(const Float32* input,
     const float32x4_t scale = vdupq_n_f32(8388607.0f);
     const int32x4_t min_val = vdupq_n_s32(-8388608);
     const int32x4_t max_val = vdupq_n_s32(8388607);
-    const uint32x4_t label_mask = vdupq_n_u32(0x40000000);
 
     size_t i = 0;
     for (; i + 3 < total; i += 4) {
@@ -53,35 +52,49 @@ void FWAStream::ConvertToHardwareFormat(const Float32* input,
         s = vmaxq_s32(s, min_val);
         s = vminq_s32(s, max_val);
         
-        // Shift left by 8 to position 24-bit audio in upper bits
-        uint32x4_t shifted = vshlq_n_u32(vreinterpretq_u32_s32(s), 8);
+        // Mask to 24-bit and build AM824 words like scalar version
+        uint32x4_t audio_24bit = vandq_u32(vreinterpretq_u32_s32(s), vdupq_n_u32(0x00FFFFFF));
         
-        // Apply AM824 label
-        uint32x4_t am824 = vorrq_u32(shifted, label_mask);
+        // Extract bytes: [lo, mid, hi, 0] for each sample  
+        uint32x4_t byte0 = vandq_u32(audio_24bit, vdupq_n_u32(0xFF));           // lo -> MSB
+        uint32x4_t byte1 = vandq_u32(vshrq_n_u32(audio_24bit, 8), vdupq_n_u32(0xFF));  // mid
+        uint32x4_t byte2 = vandq_u32(vshrq_n_u32(audio_24bit, 16), vdupq_n_u32(0xFF)); // hi
+        uint32x4_t byte3 = vdupq_n_u32(0x40);                                   // label -> LSB
         
-        // Convert to big-endian
-        uint32x4_t be = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(am824)));
-        
+        // Build final word: (byte0 << 24) | (byte1 << 16) | (byte2 << 8) | byte3
+        uint32x4_t am824 = vorrq_u32(
+            vorrq_u32(vshlq_n_u32(byte0, 24), vshlq_n_u32(byte1, 16)),
+            vorrq_u32(vshlq_n_u32(byte2, 8), byte3)
+        );
+
         // Store
-        vst1q_u32(dst + i, be);
+        vst1q_u32(dst + i, am824);
     }
     
-    // Handle remaining samples
+    // Handle remaining samples  
     for (; i < total; ++i) {
         int32_t sample = std::clamp(static_cast<int32_t>(lrintf(input[i] * 8388607.0f)), 
                                    -8388608, 8388607);
-        uint32_t audio_shifted = static_cast<uint32_t>(sample) << 8;
-        uint32_t am824_word = audio_shifted | 0x40000000;
-        dst[i] = OSSwapHostToBigInt32(am824_word);
+        // Build AM824 word - on LE system, reverse byte order to get correct BE result
+        uint32_t audio_24bit = static_cast<uint32_t>(sample) & 0x00FFFFFF;
+        uint8_t byte0 = audio_24bit & 0xFF;            // audio low byte -> MSB
+        uint8_t byte1 = (audio_24bit >> 8) & 0xFF;     // audio mid byte
+        uint8_t byte2 = (audio_24bit >> 16) & 0xFF;    // audio high byte  
+        uint8_t byte3 = 0x40;                          // AM824 label -> LSB
+        dst[i] = (byte0 << 24) | (byte1 << 16) | (byte2 << 8) | byte3;
     }
 #else
     // Scalar fallback (same as above)
     for (size_t i = 0; i < total; ++i) {
         int32_t sample = std::clamp(static_cast<int32_t>(lrintf(input[i] * 8388607.0f)), 
                                    -8388608, 8388607);
-        uint32_t audio_shifted = static_cast<uint32_t>(sample) << 8;
-        uint32_t am824_word = audio_shifted | 0x40000000;
-        dst[i] = OSSwapHostToBigInt32(am824_word);
+        // Build AM824 word - on LE system, reverse byte order to get correct BE result
+        uint32_t audio_24bit = static_cast<uint32_t>(sample) & 0x00FFFFFF;
+        uint8_t byte0 = audio_24bit & 0xFF;            // audio low byte -> MSB
+        uint8_t byte1 = (audio_24bit >> 8) & 0xFF;     // audio mid byte
+        uint8_t byte2 = (audio_24bit >> 16) & 0xFF;    // audio high byte  
+        uint8_t byte3 = 0x40;                          // AM824 label -> LSB
+        dst[i] = (byte0 << 24) | (byte1 << 16) | (byte2 << 8) | byte3;
     }
 #endif
 
@@ -158,3 +171,4 @@ AudioStreamBasicDescription FWAStream::GetVirtualFormat() const
 //     // For all other properties, defer to the base class implementation.
 //     return aspl::Stream::IsPropertySettable(objectID, clientPID, address, outIsSettable);
 // }
+

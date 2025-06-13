@@ -3,6 +3,8 @@ import streamlit as st
 import numpy as np
 from mvc.controller import AppController
 from mvc.views import CIPAnalysisView, AudioAnalysisView, DetailedPacketView
+from mvc.anomality_views import AudioAnomalyView
+from firewire.audio_anomality_analyzer import AudioAnomalyAnalyzer
 
 # --- Page Configuration ---
 st.set_page_config(page_title="FireWire Audio Packet Analyzer", layout="wide")
@@ -67,9 +69,14 @@ with tab_audio:
     if len(samples) == 0:
         st.warning(f"No audio samples found for channel {channel_select}.")
     else:
-        audio_results = controller.get_audio_analysis(samples)
+        # --- Anomaly Analysis Integration ---
+        anomaly_analyzer = AudioAnomalyAnalyzer(controller.analyzer)
+        anomaly_report = anomaly_analyzer.comprehensive_audio_quality_report(channel_select=channel_select)
+        AudioAnomalyView.render_comprehensive_report(anomaly_report)
+        # --- End Anomaly Analysis ---
         
         # Render audio metrics
+        audio_results = controller.get_audio_analysis(samples)
         AudioAnalysisView.render_audio_metrics(audio_results)
         
         # Render waveform plot

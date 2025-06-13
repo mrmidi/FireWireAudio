@@ -144,3 +144,51 @@ void FWADriverHandler::OnStopIO() {
     os_log(OS_LOG_DEFAULT, "%{public}sFWADriverHandler: OnStopIO called.", LogPrefix);
     // Optionally update shared atomic counters here
 }
+
+// --- Fast-path reserve/commit API implementations ---
+uint32_t* FWADriverHandler::reserveRingSlot(UInt32 frameCount, const AudioTimeStamp& ts)
+{
+    if (!controlBlock_ || !ringBuffer_) return nullptr;
+
+    auto& cb = *controlBlock_;
+    auto& wr = RTShmRing::WriteIndexProxy(cb);
+    auto& rd = RTShmRing::ReadIndexProxy(cb);
+
+    uint64_t write = wr.load(std::memory_order_relaxed);
+    uint64_t read  = rd.load(std::memory_order_acquire);
+
+    // Ring-full? Drop oldest if stream not yet active
+    if (cb.streamActive == 0 && write - read >= cb.capacity) {
+        rd.store(read + 1, std::memory_order_release);
+    }
+    if (write - read >= cb.capacity) {
+        return nullptr;  // still full
+    }
+
+    // Prepare header
+    auto& chunk = ringBuffer_[write & (cb.capacity - 1)];
+    chunk.timeStamp  = ts;
+    chunk.frameCount = frameCount;
+    chunk.dataBytes  = frameCount * cb.bytesPerFrame;
+
+    // Return pointer to the audio[] buffer (32-bit words)
+    return reinterpret_cast<uint32_t*>(chunk.audio);
+}
+
+void FWADriverHandler::commitRingSlot()
+{
+    if (!controlBlock_) return;
+
+    auto& cb = *controlBlock_;
+    auto& wr = RTShmRing::WriteIndexProxy(cb);
+
+    uint64_t write = wr.load(std::memory_order_relaxed);
+
+    // Mark chunk ready
+    std::atomic_thread_fence(std::memory_order_release);
+    auto& chunk = ringBuffer_[write & (cb.capacity - 1)];
+    RTShmRing::SequenceProxy(chunk).store(write + 1, std::memory_order_relaxed);
+
+    // Advance write index
+    wr.store(write + 1, std::memory_order_release);
+}

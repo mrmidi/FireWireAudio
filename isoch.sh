@@ -173,12 +173,30 @@ if [[ "$MODE" == "transmit" ]]; then
         "include/shared/SharedMemoryStructures.hpp"
         "include/Isoch/core/AmdtpTransmitter.hpp"
         "include/Isoch/core/IsochPacketProvider.hpp"
+        "include/Isoch/Core/CIPHeader.hpp"
+        "include/Isoch/core/CIPPreCalculator.hpp"
         "include/Isoch/utils/TimingUtils.hpp"
+        "include/Isoch/IsochStreamHandler.hpp"
+        "include/Isoch/core/IsochTransmitDCLManager.hpp"
+        "include/Isoch/core/IsochTransmitBufferManager.hpp"
+        "include/shared/SharedMemoryStructures.hpp"
         "src/Isoch/core/IsochPacketProvider.cpp"
         "src/Isoch/core/AmdtpTransmitter.cpp"
         "src/Isoch/core/IsochTransmitDCLManager.cpp"
         "src/Isoch/core/IsochTransmitBufferManager.cpp"
+        "src/Isoch/IsochStreamHandler.cpp"
+        "src/Isoch/core/CIPPreCalculator.cpp"
+        # "src/Driver/*"
+        # all files in src/Driver should be included
+        "src/Driver/FWADriver.cpp"
+        "src/Driver/FWADriver.hpp"
+        "src/Driver/FWADriverDevice.cpp"
+        "src/Driver/FWADriverDevice.hpp"
+        "src/Driver/FWAStream.cpp"
+        "src/Driver/FWAStream.hpp"
         "src/Driver/FWADriverHandler.cpp"
+        "src/Driver/FWADriverHandler.hpp"
+    
     )
     
     # Process each file

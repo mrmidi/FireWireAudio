@@ -181,7 +181,7 @@ std::expected<void, IOKitError> IsoStreamHandler::start() {
     // --- Create Output Stream (Transmitter) ---
     m_logger->info("IsoStreamHandler: Creating transmitter stream...");
 
-    // isochronous parameters for transmitter
+    // isochronous paramexsters for transmitter
     // 256 callbacks per second
     // worth playing around with this values 32/8 rate ~250 callbacks per second. Latency is need to be estimated.
     const unsigned int txPacketsPerGroup = 32; 

@@ -3,7 +3,7 @@
 #include <arm_neon.h>
 #include <mutex> // Required for std::once_flag
 
-#define DEBUG 1
+#define DEBUG 0 // stop flood :)
 
 class FWAStream : public aspl::Stream
 {

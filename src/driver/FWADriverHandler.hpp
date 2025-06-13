@@ -26,6 +26,11 @@ public:
     bool IsSharedMemoryReady() const { return controlBlock_ && ringBuffer_; }
     // Helper for device to push audio data
     bool PushToSharedMemory(const AudioBufferList* src, const AudioTimeStamp& ts, uint32_t frames, uint32_t bytesPerFrame);
+    // --- Fast-path reserve/commit API ---
+    // Reserve a ring-slot for 'frames' samples; returns ptr into .audio[]
+    uint32_t* reserveRingSlot(UInt32 frameCount, const AudioTimeStamp& ts);
+    // Commit the most recent reservation
+    void commitRingSlot();
 
 private:
     // Shared Memory state

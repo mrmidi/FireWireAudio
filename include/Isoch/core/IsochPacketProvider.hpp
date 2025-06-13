@@ -97,7 +97,7 @@ private:
     static thread_local ShmStateCache shmCache_;
     static constexpr uint32_t kCacheUpdateInterval = 16;
     // A minimal, 1-chunk safety buffer to absorb scheduler jitter.
-    static constexpr uint32_t kSafetyHedgeChunks = 1;
+    // static constexpr uint32_t kSafetyHedgeChunks = 1;
 
     // --- Helper Methods ---
     bool popNextChunk();
