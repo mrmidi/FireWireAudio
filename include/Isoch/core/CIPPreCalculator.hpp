@@ -38,14 +38,16 @@ public:
     void stop();
 
     // From the DCL callback: fetch the ready group
-    struct GroupState {
-        std::atomic<bool> ready{false};
+    struct alignas(64) GroupState {
+        std::atomic<uint32_t> version{0};               // even→ready, odd→writing  
         std::atomic<uint64_t> preparedAtTime{0};
         std::atomic<uint32_t> groupNumber{UINT32_MAX};  // Track actual group number
         std::array<PreCalculatedPacket, 32> packets;
         uint8_t finalDbc;
         uint8_t packetCount;
-        uint8_t reserved[2];  // Adjust padding
+        // Pad to cache line boundary (64 bytes)
+        uint8_t _pad[64 - (sizeof(std::atomic<uint32_t>) + sizeof(std::atomic<uint64_t>) + 
+                           sizeof(std::atomic<uint32_t>) + 32*16 + 2) % 64];
     };
 
     const GroupState* getGroupState(uint32_t groupIdx) const;
@@ -54,10 +56,10 @@ public:
     
     // Force sync DBC state between transmitter and pre-calc
     void forceSync(uint8_t dbc, bool prevWasNoData);
+    bool emergencyCalculateCIP(CIPHeader* header, uint8_t packetIndex);
 
 private:
     void calculateNextGroup();
-    bool emergencyCalculateCIP(CIPHeader* header, uint8_t packetIndex);
     std::chrono::microseconds getSleepDuration() const;
     void configureCPUAffinity();
 
@@ -72,11 +74,11 @@ private:
     // Triple buffer
     std::array<GroupState, kBufferDepth> groupStates_;
 
-    // Thread & indices
+    // Thread & indices (using absolute counters)
     std::thread calcThread_;
     std::atomic<bool> running_{false};
-    std::atomic<uint32_t> nextGroup_{0};
-    std::atomic<uint32_t> lastConsumed_{0};
+    std::atomic<uint64_t> nextGroup_{0};      // absolute counter
+    std::atomic<uint64_t> lastConsumed_{0};   // absolute counter
 
     // config & node
     TransmitterConfig config_;

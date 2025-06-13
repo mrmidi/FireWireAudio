@@ -17,6 +17,68 @@
 // Safety checks  
 static_assert(sizeof(FWA::Isoch::CIPHeader) == 8, "CIPHeader size must be 8");
 
+// DBC Continuity Check Constants
+namespace {
+    constexpr uint8_t DBC_WRAP = 256;              // DBC is 8-bit, wraps at 256
+    constexpr uint8_t NO_DATA_INCREMENT = 8;       // No-data packets always increment by 8
+    constexpr uint8_t SYT_INTERVAL = 8;            // Normal data packet increment
+    
+    // Inline DBC continuity checker - optimized for fast path
+    inline bool checkDbcContinuity(uint8_t currentDbc, bool isNoData,
+                                   uint8_t& lastDataPacketDbc, uint8_t& lastPacketDbc,
+                                   bool& prevPacketWasNoData, bool& hasValidState,
+                                   const std::shared_ptr<spdlog::logger>& logger) {
+        
+        if (isNoData) {
+            // No-data packets: DBC should be (last_data_packet_dbc + 8) mod 256
+            if (hasValidState && lastDataPacketDbc != 0xFF) {
+                uint8_t expectedDbc = (lastDataPacketDbc + NO_DATA_INCREMENT) % DBC_WRAP;
+                if (currentDbc != expectedDbc) {
+                    logger->critical("DBC CONTINUITY ERROR: No-data packet DBC=0x{:02X}, expected=0x{:02X} "
+                                   "(last_data=0x{:02X})", currentDbc, expectedDbc, lastDataPacketDbc);
+                    return false;
+                }
+            }
+            
+            lastPacketDbc = currentDbc;
+            prevPacketWasNoData = true;
+            
+        } else {
+            // Data packet
+            if (!hasValidState || lastDataPacketDbc == 0xFF) {
+                // First data packet - just record it
+                lastDataPacketDbc = currentDbc;
+                hasValidState = true;
+            } else {
+                // Determine expected DBC based on previous packet type
+                uint8_t expectedDbc;
+                if (prevPacketWasNoData) {
+                    // After no-data: DBC should stay same as no-data packet
+                    expectedDbc = lastPacketDbc;
+                } else {
+                    // Normal data-to-data: increment by SYT_INTERVAL
+                    expectedDbc = (lastDataPacketDbc + SYT_INTERVAL) % DBC_WRAP;
+                }
+                
+                if (currentDbc != expectedDbc) {
+                    logger->critical("DBC CONTINUITY ERROR: Data packet DBC=0x{:02X}, expected=0x{:02X} "
+                                   "(prev_no_data={}, last_data=0x{:02X}, last_pkt=0x{:02X})", 
+                                   currentDbc, expectedDbc, prevPacketWasNoData, 
+                                   lastDataPacketDbc, lastPacketDbc);
+                    return false;
+                }
+            }
+            
+            // Update tracking variables for next iteration
+            lastDataPacketDbc = currentDbc;
+            lastPacketDbc = currentDbc;
+            prevPacketWasNoData = false;
+        }
+        
+        return true;
+    }
+}
+
 namespace FWA {
 namespace Isoch {
 
@@ -306,274 +368,6 @@ void AmdtpTransmitter::handleDCLOverrun() {
     }
 }
 
-// --- IMPLEMENTATION OF handleDCLComplete (Instance Method) ---
-// This is the core real-time loop function called from the RunLoop via the static helper
-void AmdtpTransmitter::handleDCLComplete(uint32_t completedGroupIndex) {
-    uint64_t t0 = mach_absolute_time();
-    #if DEBUG
-    // --- Callback Rate Monitoring ---
-    static thread_local uint64_t callbackCountSinceLastLog = 0;
-    static thread_local auto lastRateLogTime = std::chrono::steady_clock::now();
-    static const auto loggingInterval = std::chrono::seconds(1); // Log roughly every second
-
-    callbackCountSinceLastLog++; // Increment for this current callback
-
-    auto nowForRateLog = std::chrono::steady_clock::now();
-    auto elapsedSinceLastRateLog = nowForRateLog - lastRateLogTime;
-
-    if (elapsedSinceLastRateLog >= loggingInterval) {
-        double elapsedSeconds = std::chrono::duration<double>(elapsedSinceLastRateLog).count();
-        double callbacksPerSecond = 0.0;
-        if (elapsedSeconds > 0) {
-            callbacksPerSecond = static_cast<double>(callbackCountSinceLastLog) / elapsedSeconds;
-        }
-        logger_->info("DCLComplete Rate: {:.2f} callbacks/sec ({} callbacks in {:.3f}s)",
-                    callbacksPerSecond,
-                    callbackCountSinceLastLog,
-                    elapsedSeconds);
-        callbackCountSinceLastLog = 0;
-        lastRateLogTime = nowForRateLog;
-    }
-    // --- End Callback Rate Monitoring ---
-    // DEBUG LOGGING
-    // uint32_t cycleTime;
-    // IOReturn result = (*interface_)->GetCycleTime(interface_, &cycleTime);
-    // logger_->info("Callback: group={}, cycle={:08x}", completedGroupIndex, cycleTime);
-    // static uint32_t lastCycle = 0;
-    // uint32_t cycleDiff = (cycleTime >> 12) - (lastCycle >> 12);
-    // if (cycleDiff == 0) {
-    //     // logger_->error("🚨 Multiple callbacks in same cycle!");
-    // }
-    // lastCycle = cycleTime;
-    // os_log(OS_LOG_DEFAULT, "AmdtpTransmitter::handleDCLComplete FIRED");
-    // logger_->critical("<<<<< AmdtpTransmitter::handleDCLComplete ENTERED for Group: {} >>>>>", completedGroupIndex);
-    #endif
-    // --- 1. State Check ---
-    // Check running state *without* lock first for performance optimisation
-    if (!running_.load(std::memory_order_relaxed)) {
-        // logger_->trace("handleDCLComplete: Not running, ignoring callback for group {}", completedGroupIndex);
-        return;
-    }
-
-    // Get essential components (check for null - should ideally not happen if running)
-    auto localPort = portChannelManager_ ? portChannelManager_->getLocalPort() : nullptr;
-    if (!localPort || !dclManager_ || !bufferManager_ || !packetProvider_) {
-        logger_->error("handleDCLComplete: Required manager component is missing! Stopping stream.");
-        // Attempt to stop cleanly, ignoring potential errors during error handling
-        auto stopExp = stopTransmit(); // This will acquire the lock if needed
-        notifyMessage(TransmitterMessage::Error); // Notify client of error
-        return;
-    }
-
-    // --- 2. Timing & Debug ---
-    uint64_t callbackEntryTime = mach_absolute_time(); // Measure entry time
-    if (!firstDCLCallbackOccurred_) {
-        firstDCLCallbackOccurred_ = true;
-        // Potentially record first callback time for latency estimation
-        logger_->info("First DCL completion callback received for group {}", completedGroupIndex);
-    }
-
-    // Read hardware completion timestamp for the completed group
-    uint32_t completionTimestamp = 0;
-    auto tsExp = bufferManager_->getGroupTimestampPtr(completedGroupIndex);
-    if (tsExp) {
-        completionTimestamp = *tsExp.value();
-        // logger_->trace("Completed Group {}: HW Timestamp = {:#010x}", completedGroupIndex, completionTimestamp);
-        // TODO: Use this timestamp for PLL/rate estimation later
-    } else {
-        logger_->warn("Could not get completion timestamp for group {}", completedGroupIndex);
-    }
-
-    // --- 3. Determine Next Segment to Fill ---
-    // We need to fill the segment that the hardware will encounter *after*
-    // the currently executing segments. With a callback interval of 1,
-    // when group N completes, the hardware might be starting group N+1.
-    // We should prepare group N+2 to ensure double buffering.
-    uint32_t fillGroupIndex = (completedGroupIndex + kGroupsPerCallback) % config_.numGroups;
-    #if DEBUG
-    logger_->debug("handleDCLComplete: Completed Group = {}, Preparing Group = {}",
-                   completedGroupIndex, fillGroupIndex);
-    #endif
-
-    // --- 4. Prepare Next Segment Loop ---
-    // Iterate through all packets within the 'fillGroupIndex' segment
-    for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
-        uint32_t absolutePacketIndex = fillGroupIndex * config_.packetsPerGroup + p;
-
-        auto cipHdrPtrExp   = bufferManager_->getPacketCIPHeaderPtr(fillGroupIndex, p);
-        uint8_t* audioDataTargetPtr = nullptr;
-        if (bufferManager_->getClientAudioBufferPtr() && bufferManager_->getClientAudioBufferSize() > 0) {
-            audioDataTargetPtr = bufferManager_->getClientAudioBufferPtr()
-                               + (absolutePacketIndex * bufferManager_->getAudioPayloadSizePerPacket())
-                                    % bufferManager_->getClientAudioBufferSize();
-        }
-
-        if (!cipHdrPtrExp || !audioDataTargetPtr) {
-            #if DEBUG
-            logger_->error("handleDCLComplete: Failed to get buffer pointers for G={}, P={}. Skipping packet.", fillGroupIndex, p);
-            #endif
-            continue;
-        }
-
-        FWA::Isoch::CIPHeader*       cipHdrTarget   = reinterpret_cast<FWA::Isoch::CIPHeader*>(cipHdrPtrExp.value());
-        size_t           audioPayloadTargetSize = bufferManager_->getAudioPayloadSizePerPacket();
-
-        // --- 4b. Prepare TransmitPacketInfo ---
-        uint64_t estimatedHostTimeNano    = 0;
-        uint32_t estimatedFirewireTimestamp = 0;
-        TransmitPacketInfo packetInfo = {
-            .segmentIndex        = fillGroupIndex,
-            .packetIndexInGroup  = p,
-            .absolutePacketIndex = absolutePacketIndex,
-            .hostTimestampNano   = estimatedHostTimeNano,
-            .firewireTimestamp   = estimatedFirewireTimestamp
-        };
-
-        // --- 4c. Generate CIP Header Content First (to determine if we need audio data) ---
-        uint8_t next_dbc_val_for_state_update;
-        bool    next_wasNoData_val_for_state_update;
-        generateCIPHeaderContent(cipHdrTarget,                       // Output: where to write the header
-                                 this->dbc_count_,                   // Input: current DBC state from member
-                                 this->wasNoData_,                   // Input: previous packet type state from member
-                                 this->firstDCLCallbackOccurred_.load(), // Input: current atomic bool state
-                                 next_dbc_val_for_state_update,    // Output: by reference
-                                 next_wasNoData_val_for_state_update // Output: by reference
-        );
-
-        // --- 4d. Fill Audio Data Only If Not a No-Data Packet ---
-        PreparedPacketData packetDataStatus = {};
-        bool isNoDataPacket = FWA::Isoch::CIP::isNoDataPacket(cipHdrTarget->syt);
-        
-        if (!isNoDataPacket) {
-            // Only call fillPacketData if we're sending a data packet
-            packetDataStatus = packetProvider_->fillPacketData(
-                audioDataTargetPtr,
-                audioPayloadTargetSize,
-                packetInfo
-            );
-        } else {
-            // For no-data packets, set default values
-            packetDataStatus.dataLength = 0;
-            packetDataStatus.dataAvailable = false;
-            packetDataStatus.generatedSilence = false;
-        }
-        // Update transmitter's persistent state AFTER generating the header for *this* packet
-        if (isNoDataPacket) {
-           noDataPacketsSent_.fetch_add(1, std::memory_order_relaxed);
-        } else {
-            dataPacketsSent_.fetch_add(1, std::memory_order_relaxed);
-        }
-
-        this->dbc_count_ = next_dbc_val_for_state_update;
-        this->wasNoData_ = next_wasNoData_val_for_state_update;
-
-        // NOTE: Isoch header is now handled automatically by hardware. No updates needed here. 
-
-        // --- 4f. Update DCL Ranges (crucial change here) ---
-        IOVirtualRange ranges[2];
-        uint32_t numRanges = 0;
-
-        // Range 0: CIP Header (Always present)
-        ranges[0].address = reinterpret_cast<IOVirtualAddress>(cipHdrTarget);
-        ranges[0].length  = kTransmitCIPHeaderSize;
-        numRanges++;
-
-        // Determine if we are sending audio data based on the already determined packet type
-        bool sendAudioPayload = !isNoDataPacket;
-
-        if (sendAudioPayload) {
-            ranges[1].address = reinterpret_cast<IOVirtualAddress>(audioDataTargetPtr);
-            ranges[1].length  = packetDataStatus.dataLength;
-            numRanges++;
-        } else {
-            // Hardware will calculate data_length as just kTransmitCIPHeaderSize
-        }
-
-        // The isochronous header is handled by the hardware now, so we only update the data ranges.
-        auto updateExp = dclManager_->updateDCLPacket(fillGroupIndex, p, ranges, numRanges);
-        if (!updateExp) {
-            #if DEBUG
-            logger_->error("handleDCLComplete: Failed to update DCL packet ranges for G={}, P={}: {}",
-                fillGroupIndex, p,
-                iokit_error_category().message(static_cast<int>(updateExp.error())));
-            #endif
-        }
-    } // --- End packet loop (p) ---
-
-    // --- 5. Notify Hardware of Memory Updates ---
-    // Tell the hardware that the *memory content* (CIP headers, audio data)
-    // for the 'fillGroupIndex' has been updated and needs to be re-read before execution.
-
-    // After updating all packet content, before notifying hardware:
-    std::atomic_thread_fence(std::memory_order_release);
-
-
-    auto notifyContentExp = dclManager_->notifySegmentUpdate(localPort, fillGroupIndex);
-    if (!notifyContentExp) {
-        #if DEBUG
-        logger_->error("handleDCLComplete: Failed to notify segment content update for G={}: {}",
-                       fillGroupIndex,
-                       iokit_error_category().message(static_cast<int>(notifyContentExp.error())));
-        #endif
-        // Handle error - might lead to hardware sending stale data.
-    }
-
-    // --- 6. No DCL Jump Target Updates Needed ---
-    // We use a static circular DCL program configured during setup
-    // Hardware follows the pre-defined circular path
-
-    // --- 7. Performance Monitoring (Optional) ---
-    uint64_t callbackExitTime = mach_absolute_time();
-    uint64_t callbackDuration = callbackExitTime - callbackEntryTime;
-
-    // Convert to milliseconds (this is a simple approximation)
-    static mach_timebase_info_data_t timebase;
-    if (timebase.denom == 0) {
-        mach_timebase_info(&timebase);
-    }
-
-    uint64_t durationNanos = callbackDuration * timebase.numer / timebase.denom;
-    double   durationMs    = static_cast<double>(durationNanos) / 1000000.0;
-
-    // Log if duration exceeds threshold (e.g., 1ms for real-time audio)
-    static const double kWarningThresholdMs = 1.0; // 1ms is quite strict for real-time audio
-    #if DEBUG
-    // if (durationMs > kWarningThresholdMs) {
-    //     logger_->warn("handleDCLComplete: Long processing time for G={}: {:.3f}ms",
-    //                   completedGroupIndex, durationMs);
-    // }
-    #endif
-
-
-    #if DEBUG
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastPacketLogTime_);
-    if (elapsed.count() >= 1) {
-        uint64_t dCnt = dataPacketsSent_.exchange(0, std::memory_order_relaxed);
-        uint64_t nCnt = noDataPacketsSent_.exchange(0, std::memory_order_relaxed);
-        logger_->info("Packets last second: data={}  no_data={} total= {}", dCnt, nCnt, (dCnt + nCnt));
-        lastPacketLogTime_ = now;
-    }
-    #endif
-
-    
-    // --- 5. Exit timestamp & “Missed the train” check
-    uint64_t t1 = mach_absolute_time();
-    static mach_timebase_info_data_t tb = {0,0};
-    if (tb.denom == 0) mach_timebase_info(&tb);
-    uint64_t elapsedNs = (t1 - t0) * tb.numer / tb.denom;
-
-    // Threshold = packetsPerGroup * cycle_period_ns (cycle = 1/8000s = 125000ns)
-    uint64_t thresholdNs = uint64_t(config_.packetsPerGroup) * 125000;
-    if (elapsedNs > thresholdNs) {
-        // double elapsedUs    = elapsedNs / 1000.0; // TODO - refactor to multiply by 1e-3
-        double elapsedUs    = elapsedNs * 1e-3; // Convert to microseconds
-        // double thresholdUs  = thresholdNs / 1000.0;
-        double thresholdUs  = thresholdNs * 1e-3; // Convert to microseconds
-        logger_->error("Missed the train: callback took {:.1f} μs (limit {:.1f} μs)",
-                       elapsedUs, thresholdUs);
-    }
-}
 
 // --- NEW FAST-PATH DCL CALLBACK with CIP Pre-calculation ---
 void AmdtpTransmitter::handleDCLCompleteFastPath(uint32_t completedGroupIndex) {
@@ -589,109 +383,145 @@ void AmdtpTransmitter::handleDCLCompleteFastPath(uint32_t completedGroupIndex) {
     
     uint32_t fillGroup = (completedGroupIndex + kGroupsPerCallback) % config_.numGroups;
     
-    // Use simplified getGroupState (no validation method)
+    // Use version-based getGroupState with retry logic
     const auto* groupState = cipPreCalc_->getGroupState(fillGroup);
     if (!groupState) {
-        // No slow path fallback - generate minimal emergency headers
+        // EMERGENCY: Pre-calculator failed, use emergency generation
+        logger_->warn("FastPath: No pre-calc data for group {}, using emergency", fillGroup);
         perfStats_.missedPrecalc.fetch_add(1);
         
+        // Use emergency calculation for each packet in the group
         for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
             auto cipPtr = bufferManager_->getPacketCIPHeaderPtr(fillGroup, p);
             if (!cipPtr) continue;
             
             CIPHeader* hdr = reinterpret_cast<CIPHeader*>(cipPtr.value());
             
-            // Generate minimal NO-DATA header
-            hdr->sid_byte = (nodeID_ & 0x3F);
-            hdr->dbs = 2;
-            hdr->fn_qpc_sph_rsv = 0;
-            hdr->fmt_eoh1 = CIP::kFmtEohValue;
-            hdr->fdf = (config_.sampleRate == 48000.0) ? CIP::kFDF_48k : CIP::kFDF_44k1;
-            hdr->syt = CIP::kSytNoData;
-            hdr->dbc = (this->dbc_count_ + 8) & 0xFF;
+            // Use emergency calculation - this will update internal state
+            bool isNoData = cipPreCalc_->emergencyCalculateCIP(hdr, p);
             
-            IOVirtualRange range;
-            range.address = reinterpret_cast<IOVirtualAddress>(hdr);
-            range.length = kTransmitCIPHeaderSize;
-            dclManager_->updateDCLPacket(fillGroup, p, &range, 1);
-        }
-        
-        this->dbc_count_ = (this->dbc_count_ + (config_.packetsPerGroup * 8)) & 0xFF;
-        this->wasNoData_ = true;
-        
-        std::atomic_thread_fence(std::memory_order_release); // DISABLED: Seems unnecessary here
-        dclManager_->notifySegmentUpdate(localPort, fillGroup);
-        return;
-    }
-    
-    
-    // FAST PATH: Use pre-calculated headers
-    for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
-        const auto& pktInfo = groupState->packets[p];
-        
-        // Get buffer pointers
-        auto cipPtr = bufferManager_->getPacketCIPHeaderPtr(fillGroup, p);
-        if (!cipPtr) continue;
-        
-        // Copy pre-calculated header (VERY FAST)
-        std::memcpy(cipPtr.value(), &pktInfo.header, sizeof(CIPHeader));
-        CIPHeader* hdr = reinterpret_cast<CIPHeader*>(cipPtr.value());
-        
-        // Set up DCL ranges
-        IOVirtualRange ranges[2];
-        ranges[0].address = reinterpret_cast<IOVirtualAddress>(hdr);
-        ranges[0].length = kTransmitCIPHeaderSize;
-        uint32_t numRanges = 1;
-        
-        if (pktInfo.isNoData) {
-            // NO-DATA: Only CIP header, NEVER call fillPacketData!
-            noDataPacketsSent_.fetch_add(1);
-        } else {
-            // DATA: Fill audio and potentially reconcile
-            uint32_t absIdx = fillGroup * config_.packetsPerGroup + p;
-            uint8_t* audioPtr = bufferManager_->getClientAudioBufferPtr() +
-                (absIdx * bufferManager_->getAudioPayloadSizePerPacket()) % 
-                bufferManager_->getClientAudioBufferSize();
+            // DBC continuity check (emergency path)
+            checkDbcContinuity(hdr->dbc, isNoData, lastDataPacketDbc_, lastPacketDbc_, 
+                             prevPacketWasNoData_, hasValidDbcState_, logger_);
             
-            TransmitPacketInfo info = {
-                .segmentIndex = fillGroup,
-                .packetIndexInGroup = p,
-                .absolutePacketIndex = absIdx
-            };
+            // Set up DCL ranges
+            IOVirtualRange ranges[2];
+            ranges[0].address = reinterpret_cast<IOVirtualAddress>(hdr);
+            ranges[0].length = kTransmitCIPHeaderSize;
+            uint32_t numRanges = 1;
             
-            auto fillRes = packetProvider_->fillPacketData(
-                audioPtr,
-                bufferManager_->getAudioPayloadSizePerPacket(),
-                info
-            );
-            
-            bool haveAudio = fillRes.dataLength > 0;
-            
-            // Overwrite SYT if it was pre-calc'd as DATA but we got no data:
-            if (!haveAudio) {
-                // SHOULD NOT HAPPEN: If pre-calc says DATA, we should have audio!
-                logger_->critical("Pre-calc says DATA but no audio available for G={}, P={}",
-                              fillGroup, p);
-                // hdr->syt = FWA::Isoch::CIP::kSytNoData;
-                // noDataPacketsSent_.fetch_add(1);
+            if (isNoData) {
+                // NO-DATA: Only CIP header
+                noDataPacketsSent_.fetch_add(1);
             } else {
-                ranges[1].address = reinterpret_cast<IOVirtualAddress>(audioPtr);
-                ranges[1].length = fillRes.dataLength;
-                numRanges = 2;
-                dataPacketsSent_.fetch_add(1);
+                // DATA: Fill audio data
+                uint32_t absIdx = fillGroup * config_.packetsPerGroup + p;
+                uint8_t* audioPtr = bufferManager_->getClientAudioBufferPtr() +
+                    (absIdx * bufferManager_->getAudioPayloadSizePerPacket()) % 
+                    bufferManager_->getClientAudioBufferSize();
+                
+                TransmitPacketInfo info = {
+                    .segmentIndex = fillGroup,
+                    .packetIndexInGroup = p,
+                    .absolutePacketIndex = absIdx
+                };
+                
+                auto fillRes = packetProvider_->fillPacketData(
+                    audioPtr,
+                    bufferManager_->getAudioPayloadSizePerPacket(),
+                    info
+                );
+                
+                if (fillRes.dataLength > 0) {
+                    ranges[1].address = reinterpret_cast<IOVirtualAddress>(audioPtr);
+                    ranges[1].length = fillRes.dataLength;
+                    numRanges = 2;
+                    dataPacketsSent_.fetch_add(1);
+                } else {
+                    noDataPacketsSent_.fetch_add(1);
+                }
             }
+            
+            // Update DCL packet ranges
+            dclManager_->updateDCLPacket(fillGroup, p, ranges, numRanges);
         }
         
-        // Update DCL packet ranges - NO zero-length audio ranges!
-        dclManager_->updateDCLPacket(fillGroup, p, ranges, numRanges);
+        // Force sync to ensure DBC alignment between transmitter and pre-calc
+        cipPreCalc_->forceSync(this->dbc_count_, this->wasNoData_);
+        
+    } else {
+        // FAST PATH: Use pre-calculated headers
+        for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
+            const auto& pktInfo = groupState->packets[p];
+            
+            // Get buffer pointers
+            auto cipPtr = bufferManager_->getPacketCIPHeaderPtr(fillGroup, p);
+            if (!cipPtr) continue;
+            
+            // Copy pre-calculated header (VERY FAST)
+            std::memcpy(cipPtr.value(), &pktInfo.header, sizeof(CIPHeader));
+            CIPHeader* hdr = reinterpret_cast<CIPHeader*>(cipPtr.value());
+            
+            // DBC continuity check (fast path)
+            checkDbcContinuity(hdr->dbc, pktInfo.isNoData, lastDataPacketDbc_, lastPacketDbc_, 
+                             prevPacketWasNoData_, hasValidDbcState_, logger_);
+            
+            // Set up DCL ranges
+            IOVirtualRange ranges[2];
+            ranges[0].address = reinterpret_cast<IOVirtualAddress>(hdr);
+            ranges[0].length = kTransmitCIPHeaderSize;
+            uint32_t numRanges = 1;
+            
+            if (pktInfo.isNoData) {
+                // NO-DATA: Only CIP header, NEVER call fillPacketData!
+                noDataPacketsSent_.fetch_add(1);
+            } else {
+                // DATA: Fill audio and potentially reconcile
+                uint32_t absIdx = fillGroup * config_.packetsPerGroup + p;
+                uint8_t* audioPtr = bufferManager_->getClientAudioBufferPtr() +
+                    (absIdx * bufferManager_->getAudioPayloadSizePerPacket()) % 
+                    bufferManager_->getClientAudioBufferSize();
+                
+                TransmitPacketInfo info = {
+                    .segmentIndex = fillGroup,
+                    .packetIndexInGroup = p,
+                    .absolutePacketIndex = absIdx
+                };
+                
+                auto fillRes = packetProvider_->fillPacketData(
+                    audioPtr,
+                    bufferManager_->getAudioPayloadSizePerPacket(),
+                    info
+                );
+                
+                bool haveAudio = fillRes.dataLength > 0;
+                
+                // Overwrite SYT if it was pre-calc'd as DATA but we got no data:
+                if (!haveAudio) {
+                    // SHOULD NOT HAPPEN: If pre-calc says DATA, we should have audio!
+                    logger_->critical("Pre-calc says DATA but no audio available for G={}, P={}",
+                                  fillGroup, p);
+                    // hdr->syt = FWA::Isoch::CIP::kSytNoData;
+                    // noDataPacketsSent_.fetch_add(1);
+                } else {
+                    ranges[1].address = reinterpret_cast<IOVirtualAddress>(audioPtr);
+                    ranges[1].length = fillRes.dataLength;
+                    numRanges = 2;
+                    dataPacketsSent_.fetch_add(1);
+                }
+            }
+            
+            // Update DCL packet ranges - NO zero-length audio ranges!
+            dclManager_->updateDCLPacket(fillGroup, p, ranges, numRanges);
+        }
+        
+        // Mark group as consumed for flow control
+        cipPreCalc_->markGroupConsumed(fillGroup);
+        
+        // keep transmitter and pre-calc DBC in lock-step
+        this->dbc_count_ = groupState->finalDbc;
+        this->wasNoData_ = groupState->packets.back().isNoData;
     }
-    
-    // Mark group as consumed for flow control
-    cipPreCalc_->markGroupConsumed(fillGroup);
-    
-    // keep transmitter and pre-calc DBC in lock-step
-    this->dbc_count_ = groupState->finalDbc;
-    this->wasNoData_ = groupState->packets.back().isNoData;
     
     // Notify hardware
     std::atomic_thread_fence(std::memory_order_release);
@@ -878,6 +708,12 @@ void AmdtpTransmitter::initializeCIPState() {
 
     firstDCLCallbackOccurred_ = false;
     expectedTimeStampCycle_   = 0;
+    
+    // Initialize DBC continuity check state
+    lastDataPacketDbc_ = 0xFF;     // 0xFF indicates uninitialized
+    lastPacketDbc_ = 0xFF;         // 0xFF indicates uninitialized
+    prevPacketWasNoData_ = false;
+    hasValidDbcState_ = false;
 }
 
 AmdtpTransmitter::NonBlockingSytParams AmdtpTransmitter::calculateNonBlockingSyt(

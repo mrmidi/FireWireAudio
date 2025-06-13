@@ -15,14 +15,14 @@ void CIPPreCalculator::initialize(const TransmitterConfig& config, uint16_t node
     calcState_ = {};
 
     for (auto& g : groupStates_) {
-        g.ready.store(false);
-        g.preparedAtTime.store(0);
-        g.groupNumber.store(UINT32_MAX);  // Initialize group number
+        g.version.store(0, std::memory_order_relaxed);           // even = ready, odd = writing
+        g.preparedAtTime.store(0, std::memory_order_relaxed);
+        g.groupNumber.store(UINT32_MAX, std::memory_order_relaxed);
         g.finalDbc = 0;
         g.packetCount = config.packetsPerGroup;
     }
-    nextGroup_.store(0);
-    lastConsumed_.store(UINT32_MAX);  // Start with "no groups consumed"
+    nextGroup_.store(0, std::memory_order_relaxed);
+    lastConsumed_.store(0, std::memory_order_relaxed);  // Start with absolute 0
 
     os_log(OS_LOG_DEFAULT,
            "CIPPreCalculator init: %u×%u pkts @%.1fkHz",
@@ -55,22 +55,34 @@ const CIPPreCalculator::GroupState* CIPPreCalculator::getGroupState(uint32_t req
     uint32_t bufferSlot = requestedGroup % kBufferDepth;
     const auto* state = &groupStates_[bufferSlot];
     
-    // Quick check - if not ready, return nullptr
-    if (!state->ready.load(std::memory_order_acquire)) {
-        return nullptr;
+    // Version-based check with retry loop to handle torn reads
+    for (int retry = 0; retry < 3; ++retry) {
+        uint32_t v1 = state->version.load(std::memory_order_acquire);
+        if (v1 & 1) continue;  // Writer in progress (odd version)
+        
+        // Verify group number matches
+        uint32_t actualGroup = state->groupNumber.load(std::memory_order_relaxed);
+        if (actualGroup != requestedGroup) {
+            return nullptr;  // Group mismatch
+        }
+        
+        // Memory barrier to ensure we see consistent packet data
+        std::atomic_thread_fence(std::memory_order_acquire);
+        
+        // Check version hasn't changed during read
+        uint32_t v2 = state->version.load(std::memory_order_acquire);
+        if (v1 == v2) {
+            return state;  // Consistent read
+        }
+        // Version changed, retry
     }
     
-    // Verify group number matches (both now use modulo config_.numGroups)
-    uint32_t actualGroup = state->groupNumber.load(std::memory_order_relaxed);
-    if (actualGroup != requestedGroup) {
-        return nullptr;  // Group mismatch
-    }
-    
-    return state;
+    return nullptr;  // Failed to get consistent read after retries
 }
 
-void CIPPreCalculator::markGroupConsumed(uint32_t i) {
-    lastConsumed_.store(i, std::memory_order_relaxed);
+void CIPPreCalculator::markGroupConsumed(uint32_t groupIdx) {
+    // Mark group as consumed using absolute counter increment
+    lastConsumed_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void CIPPreCalculator::forceSync(uint8_t dbc, bool prevWasNoData) {
@@ -80,13 +92,13 @@ void CIPPreCalculator::forceSync(uint8_t dbc, bool prevWasNoData) {
     
     // Reset all group states to prevent stale data
     for (auto& g : groupStates_) {
-        g.ready.store(false, std::memory_order_relaxed);
+        g.version.store(0, std::memory_order_relaxed);  // Mark as ready but stale
         g.groupNumber.store(UINT32_MAX, std::memory_order_relaxed);
     }
     
-    // Reset nextGroup to start fresh
-    nextGroup_.store(0);
-    lastConsumed_.store(UINT32_MAX);
+    // Reset absolute counters to start fresh
+    nextGroup_.store(0, std::memory_order_relaxed);
+    lastConsumed_.store(0, std::memory_order_relaxed);
     
     os_log(OS_LOG_DEFAULT, "CIPPreCalculator force sync: DBC=%u, prevWasNoData=%d", dbc, prevWasNoData);
 }
@@ -94,37 +106,35 @@ void CIPPreCalculator::forceSync(uint8_t dbc, bool prevWasNoData) {
 void CIPPreCalculator::calculateNextGroup() {
     uint64_t t0 = mach_absolute_time();
     
-    // Use modulo numbering to match transmitter
-    uint32_t absoluteGroup = nextGroup_.load(std::memory_order_relaxed);
-    uint32_t targetGroup = absoluteGroup % config_.numGroups;  // KEY FIX
+    // Use absolute group counter
+    uint64_t absoluteGroup = nextGroup_.load(std::memory_order_relaxed);
+    uint32_t targetGroup = absoluteGroup % config_.numGroups;  // Convert to ring position
     uint32_t bufferSlot = targetGroup % kBufferDepth;
     auto& st = groupStates_[bufferSlot];
     
     std::lock_guard<std::mutex> lock(syncMutex_);
 
-    // Check if this slot already has fresh data for the target group
-    if (st.ready.load(std::memory_order_acquire)) {
-        uint32_t existingGroup = st.groupNumber.load(std::memory_order_relaxed);
-        if (existingGroup == targetGroup) {
-            uint64_t age = mach_absolute_time() - st.preparedAtTime.load();
-            if (age < kMaxPreparedAge) return;  // Still fresh
-        }
+    // ─── PHASE 1: Begin Update ───
+    uint32_t currentVersion = st.version.load(std::memory_order_relaxed);
+    if (currentVersion & 1) {
+        // Already being written by another thread, skip
+        return;
+    }
+    
+    // Mark as "writing" (odd version)
+    st.version.store(currentVersion + 1, std::memory_order_release);
+    std::atomic_thread_fence(std::memory_order_seq_cst);  // Full barrier
+
+    // Flow control using absolute counters
+    uint64_t lastConsumed = lastConsumed_.load(std::memory_order_relaxed);
+    uint64_t groupsAhead = absoluteGroup - lastConsumed;
+    if (groupsAhead >= kBufferDepth) {
+        // Too far ahead, mark as ready without update and return
+        st.version.store(currentVersion, std::memory_order_release);
+        return;
     }
 
-    // Flow control using modulo numbering
-    uint32_t lastConsumed = lastConsumed_.load(std::memory_order_relaxed);
-    if (lastConsumed != UINT32_MAX) {
-        uint32_t groupsAhead;
-        if (targetGroup >= lastConsumed) {
-            groupsAhead = targetGroup - lastConsumed;
-        } else {
-            // Handle wrap-around: target=2, consumed=14 in 16-group system
-            groupsAhead = (config_.numGroups - lastConsumed) + targetGroup;
-        }
-        if (groupsAhead >= kBufferDepth) return;  // Too far ahead
-    }
-
-    // Store the target group number (modulo config_.numGroups)
+    // Store the target group number
     st.groupNumber.store(targetGroup, std::memory_order_relaxed);
 
     const bool is48 = (config_.sampleRate == 48000.0);
@@ -186,9 +196,12 @@ void CIPPreCalculator::calculateNextGroup() {
 
     st.finalDbc = calcState_.dbc;
     st.packetCount = config_.packetsPerGroup;
-    st.preparedAtTime.store(mach_absolute_time());
+    st.preparedAtTime.store(mach_absolute_time(), std::memory_order_relaxed);
+    
+    // ─── PHASE 2: Publish Update ───
     std::atomic_thread_fence(std::memory_order_release);
-    st.ready.store(true, std::memory_order_release);
+    st.version.store(currentVersion + 2, std::memory_order_release);  // Mark as ready (even)
+    
     nextGroup_.fetch_add(1, std::memory_order_relaxed);
 
     uint64_t dt = mach_absolute_time() - t0;
@@ -199,19 +212,11 @@ void CIPPreCalculator::calculateNextGroup() {
 }
 
 std::chrono::microseconds CIPPreCalculator::getSleepDuration() const {
-    uint32_t p = nextGroup_.load();
-    uint32_t c = lastConsumed_.load();
+    uint64_t p = nextGroup_.load(std::memory_order_relaxed);
+    uint64_t c = lastConsumed_.load(std::memory_order_relaxed);
     
-    // Calculate available buffer slots safely
-    uint32_t available = 0;
-    if (c != UINT32_MAX) {
-        if (p >= c) {
-            available = p - c;
-        } else {
-            // Handle integer overflow case  
-            available = 0;
-        }
-    }
+    // Calculate available buffer slots using absolute counters
+    uint64_t available = p - c;  // Both are absolute counters now
     
     if (available >= kBufferDepth - 1) {
         // Buffer nearly full - longer sleep

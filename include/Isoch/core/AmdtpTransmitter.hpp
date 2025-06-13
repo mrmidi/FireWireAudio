@@ -240,6 +240,12 @@ private:
     
     // Store nodeID for emergency headers
     uint16_t nodeID_{0};
+    
+    // DBC continuity check state
+    uint8_t lastDataPacketDbc_{0xFF};    // 0xFF indicates uninitialized
+    uint8_t lastPacketDbc_{0xFF};        // 0xFF indicates uninitialized
+    bool prevPacketWasNoData_{false};
+    bool hasValidDbcState_{false};
 
     // Static constants for SYT calc (44.1kHz)
     static constexpr uint32_t SYT_PHASE_MOD = 147;

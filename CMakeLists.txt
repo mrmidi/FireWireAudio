@@ -129,6 +129,9 @@ FetchContent_Declare(nlohmann_json GIT_REPOSITORY https://github.com/nlohmann/js
 set(JSON_BuildTests OFF CACHE BOOL "Disable nlohmann_json tests")
 FetchContent_Declare(catch2        GIT_REPOSITORY https://github.com/catchorg/Catch2.git      GIT_TAG v3.8.0)
 set(CATCH2_BUILD_TESTS OFF CACHE BOOL "Disable Catch2 tests")
+FetchContent_Declare(googletest    GIT_REPOSITORY https://github.com/google/googletest.git    GIT_TAG v1.14.0)
+set(BUILD_GMOCK ON CACHE BOOL "Enable Google Mock")
+set(gtest_force_shared_crt ON CACHE BOOL "Force shared CRT for MSVC")
 FetchContent_Declare(libASPL       GIT_REPOSITORY https://github.com/mrmidi/libASPL.git         GIT_TAG main)
 
 # Swift Collections (Fetch sources only)
@@ -149,6 +152,7 @@ FetchContent_MakeAvailable(
   spdlog
   nlohmann_json
   catch2
+  googletest
   libASPL
   swift_log
   swift_collections

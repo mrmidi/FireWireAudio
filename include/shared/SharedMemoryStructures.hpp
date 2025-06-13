@@ -11,12 +11,12 @@ constexpr std::size_t kMaxFramesPerChunk = 1024;
 constexpr std::size_t kMaxChannels       = 2;
 constexpr std::size_t kMaxBytesPerSample = 4;
 constexpr std::size_t kMaxBytesPerFrame  = kMaxChannels * kMaxBytesPerSample;
-constexpr std::size_t kRingCapacityPow2  = 128; // TEST
+constexpr std::size_t kRingCapacityPow2  = 512; // TEST
 static_assert((kRingCapacityPow2 & (kRingCapacityPow2 - 1)) == 0);
 constexpr std::size_t kAudioDataBytes = kMaxFramesPerChunk * kMaxBytesPerFrame;
 constexpr uint32_t    kShmVersion     = 4;
 
-static constexpr uint32_t kSafetyHedgeChunks = 2; // Safety hedge for ring buffer capacity
+static constexpr uint32_t kSafetyHedgeChunks = 8; // Safety hedge for ring buffer capacity
 
 namespace RTShmRing {
 

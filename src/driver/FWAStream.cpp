@@ -146,8 +146,7 @@ AudioStreamBasicDescription FWAStream::GetVirtualFormat() const
     AudioStreamBasicDescription fmt = {};
     fmt.mSampleRate       = GetSampleRate();
     fmt.mFormatID         = kAudioFormatLinearPCM;
-    fmt.mFormatFlags      = kAudioFormatFlagIsFloat | 
-                           kAudioFormatFlagsNativeEndian;
+    fmt.mFormatFlags      = kAudioFormatFlagIsFloat,
     fmt.mBitsPerChannel   = 32;
     fmt.mChannelsPerFrame = GetChannelCount();
     fmt.mBytesPerFrame    = sizeof(Float32) * GetChannelCount();
