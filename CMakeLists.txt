@@ -308,6 +308,8 @@ set(SWIFT_MODEL_SOURCES
   FWA-Control/Models/Enums.swift
   FWA-Control/Models/JsonDecodables.swift
   FWA-Control/Models/ModelTypes.swift
+  FWA-Control/Models/HALInfo.swift
+  FWA-Control/Models/SystemStatus.swift
 )
 
 set(SWIFT_VIEW_SOURCES
@@ -328,8 +330,7 @@ set(SWIFT_VIEW_SOURCES
   FWA-Control/PlugListView.swift
   FWA-Control/SubunitInfoSectionView.swift
   FWA-Control/UnitInfoSectionView.swift
-  # streams view
-  FWA-Control/StreamsView.swift
+  FWA-Control/CoreAudioHALView.swift
   # Views subdirectory
   FWA-Control/Views/DevicePickerView.swift
   FWA-Control/Views/DeviceOverviewCard.swift
@@ -354,6 +355,7 @@ set(SWIFT_SERVICE_SOURCES
   FWA-Control/XPCManager.swift
   FWA-Control/DaemonServiceManager.swift
   FWA-Control/PermissionManager.swift
+  FWA-Control/CoreAudioHALManager.swift
   # FWA-Control/DriverInstaller.swift
 )
 
