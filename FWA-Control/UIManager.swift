@@ -20,6 +20,9 @@ final class UIManager: ObservableObject {
     @Published var isDriverConnected = false
     @Published var daemonInstallStatus: SMAppService.Status = .notFound
 
+    // --- NEW: Published property for HAL info ---
+    @Published var halDeviceInfo: HALInfo?
+
     // Prompts (Reflects state from SystemServicesManager)
     @Published var showDriverInstallPrompt = false
     @Published var showDaemonInstallPrompt = false
@@ -29,6 +32,9 @@ final class UIManager: ObservableObject {
     // --- FIX: Change access level ---
     internal let systemServicesManager: SystemServicesManager? // Changed from private
     internal unowned let logStore: LogStore? // Already internal
+
+    // --- NEW: The new manager instance ---
+    private let coreAudioHALManager = CoreAudioHALManager()
 
     private var cancellables = Set<AnyCancellable>()
     private let logger = AppLoggers.app // Dedicated UIManager logger
@@ -255,6 +261,30 @@ final class UIManager: ObservableObject {
         }
     }
     // --- End Stream Control Actions ---
+
+    // --- NEW: UI Action to fetch HAL data ---
+    func fetchHALInfo() {
+        logger.info("UIManager: HAL info requested")
+        
+        Task {
+            // Find the AudioObjectID for our custom driver
+            guard let driverDeviceID = await coreAudioHALManager.findDriverDeviceID() else {
+                logger.error("Could not find the AudioObjectID for our driver. Cannot fetch HAL info.")
+                await MainActor.run {
+                    self.halDeviceInfo = nil
+                }
+                return
+            }
+
+            // Fetch the info asynchronously using the new manager
+            let info = await coreAudioHALManager.fetchInfo(for: driverDeviceID)
+            
+            // Update the published property on the main thread
+            await MainActor.run {
+                self.halDeviceInfo = info
+            }
+        }
+    }
 
     // Add other methods for Install Daemon, Set Sample Rate (via SystemServicesManager -> XPC), etc.
     

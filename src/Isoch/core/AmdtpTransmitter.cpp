@@ -1,6 +1,9 @@
 #include "Isoch/core/AmdtpTransmitter.hpp"
 #include "Isoch/core/CIPHeader.hpp" // Include for CIPHeader definition
 #include "Isoch/core/CIPPreCalculator.hpp"
+
+// Add using declaration for convenient access
+using FWA::Isoch::PreCalcGroup;
 #include "Isoch/core/IsochTransmitBufferManager.hpp"
 #include "Isoch/core/IsochPortChannelManager.hpp"
 #include "Isoch/core/IsochTransmitDCLManager.hpp"
@@ -19,7 +22,7 @@ static_assert(sizeof(FWA::Isoch::CIPHeader) == 8, "CIPHeader size must be 8");
 
 // DBC Continuity Check Constants
 namespace {
-    constexpr uint8_t DBC_WRAP = 256;              // DBC is 8-bit, wraps at 256
+    constexpr uint16_t DBC_WRAP = 256;              // DBC is 8-bit, wraps at 256
     constexpr uint8_t NO_DATA_INCREMENT = 8;       // No-data packets always increment by 8
     constexpr uint8_t SYT_INTERVAL = 8;            // Normal data packet increment
     
@@ -383,9 +386,10 @@ void AmdtpTransmitter::handleDCLCompleteFastPath(uint32_t completedGroupIndex) {
     
     uint32_t fillGroup = (completedGroupIndex + kGroupsPerCallback) % config_.numGroups;
     
-    // Use version-based getGroupState with retry logic
-    const auto* groupState = cipPreCalc_->getGroupState(fillGroup);
-    if (!groupState) {
+    // Attempt to get the next pre-calculated group from SPSC ring
+    PreCalcGroup grp;
+    bool havePrecalc = cipPreCalc_->groupRing_.pop(grp);
+    if (!havePrecalc) {
         // EMERGENCY: Pre-calculator failed, use emergency generation
         logger_->warn("FastPath: No pre-calc data for group {}, using emergency", fillGroup);
         perfStats_.missedPrecalc.fetch_add(1);
@@ -450,9 +454,9 @@ void AmdtpTransmitter::handleDCLCompleteFastPath(uint32_t completedGroupIndex) {
         cipPreCalc_->forceSync(this->dbc_count_, this->wasNoData_);
         
     } else {
-        // FAST PATH: Use pre-calculated headers
+        // FAST PATH: Use pre-calculated headers from SPSC ring
         for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
-            const auto& pktInfo = groupState->packets[p];
+            const auto& pktInfo = grp.packets[p];
             
             // Get buffer pointers
             auto cipPtr = bufferManager_->getPacketCIPHeaderPtr(fillGroup, p);
@@ -515,12 +519,9 @@ void AmdtpTransmitter::handleDCLCompleteFastPath(uint32_t completedGroupIndex) {
             dclManager_->updateDCLPacket(fillGroup, p, ranges, numRanges);
         }
         
-        // Mark group as consumed for flow control
-        cipPreCalc_->markGroupConsumed(fillGroup);
-        
-        // keep transmitter and pre-calc DBC in lock-step
-        this->dbc_count_ = groupState->finalDbc;
-        this->wasNoData_ = groupState->packets.back().isNoData;
+        // Update transmitter state from pre-calculated group
+        this->dbc_count_ = grp.finalDbc;
+        this->wasNoData_ = grp.finalWasNoData;
     }
     
     // Notify hardware
@@ -541,12 +542,14 @@ void AmdtpTransmitter::handleDCLCompleteFastPath(uint32_t completedGroupIndex) {
     while (elapsedNs > currentMax && 
            !perfStats_.maxCallbackNs.compare_exchange_weak(currentMax, elapsedNs));
     
-    // Log statistics periodically (every ~5 seconds at 8kHz callback rate)
+    // Log statistics periodically (every ~4 seconds = 8192 callbacks at 8kHz)
     static thread_local uint64_t lastStatsLog = 0;
-    if ((perfStats_.totalCallbacks.load() % 40000) == 0 && 
+    if ((perfStats_.totalCallbacks.load() & 0x1FFF) == 0 && 
         perfStats_.totalCallbacks.load() != lastStatsLog) {
         lastStatsLog = perfStats_.totalCallbacks.load();
         logPerformanceStatistics();
+        // Log ring occupancy for monitoring
+        logger_->debug("Ring occupancy: {}/16", cipPreCalc_->groupRing_.occupancy());
     }
 }
 

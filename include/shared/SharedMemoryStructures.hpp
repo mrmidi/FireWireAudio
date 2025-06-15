@@ -16,7 +16,7 @@ static_assert((kRingCapacityPow2 & (kRingCapacityPow2 - 1)) == 0);
 constexpr std::size_t kAudioDataBytes = kMaxFramesPerChunk * kMaxBytesPerFrame;
 constexpr uint32_t    kShmVersion     = 4;
 
-static constexpr uint32_t kSafetyHedgeChunks = 8; // Safety hedge for ring buffer capacity
+static constexpr uint32_t kSafetyHedgeChunks = 4; // Safety hedge for ring buffer capacity
 
 namespace RTShmRing {
 
@@ -32,7 +32,7 @@ struct alignas(kDestructiveCL) AudioChunk_POD {
 // static_assert(sizeof(AudioChunk_POD) <= 4096);
 static_assert(sizeof(AudioChunk_POD) % kDestructiveCL == 0);
 
-
+// ALLIGNED AS 64 bytes
 struct alignas(kDestructiveCL) ControlBlock_POD {
     uint32_t abiVersion;      // 0
     uint32_t capacity;        // 4

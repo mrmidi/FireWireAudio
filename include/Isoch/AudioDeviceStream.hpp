@@ -324,6 +324,14 @@ private:
     // Helper method to make the RunLoop thread time-constrained (real-time)
     void makeRunLoopThreadRealTime();
     
+    // Static helper to make current thread real-time with CPU affinity
+    static void makeCurrentThreadRealtime(uint32_t periodNs = 1'000'000,
+                                         uint32_t computeNs = 300'000,
+                                         uint32_t constraintNs = 600'000);
+    
+    // Pre-fault buffers to prevent page faults during RT execution
+    void prefaultBuffers();
+    
     // Internal callback methods with proper refcon handling
     static void handlePacketReceived(const uint8_t* data, size_t length, void* refCon);
     static void handleMessageReceived(uint32_t message, uint32_t param1, uint32_t param2, void* refCon);

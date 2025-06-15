@@ -97,6 +97,7 @@ private:
     // Background processing
     void processData();
     void makeThreadRealtime(std::thread& th);
+    void pretouchMemory(); // Pre-touch memory to avoid page faults
 
     // Ring Buffer Consumer Thread
     std::thread m_consumerThread;

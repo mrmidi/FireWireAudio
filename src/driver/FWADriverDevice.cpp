@@ -317,6 +317,18 @@ OSStatus FWADriverDevice::DoIOOperation(AudioObjectID objectID,
 
         case kAudioServerPlugInIOOperationConvertMix:
         {
+
+        if ((ioBufferFrameSize & (ioBufferFrameSize-1)) != 0) {
+        // static bool warned = false;
+        // we should determine if we are getting not power-of-two sizes.
+        // this is warning, we should determine how to handle it later
+            os_log(OS_LOG_DEFAULT,
+                "%sWARNING: CoreAudio block size %u is not a power-of-two – "
+                "driver will re-chunk which costs extra CPU.",
+                LogPrefix, ioBufferFrameSize);
+                // warned = true
+        }
+
             // Reserve a slot in shared memory
             uint32_t* hwPtr = handler->reserveRingSlot(
                 ioBufferFrameSize,

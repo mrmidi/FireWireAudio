@@ -9,6 +9,7 @@
 #include <mach/mach_time.h>
 #include <pthread.h>
 #include "Isoch/core/CIPHeader.hpp"
+#include "Isoch/core/SpscRing.hpp"
 #include "Isoch/core/TransmitterTypes.hpp"
 #include "FWA/Error.h"
 
@@ -24,7 +25,24 @@ struct PreCalculatedPacket {
 };
 static_assert(sizeof(PreCalculatedPacket) == 16, "PreCalculatedPacket must be 16 bytes");
 
+// New POD for one pre-calculated group
+struct alignas(16) PreCalcGroup {
+    static constexpr uint32_t MaxPacketsPerGroup = 64;  // Must accommodate max config
+    PreCalculatedPacket packets[MaxPacketsPerGroup];
+    uint8_t finalDbc;
+    bool    finalWasNoData;
+};
+
+// Compile-time safety checks
+static_assert(std::is_trivially_copyable_v<PreCalcGroup>, "Ring assumes memcpy-safe group");
+static_assert(std::is_trivially_copyable_v<PreCalculatedPacket>, "Ring assumes memcpy-safe packet");
+
 class CIPPreCalculator {
+private:
+    // constants - must be declared before use
+    static constexpr size_t   kBufferDepth = 16;  // Must be power of 2 for SPSC ring
+    static_assert((kBufferDepth & (kBufferDepth-1))==0, "kBufferDepth must be power of two");
+
 public:
     CIPPreCalculator() = default;
     ~CIPPreCalculator();
@@ -37,7 +55,13 @@ public:
     void start();
     void stop();
 
-    // From the DCL callback: fetch the ready group
+    // Preferred API: pop next pre-calculated group
+    bool popNextGroup(PreCalcGroup& group) { return groupRing_.pop(group); }
+    
+    // TEMPORARY: Direct ring access for compatibility during migration
+    SpscRing<PreCalcGroup, kBufferDepth> groupRing_;
+    
+    // Legacy compatibility (will be removed)
     struct alignas(64) GroupState {
         std::atomic<uint32_t> version{0};               // even→ready, odd→writing  
         std::atomic<uint64_t> preparedAtTime{0};
@@ -50,7 +74,10 @@ public:
                            sizeof(std::atomic<uint32_t>) + 32*16 + 2) % 64];
     };
 
+    [[deprecated("Use SPSC ring instead - remove after 2025-Q3")]]
     const GroupState* getGroupState(uint32_t groupIdx) const;
+    
+    [[deprecated("Use SPSC ring instead - remove after 2025-Q3")]]
     void markGroupConsumed(uint32_t groupIdx);
     void logStatistics() const;
     
@@ -68,17 +95,12 @@ private:
     static constexpr uint32_t PHASE_MOD = 147;            // 44.1 kHz jitter period
     static constexpr uint32_t BASE_INC_441 = 1386;
     static constexpr uint8_t  SYT_INTERVAL = 8;           // frames per packet
-    static constexpr size_t   kBufferDepth = 12;
     static constexpr uint64_t kMaxPreparedAge = 2'000'000ULL; // ~2ms
 
-    // Triple buffer
-    std::array<GroupState, kBufferDepth> groupStates_;
-
-    // Thread & indices (using absolute counters)
+    // Thread & indices
     std::thread calcThread_;
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> nextGroup_{0};      // absolute counter
-    std::atomic<uint64_t> lastConsumed_{0};   // absolute counter
 
     // config & node
     TransmitterConfig config_;

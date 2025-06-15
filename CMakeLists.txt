@@ -134,10 +134,22 @@ set(BUILD_GMOCK ON CACHE BOOL "Enable Google Mock")
 set(gtest_force_shared_crt ON CACHE BOOL "Force shared CRT for MSVC")
 FetchContent_Declare(libASPL       GIT_REPOSITORY https://github.com/mrmidi/libASPL.git         GIT_TAG main)
 
+# Swift Atomics - MUST be declared before SimplyCoreAudio
+FetchContent_Declare(swift_atomics
+    GIT_REPOSITORY https://github.com/apple/swift-atomics.git
+    GIT_TAG        1.3.0
+)
+
+# SimplyCoreAudio - now depends on swift_atomics being available
+FetchContent_Declare(SimplyCoreAudio 
+    GIT_REPOSITORY https://github.com/mrmidi/SimplyCoreAudio.git  # Use your fork
+    GIT_TAG develop
+)
+
 # Swift Collections (Fetch sources only)
 FetchContent_Declare(swift_collections
     GIT_REPOSITORY https://github.com/apple/swift-collections.git
-    GIT_TAG GIT_TAG release/1.2
+    GIT_TAG        1.2.0
 )
 
 # Swift-Log (Fetch sources only)
@@ -146,9 +158,15 @@ FetchContent_Declare(swift_log
     GIT_TAG        1.5.4
 )
 
-# Pull them all in (Downloads sources)
+# Pull them all in (Downloads sources) - ORDER MATTERS HERE
 set(FETCHCONTENT_FULLY_DISCONNECTED OFF)
+
+# First fetch swift-atomics (SimplyCoreAudio dependency)
+FetchContent_MakeAvailable(swift_atomics)
+
+# Then everything else (but NOT SimplyCoreAudio - we'll handle it manually)
 FetchContent_MakeAvailable(
+  swift_atomics
   spdlog
   nlohmann_json
   catch2
@@ -157,6 +175,12 @@ FetchContent_MakeAvailable(
   swift_log
   swift_collections
 )
+
+# Manually populate SimplyCoreAudio without building it
+FetchContent_GetProperties(SimplyCoreAudio)
+if(NOT simplycoreaudio_POPULATED)
+  FetchContent_Populate(SimplyCoreAudio)
+endif()
 
 # --- Manual build of Swift Dependencies ---
 
@@ -195,6 +219,93 @@ target_compile_definitions(SwiftCollectionsManual PUBLIC
 set_target_properties(SwiftCollectionsManual PROPERTIES FOLDER "Dependencies/Swift")
 source_group(TREE "${swift_collections_SOURCE_DIR}/Sources" PREFIX "Dependencies/Swift/swift-collections" FILES ${SWIFT_COLLECTIONS_SOURCES})
 message(STATUS "Configured manual swift-collections target 'SwiftCollectionsManual'")
+
+# Manual build of SimplyCoreAudio sources
+# SimplyCoreAudio should already be populated from the FetchContent_Populate call above
+if(NOT simplycoreaudio_POPULATED)
+  message(FATAL_ERROR "SimplyCoreAudio source directory was not populated.")
+endif()
+
+# Find all Swift source files
+file(GLOB_RECURSE SIMPLYCOREAUDIO_SOURCES
+  "${simplycoreaudio_SOURCE_DIR}/Sources/SimplyCoreAudio/*.swift"
+)
+
+# Find C sources for SimplyCoreAudioC
+file(GLOB_RECURSE SIMPLYCOREAUDIOC_SOURCES
+  "${simplycoreaudio_SOURCE_DIR}/Sources/SimplyCoreAudioC/*.c"
+  "${simplycoreaudio_SOURCE_DIR}/Sources/SimplyCoreAudioC/*.h"
+)
+
+# Create the C compatibility library first
+if(SIMPLYCOREAUDIOC_SOURCES)
+  add_library(SimplyCoreAudioC STATIC ${SIMPLYCOREAUDIOC_SOURCES})
+  target_include_directories(SimplyCoreAudioC
+    PUBLIC
+      "${simplycoreaudio_SOURCE_DIR}/Sources/SimplyCoreAudioC"
+  )
+  set_target_properties(SimplyCoreAudioC PROPERTIES FOLDER "Dependencies/Swift")
+endif()
+
+# Create the main SimplyCoreAudio library
+add_library(SimplyCoreAudio STATIC ${SIMPLYCOREAUDIO_SOURCES})
+
+# Set Swift-specific properties
+set_target_properties(SimplyCoreAudio PROPERTIES
+  Swift_MODULE_NAME SimplyCoreAudio
+  Swift_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/swift
+  FOLDER "Dependencies/Swift"
+)
+
+# Add Swift import search paths for Xcode - use generator expressions for Debug/Release
+target_compile_options(SimplyCoreAudio PRIVATE
+  $<$<COMPILE_LANGUAGE:Swift>:-I${CMAKE_CURRENT_BINARY_DIR}/lib/$<CONFIG>>
+  $<$<COMPILE_LANGUAGE:Swift>:-I${CMAKE_CURRENT_BINARY_DIR}/_deps/swift_atomics-src/Sources/_AtomicsShims/include>
+)
+
+# For Xcode generator, we need to set the SWIFT_INCLUDE_PATHS with config-specific paths
+set_target_properties(SimplyCoreAudio PROPERTIES
+  XCODE_ATTRIBUTE_SWIFT_INCLUDE_PATHS "${CMAKE_CURRENT_BINARY_DIR}/lib/Release;${CMAKE_CURRENT_BINARY_DIR}/lib/Debug;${CMAKE_CURRENT_BINARY_DIR}/_deps/swift_atomics-src/Sources/_AtomicsShims/include"
+)
+
+# Link dependencies
+target_link_libraries(SimplyCoreAudio
+  PRIVATE
+    Atomics
+    _AtomicsShims
+)
+
+if(TARGET SimplyCoreAudioC)
+  target_link_libraries(SimplyCoreAudio
+    PUBLIC
+      SimplyCoreAudioC
+  )
+endif()
+
+# Platform-specific linking (macOS frameworks)
+if(APPLE)
+  find_library(COREAUDIO_FRAMEWORK CoreAudio)
+  find_library(AUDIOTOOLBOX_FRAMEWORK AudioToolbox)
+  find_library(FOUNDATION_FRAMEWORK Foundation)
+  
+  if(COREAUDIO_FRAMEWORK AND AUDIOTOOLBOX_FRAMEWORK AND FOUNDATION_FRAMEWORK)
+    target_link_libraries(SimplyCoreAudio
+      PUBLIC
+        ${COREAUDIO_FRAMEWORK}
+        ${AUDIOTOOLBOX_FRAMEWORK}
+        ${FOUNDATION_FRAMEWORK}
+    )
+  endif()
+endif()
+
+# Export include directories
+target_include_directories(SimplyCoreAudio
+  PUBLIC
+    "${simplycoreaudio_SOURCE_DIR}/Sources"
+)
+
+source_group(TREE "${simplycoreaudio_SOURCE_DIR}/Sources" PREFIX "Dependencies/Swift/SimplyCoreAudio" FILES ${SIMPLYCOREAUDIO_SOURCES} ${SIMPLYCOREAUDIOC_SOURCES})
+message(STATUS "Configured manual SimplyCoreAudio target 'SimplyCoreAudio'")
 
 
 # --- Shared library for common code ---
@@ -387,7 +498,7 @@ set_target_properties(FWA-Control PROPERTIES
   XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_SOURCE_DIR}/FWA-Control/FWA_Control.entitlements"
   XCODE_ATTRIBUTE_SWIFT_OBJC_INTEROP_MODE "objc"
   XCODE_ATTRIBUTE_SWIFT_INCLUDE_PATHS
-    "${CMAKE_CURRENT_BINARY_DIR}/include;${CMAKE_SOURCE_DIR}/include;${CMAKE_SOURCE_DIR}/include/shared;${CMAKE_SOURCE_DIR}/include/shared/xpc"
+    "${CMAKE_CURRENT_BINARY_DIR}/lib/Release;${CMAKE_CURRENT_BINARY_DIR}/lib/Debug;${CMAKE_CURRENT_BINARY_DIR}/_deps/swift_atomics-src/Sources/_AtomicsShims/include;${CMAKE_CURRENT_BINARY_DIR}/include;${CMAKE_SOURCE_DIR}/include;${CMAKE_SOURCE_DIR}/include/shared;${CMAKE_SOURCE_DIR}/include/shared/xpc"
   XCODE_ATTRIBUTE_SWIFT_OPTIMIZATION_LEVEL "-Onone"
   XCODE_ATTRIBUTE_SWIFT_VERSION "6.0"
 )
@@ -420,9 +531,12 @@ add_custom_command(TARGET FWA-Control POST_BUILD
 target_link_libraries(FWA-Control PRIVATE
   Logging
   SwiftCollectionsManual
+  SimplyCoreAudio
   FWA
   Shared
   FWAXPC
+  Atomics
+  _AtomicsShims
   "-framework SwiftUI"
   "-framework Cocoa"
   "-framework Foundation"
@@ -431,10 +545,12 @@ target_link_libraries(FWA-Control PRIVATE
   "-framework CoreAudio"
   "-framework AVFoundation"
 )
-add_dependencies(FWA-Control Logging SwiftCollectionsManual FWADaemon FWADriver FWA Shared FWAXPC)
-# --- Relax Swift 6 concurrency checks ---
+add_dependencies(FWA-Control Logging SwiftCollectionsManual SimplyCoreAudio FWADaemon FWADriver FWA Shared FWAXPC Atomics _AtomicsShims)
+# --- Relax Swift 6 concurrency checks and add Swift module import paths ---
 target_compile_options(FWA-Control PRIVATE
   $<$<COMPILE_LANGUAGE:Swift>:-Xfrontend -strict-concurrency=targeted>
+  $<$<COMPILE_LANGUAGE:Swift>:-I${CMAKE_CURRENT_BINARY_DIR}/lib/$<CONFIG>>
+  $<$<COMPILE_LANGUAGE:Swift>:-I${CMAKE_CURRENT_BINARY_DIR}/_deps/swift_atomics-src/Sources/_AtomicsShims/include>
 )
 
 # --- Documentation and testing (unchanged) ---

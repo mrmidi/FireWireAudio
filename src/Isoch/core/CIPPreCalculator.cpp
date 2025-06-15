@@ -10,19 +10,18 @@ CIPPreCalculator::~CIPPreCalculator() {
 }
 
 void CIPPreCalculator::initialize(const TransmitterConfig& config, uint16_t nodeID) {
+    // Safety check: prevent buffer overrun
+    if (config.packetsPerGroup > PreCalcGroup::MaxPacketsPerGroup) {
+        os_log(OS_LOG_DEFAULT, "FATAL: config.packetsPerGroup=%u > MaxPacketsPerGroup=%u", 
+               config.packetsPerGroup, PreCalcGroup::MaxPacketsPerGroup);
+        throw std::invalid_argument("packetsPerGroup exceeds PreCalcGroup::MaxPacketsPerGroup");
+    }
+    
     config_  = config;
     nodeID_  = nodeID & 0x3F;
     calcState_ = {};
 
-    for (auto& g : groupStates_) {
-        g.version.store(0, std::memory_order_relaxed);           // even = ready, odd = writing
-        g.preparedAtTime.store(0, std::memory_order_relaxed);
-        g.groupNumber.store(UINT32_MAX, std::memory_order_relaxed);
-        g.finalDbc = 0;
-        g.packetCount = config.packetsPerGroup;
-    }
     nextGroup_.store(0, std::memory_order_relaxed);
-    lastConsumed_.store(0, std::memory_order_relaxed);  // Start with absolute 0
 
     os_log(OS_LOG_DEFAULT,
            "CIPPreCalculator init: %u×%u pkts @%.1fkHz",
@@ -52,37 +51,14 @@ void CIPPreCalculator::stop() {
 }
 
 const CIPPreCalculator::GroupState* CIPPreCalculator::getGroupState(uint32_t requestedGroup) const {
-    uint32_t bufferSlot = requestedGroup % kBufferDepth;
-    const auto* state = &groupStates_[bufferSlot];
-    
-    // Version-based check with retry loop to handle torn reads
-    for (int retry = 0; retry < 3; ++retry) {
-        uint32_t v1 = state->version.load(std::memory_order_acquire);
-        if (v1 & 1) continue;  // Writer in progress (odd version)
-        
-        // Verify group number matches
-        uint32_t actualGroup = state->groupNumber.load(std::memory_order_relaxed);
-        if (actualGroup != requestedGroup) {
-            return nullptr;  // Group mismatch
-        }
-        
-        // Memory barrier to ensure we see consistent packet data
-        std::atomic_thread_fence(std::memory_order_acquire);
-        
-        // Check version hasn't changed during read
-        uint32_t v2 = state->version.load(std::memory_order_acquire);
-        if (v1 == v2) {
-            return state;  // Consistent read
-        }
-        // Version changed, retry
-    }
-    
-    return nullptr;  // Failed to get consistent read after retries
+    // Legacy method - still needed temporarily for compatibility
+    // Will be removed once all consumers use SPSC ring
+    return nullptr;
 }
 
 void CIPPreCalculator::markGroupConsumed(uint32_t groupIdx) {
-    // Mark group as consumed using absolute counter increment
-    lastConsumed_.fetch_add(1, std::memory_order_relaxed);
+    // Legacy method - no longer needed with SPSC ring
+    // Ring automatically manages consumption via pop()
 }
 
 void CIPPreCalculator::forceSync(uint8_t dbc, bool prevWasNoData) {
@@ -90,15 +66,9 @@ void CIPPreCalculator::forceSync(uint8_t dbc, bool prevWasNoData) {
     calcState_.dbc = dbc;
     calcState_.prevWasNoData = prevWasNoData;
     
-    // Reset all group states to prevent stale data
-    for (auto& g : groupStates_) {
-        g.version.store(0, std::memory_order_relaxed);  // Mark as ready but stale
-        g.groupNumber.store(UINT32_MAX, std::memory_order_relaxed);
-    }
-    
-    // Reset absolute counters to start fresh
+    // With SPSC ring, just reset the state - no need to clear old data
+    // Ring will naturally flush as new groups are calculated
     nextGroup_.store(0, std::memory_order_relaxed);
-    lastConsumed_.store(0, std::memory_order_relaxed);
     
     os_log(OS_LOG_DEFAULT, "CIPPreCalculator force sync: DBC=%u, prevWasNoData=%d", dbc, prevWasNoData);
 }
@@ -106,40 +76,20 @@ void CIPPreCalculator::forceSync(uint8_t dbc, bool prevWasNoData) {
 void CIPPreCalculator::calculateNextGroup() {
     uint64_t t0 = mach_absolute_time();
     
-    // Use absolute group counter
-    uint64_t absoluteGroup = nextGroup_.load(std::memory_order_relaxed);
-    uint32_t targetGroup = absoluteGroup % config_.numGroups;  // Convert to ring position
-    uint32_t bufferSlot = targetGroup % kBufferDepth;
-    auto& st = groupStates_[bufferSlot];
+    // Check if ring is full BEFORE acquiring mutex to avoid deadlock
+    if (groupRing_.full()) {
+        std::this_thread::sleep_for(std::chrono::microseconds(1));
+        return;
+    }
     
     std::lock_guard<std::mutex> lock(syncMutex_);
 
-    // ─── PHASE 1: Begin Update ───
-    uint32_t currentVersion = st.version.load(std::memory_order_relaxed);
-    if (currentVersion & 1) {
-        // Already being written by another thread, skip
-        return;
-    }
+    // Create a new group
+    PreCalcGroup grp;
     
-    // Mark as "writing" (odd version)
-    st.version.store(currentVersion + 1, std::memory_order_release);
-    std::atomic_thread_fence(std::memory_order_seq_cst);  // Full barrier
-
-    // Flow control using absolute counters
-    uint64_t lastConsumed = lastConsumed_.load(std::memory_order_relaxed);
-    uint64_t groupsAhead = absoluteGroup - lastConsumed;
-    if (groupsAhead >= kBufferDepth) {
-        // Too far ahead, mark as ready without update and return
-        st.version.store(currentVersion, std::memory_order_release);
-        return;
-    }
-
-    // Store the target group number
-    st.groupNumber.store(targetGroup, std::memory_order_relaxed);
-
     const bool is48 = (config_.sampleRate == 48000.0);
     for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
-        auto& pkt = st.packets[p];
+        auto& pkt = grp.packets[p];
         bool noData;
 
         if (is48) {
@@ -194,13 +144,15 @@ void CIPPreCalculator::calculateNextGroup() {
         H.dbc = calcState_.dbc;
     }
 
-    st.finalDbc = calcState_.dbc;
-    st.packetCount = config_.packetsPerGroup;
-    st.preparedAtTime.store(mach_absolute_time(), std::memory_order_relaxed);
+    // Store final state in group
+    grp.finalDbc = calcState_.dbc;
+    grp.finalWasNoData = calcState_.prevWasNoData;
     
-    // ─── PHASE 2: Publish Update ───
-    std::atomic_thread_fence(std::memory_order_release);
-    st.version.store(currentVersion + 2, std::memory_order_release);  // Mark as ready (even)
+    // Try to push to ring - should succeed since we checked full() above
+    if (!groupRing_.push(grp)) {
+        // Extremely rare: ring became full between check and push
+        return;  // Skip this calculation cycle
+    }
     
     nextGroup_.fetch_add(1, std::memory_order_relaxed);
 
@@ -212,21 +164,16 @@ void CIPPreCalculator::calculateNextGroup() {
 }
 
 std::chrono::microseconds CIPPreCalculator::getSleepDuration() const {
-    uint64_t p = nextGroup_.load(std::memory_order_relaxed);
-    uint64_t c = lastConsumed_.load(std::memory_order_relaxed);
-    
-    // Calculate available buffer slots using absolute counters
-    uint64_t available = p - c;  // Both are absolute counters now
-    
-    if (available >= kBufferDepth - 1) {
-        // Buffer nearly full - longer sleep
+    // Check ring fullness for new SPSC approach
+    if (groupRing_.full()) {
+        // Ring full - longer sleep
         return std::chrono::microseconds(200);
-    } else if (available >= kBufferDepth / 2) {
-        // Comfortable buffer - medium sleep  
-        return std::chrono::microseconds(50);
+    } else if (groupRing_.empty()) {
+        // Ring empty - very short sleep to fill quickly
+        return std::chrono::microseconds(1);
     } else {
-        // Buffer getting low - very short sleep
-        return std::chrono::microseconds(5);
+        // Ring has some items - medium sleep
+        return std::chrono::microseconds(50);
     }
 }
 
@@ -260,7 +207,7 @@ void CIPPreCalculator::configureCPUAffinity() {
     }
 
     // Also set precedence for additional priority boost within the policy
-    thread_precedence_policy_data_t pre{10}; // Higher than default
+    thread_precedence_policy_data_t pre{31}; // Boost to 31 to outrank normal tasks
     thread_policy_set(mach_thread_self(), THREAD_PRECEDENCE_POLICY,
                       (thread_policy_t)&pre, THREAD_PRECEDENCE_POLICY_COUNT);
 }

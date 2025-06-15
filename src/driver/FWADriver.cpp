@@ -34,23 +34,7 @@ std::shared_ptr<aspl::Driver> CreateDriver()
     aspl::StreamParameters streamParams;
     streamParams.Direction = aspl::Direction::Output;
     streamParams.StartingChannel = 1;
- 
-    // THIS IS THE FINAL, CORRECTED PHYSICAL FORMAT:
-    // We request the final format Core Audio should convert TO.
-    // By declaring this as the physical format and having FWAStream override
-    // GetVirtualFormat() to return Float32, we trigger the Core Audio
-    // conversion pipeline correctly.
-    // streamParams.Format = {
-    //     .mSampleRate       = 44100.0,
-    //     .mFormatID         = kAudioFormatLinearPCM,
-    //     .mFormatFlags      = kAudioFormatFlagIsBigEndian |
-    //                        kAudioFormatFlagIsSignedInteger,
-    //     .mBitsPerChannel   = 32, // The number of valid bits of audio data.
-    //     .mChannelsPerFrame = 2,
-    //     .mBytesPerFrame    = 8,  // The size of the container: 4 bytes × 2 channels.
-    //     .mFramesPerPacket  = 1,
-    //     .mBytesPerPacket   = 8
-    // };
+
 
     // another try physical format 24-in-32, big-endian
     streamParams.Format = {

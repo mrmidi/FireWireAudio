@@ -52,16 +52,16 @@ struct ContentView: View {
                 .tabItem { Label("Matrix", systemImage: "rectangle.grid.3x2") }
                 .tag(1)
                 .keyboardShortcut("2", modifiers: .command)
-            LogConsoleView()
-                .tabItem { Label("Logs", systemImage: "doc.plaintext") }
+            CoreAudioHALView()
+                .tabItem { Label("HAL Status", systemImage: "waveform.path.ecg") }
                 .tag(2)
                 .keyboardShortcut("3", modifiers: .command)
-            AVCTabView()
-                .tabItem { Label("AV/C", systemImage: "terminal") }
+            LogConsoleView()
+                .tabItem { Label("Logs", systemImage: "doc.plaintext") }
                 .tag(3)
                 .keyboardShortcut("4", modifiers: .command)
-            StreamsView()
-                .tabItem { Label("Streams", systemImage: "waveform.path.ecg") }
+            AVCTabView()
+                .tabItem { Label("AV/C", systemImage: "terminal") }
                 .tag(4)
                 .keyboardShortcut("5", modifiers: .command)
         }
@@ -89,7 +89,7 @@ struct ContentView: View {
         
         // Refresh functionality - only for views that need it
         ToolbarItemGroup {
-            if selectedTab == 0 || selectedTab == 1 || selectedTab == 4 {
+            if selectedTab == 0 || selectedTab == 1 {
                 Button {
                     logger.info("User requested refresh all devices.")
                     uiManager.refreshAllDevices()
@@ -98,6 +98,14 @@ struct ContentView: View {
                 }
                 .disabled(!uiManager.isDaemonConnected)
                 .help("Refresh data for all connected devices")
+            } else if selectedTab == 2 {
+                Button {
+                    logger.info("User requested refresh HAL info.")
+                    uiManager.fetchHALInfo()
+                } label: {
+                    Label("Refresh HAL", systemImage: "arrow.clockwise")
+                }
+                .help("Refresh Core Audio HAL information")
             }
         }
         
