@@ -7,6 +7,7 @@
 #include <vector>
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/firewire/IOFireWireLibIsoch.h>
+#include <IOKit/firewire/IOFireWireLib.h> // not used here, remove later
 #include <spdlog/logger.h>
 
 // Add after existing includes

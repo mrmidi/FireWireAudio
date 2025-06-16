@@ -5,6 +5,7 @@ from typing import List, Optional
 from firewire.log_parser import parse_log_content
 from firewire.analyzer import Analyzer
 from firewire.cip_packet import CIPPacket
+from firewire.wave_analyzer import WaveAnalyzer
 
 
 class AppController:
@@ -16,6 +17,7 @@ class AppController:
     def __init__(self):
         self.analyzer: Optional[Analyzer] = None
         self.packets: List[CIPPacket] = []
+        self.wave_analyzer: Optional[WaveAnalyzer] = None
         
     def load_files(self, uploaded_files) -> bool:
         """
@@ -166,3 +168,55 @@ class AppController:
             "problem_percent": (problematic_packets/len(filtered_packets)*100) if len(filtered_packets) > 0 else 0,
             "zero_sample_percent": (total_zero_sample_packets/total_data_packets)*100 if total_data_packets > 0 else 0
         }
+    
+    def load_wave_file(self, uploaded_file) -> bool:
+        """
+        Loads a WAV file for analysis.
+        Returns True if successful, False otherwise.
+        """
+        if not uploaded_file:
+            return False
+        
+        try:
+            self.wave_analyzer = WaveAnalyzer()
+            file_bytes = uploaded_file.read()
+            
+            if not self.wave_analyzer.load_from_bytes(file_bytes):
+                st.error("Failed to load WAV file.")
+                return False
+            
+            st.success(f"Successfully loaded WAV file: {uploaded_file.name}")
+            return True
+            
+        except Exception as e:
+            st.error(f"Error loading WAV file: {str(e)}")
+            return False
+    
+    def update_wave_config(self, config: dict):
+        """Update wave analyzer configuration."""
+        if self.wave_analyzer:
+            self.wave_analyzer.update_config(**config)
+    
+    def get_wave_metrics(self) -> dict:
+        """Get basic audio metrics from the wave analyzer."""
+        if not self.wave_analyzer:
+            return {"error": "No wave analyzer available"}
+        return self.wave_analyzer.get_audio_metrics()
+    
+    def analyze_wave_events(self) -> dict:
+        """Analyze events (transients, dropouts) in the wave file."""
+        if not self.wave_analyzer:
+            return {"error": "No wave analyzer available"}
+        return self.wave_analyzer.analyze_events()
+    
+    def cluster_wave_transients(self) -> dict:
+        """Cluster transients in the wave file."""
+        if not self.wave_analyzer:
+            return {"error": "No wave analyzer available"}
+        return self.wave_analyzer.cluster_transients()
+    
+    def get_wave_spectrogram(self, channel: int = 0) -> tuple:
+        """Generate spectrogram data for a specific channel."""
+        if not self.wave_analyzer:
+            return None, None, None
+        return self.wave_analyzer.generate_spectrogram(channel)

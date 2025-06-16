@@ -5,8 +5,16 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -stdlib=libc++")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -stdlib=libc++")
 set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -stdlib=libc++")
 
-# Enable ARC for Objective-C++
+# Enable ARC for Objective-C++ and Apple Silicon strict checking
 set(CMAKE_OBJCXX_FLAGS "${CMAKE_OBJCXX_FLAGS} -fobjc-arc")
+
+# ─── NEW: Apple Silicon strict objc_msgSend checking ───
+add_compile_options(
+  $<$<COMPILE_LANGUAGE:OBJC>:-Wstrict-prototypes>
+  $<$<COMPILE_LANGUAGE:OBJCXX>:-Wstrict-prototypes>
+  $<$<COMPILE_LANGUAGE:OBJCXX>:-Wobjc-signed-char-bool-implicit-int-conversion>
+)
+# ───────────────────────────────────────────────────────
 
 # --- Policies ---
 cmake_policy(SET CMP0114 NEW)

@@ -1,6 +1,7 @@
 # mvc/views.py
 import streamlit as st
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from scipy.fft import rfft, rfftfreq
 from typing import List, Dict, Any
@@ -453,3 +454,271 @@ class DetailedPacketView:
                 st.write(f"- {issue}")
         
         st.info("ℹ️ No-data packets contain no audio samples and are used for timing/synchronization.")
+
+
+class WaveAnalysisView:
+    """View component for wave file analysis tab."""
+    
+    @staticmethod
+    def render_file_uploader():
+        """Renders the wave file uploader."""
+        return st.file_uploader(
+            "Upload WAV file for analysis",
+            type=["wav"],
+            help="Upload a WAV audio file to analyze for transients, dropouts, and other anomalies."
+        )
+    
+    @staticmethod
+    def render_config_controls():
+        """Renders configuration controls for wave analysis."""
+        with st.expander("⚙️ Analysis Configuration"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                slice_seconds = st.number_input(
+                    "Limit analysis (seconds)",
+                    min_value=1,
+                    max_value=300,
+                    value=30,
+                    help="Limit analysis to first N seconds (reduces processing time for long files)"
+                )
+                
+                silence_threshold = st.slider(
+                    "Silence threshold",
+                    min_value=0.001,
+                    max_value=0.1,
+                    value=0.01,
+                    step=0.001,
+                    format="%.3f",
+                    help="Fraction of max amplitude considered silence"
+                )
+                
+                min_silence_duration = st.number_input(
+                    "Min dropout duration (ms)",
+                    min_value=0.5,
+                    max_value=100.0,
+                    value=2.0,
+                    step=0.1,
+                    help="Minimum silence duration to be considered a dropout"
+                )
+            
+            with col2:
+                anomaly_multiplier = st.slider(
+                    "Transient sensitivity",
+                    min_value=2.0,
+                    max_value=10.0,
+                    value=6.0,
+                    step=0.5,
+                    help="Number of standard deviations above mean for transient detection"
+                )
+                
+                cluster_window = st.number_input(
+                    "Cluster window (ms)",
+                    min_value=1.0,
+                    max_value=100.0,
+                    value=10.0,
+                    step=1.0,
+                    help="Time window for clustering nearby transients"
+                )
+                
+                nperseg = st.selectbox(
+                    "Spectrogram resolution",
+                    options=[1024, 2048, 4096, 8192, 16384],
+                    index=3,
+                    help="FFT window size for spectrogram (higher = better frequency resolution)"
+                )
+            
+            return {
+                'slice_seconds': slice_seconds,
+                'silence_threshold': silence_threshold,
+                'min_silence_duration_sec': min_silence_duration / 1000.0,
+                'anomaly_std_multiplier': anomaly_multiplier,
+                'cluster_window_sec': cluster_window / 1000.0,
+                'nperseg': nperseg
+            }
+    
+    @staticmethod
+    def render_audio_info(metrics: Dict[str, Any]):
+        """Renders basic audio file information."""
+        st.subheader("📁 Audio File Information")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Sample Rate", f"{metrics['sample_rate']/1000:.1f} kHz")
+        col2.metric("Channels", metrics['channels'])
+        col3.metric("Duration", f"{metrics['duration_seconds']:.2f} sec")
+        col4.metric("Bit Depth", metrics['bit_depth'])
+        
+        st.metric("Total Samples", f"{metrics['total_samples']:,}")
+    
+    @staticmethod
+    def render_channel_metrics(metrics: Dict[str, Any]):
+        """Renders per-channel audio metrics."""
+        st.subheader("📊 Channel Metrics")
+        
+        for ch_metrics in metrics['channel_metrics']:
+            with st.expander(f"Channel {ch_metrics['channel']} Metrics"):
+                col1, col2, col3 = st.columns(3)
+                
+                col1.metric(
+                    "Peak Level",
+                    f"{ch_metrics['peak_dbfs']:.2f} dBFS",
+                    help="Maximum amplitude level"
+                )
+                col2.metric(
+                    "RMS Level",
+                    f"{ch_metrics['rms_dbfs']:.2f} dBFS",
+                    help="Average power level"
+                )
+                col3.metric(
+                    "Crest Factor",
+                    f"{ch_metrics['crest_factor']:.2f}",
+                    help="Ratio of peak to RMS (dynamic range indicator)"
+                )
+                
+                st.write(f"**DC Offset:** {ch_metrics['dc_offset']:.6f}")
+                dc_progress = min(1.0, abs(ch_metrics['dc_offset']) * 100)
+                st.progress(dc_progress)
+    
+    @staticmethod
+    def render_event_analysis(events_result: Dict[str, Any]):
+        """Renders event detection results."""
+        st.subheader("🔍 Event Detection Results")
+        
+        if "error" in events_result:
+            st.error(events_result["error"])
+            return
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Events", events_result['total_events'])
+        col2.metric("Transients", events_result['transients'])
+        col3.metric("Dropouts", events_result['dropouts'])
+        
+        if events_result['total_events'] > 0:
+            events_df = pd.DataFrame(events_result['events'])
+            
+            # Show events table
+            with st.expander("📋 Detailed Events"):
+                st.dataframe(
+                    events_df,
+                    use_container_width=True,
+                    column_config={
+                        "time_sec": st.column_config.NumberColumn("Time (s)", format="%.4f"),
+                        "value": st.column_config.NumberColumn("Value"),
+                        "likelihood": st.column_config.ProgressColumn("Likelihood", min_value=0, max_value=1)
+                    }
+                )
+            
+            # Events timeline plot
+            WaveAnalysisView._render_events_timeline(events_df)
+    
+    @staticmethod
+    def _render_events_timeline(events_df: pd.DataFrame):
+        """Renders events timeline plot."""
+        st.subheader("📈 Events Timeline")
+        
+        fig = go.Figure()
+        
+        # Plot transients
+        transients = events_df[events_df['type'] == 'transient']
+        if not transients.empty:
+            fig.add_trace(go.Scatter(
+                x=transients['time_sec'],
+                y=[1] * len(transients),
+                mode='markers',
+                marker=dict(color='red', size=8, symbol='triangle-up'),
+                name='Transients',
+                text=transients.apply(lambda row: f"Ch {row['channel']}: {row['value']}", axis=1),
+                hovertemplate='<b>Transient</b><br>Time: %{x:.4f}s<br>%{text}<extra></extra>'
+            ))
+        
+        # Plot dropouts
+        dropouts = events_df[events_df['type'] == 'dropout']
+        if not dropouts.empty:
+            fig.add_trace(go.Scatter(
+                x=dropouts['time_sec'],
+                y=[0] * len(dropouts),
+                mode='markers',
+                marker=dict(color='blue', size=10, symbol='square'),
+                name='Dropouts',
+                text=dropouts.apply(lambda row: f"Ch {row['channel']}: {row['value']:.3f}s", axis=1),
+                hovertemplate='<b>Dropout</b><br>Time: %{x:.4f}s<br>%{text}<extra></extra>'
+            ))
+        
+        fig.update_layout(
+            xaxis_title="Time (seconds)",
+            yaxis_title="Event Type",
+            yaxis=dict(tickvals=[0, 1], ticktext=['Dropouts', 'Transients']),
+            height=300,
+            margin=dict(l=20, r=20, t=30, b=20)
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    
+    @staticmethod
+    def render_clustering_results(clusters_result: Dict[str, Any]):
+        """Renders transient clustering results."""
+        st.subheader("🎯 Transient Clustering")
+        
+        if "error" in clusters_result:
+            st.warning(clusters_result["error"])
+            return
+        
+        if clusters_result['total_clusters'] == 0:
+            st.info("No transient clusters found.")
+            return
+        
+        st.metric("Transient Clusters", clusters_result['total_clusters'])
+        
+        clusters_df = pd.DataFrame(clusters_result['clusters'])
+        
+        with st.expander("📋 Cluster Details"):
+            st.dataframe(
+                clusters_df,
+                use_container_width=True,
+                column_config={
+                    "start": st.column_config.NumberColumn("Start (s)", format="%.4f"),
+                    "end": st.column_config.NumberColumn("End (s)", format="%.4f"),
+                    "count": st.column_config.NumberColumn("Event Count")
+                }
+            )
+    
+    @staticmethod
+    def render_spectrogram(frequencies: np.ndarray, times: np.ndarray, spectrogram: np.ndarray, channel_label: str):
+        """Renders spectrogram visualization."""
+        st.subheader(f"🌈 Spectrogram - {channel_label}")
+        
+        fig = go.Figure(data=go.Heatmap(
+            z=20 * np.log10(spectrogram + 1e-9),  # Convert to dB
+            x=times,
+            y=frequencies,
+            colorscale='Viridis',
+            showscale=True,
+            colorbar=dict(title="Magnitude (dB)")
+        ))
+        
+        fig.update_layout(
+            xaxis_title="Time (s)",
+            yaxis_title="Frequency (Hz)",
+            height=400,
+            margin=dict(l=20, r=20, t=30, b=20)
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    
+    @staticmethod
+    def render_channel_selector(num_channels: int):
+        """Renders channel selector for spectrogram."""
+        if num_channels > 1:
+            channel_options = []
+            for i in range(num_channels):
+                label = 'L' if i == 0 else 'R' if i == 1 else f'Ch{i+1}'
+                channel_options.append((f"Channel {i+1} ({label})", i))
+            
+            selected = st.selectbox(
+                "Select channel for spectrogram",
+                options=channel_options,
+                format_func=lambda x: x[0]
+            )
+            return selected[1], selected[0].split('(')[1].rstrip(')')
+        else:
+            return 0, 'Mono'

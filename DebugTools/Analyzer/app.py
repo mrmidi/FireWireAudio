@@ -2,7 +2,7 @@
 import streamlit as st
 import numpy as np
 from mvc.controller import AppController
-from mvc.views import CIPAnalysisView, AudioAnalysisView, DetailedPacketView
+from mvc.views import CIPAnalysisView, AudioAnalysisView, DetailedPacketView, WaveAnalysisView
 from mvc.anomality_views import AudioAnomalyView
 from firewire.audio_anomality_analyzer import AudioAnomalyAnalyzer
 
@@ -32,7 +32,7 @@ with st.spinner("Parsing log files and analyzing packets..."):
         st.stop()
 
 # --- UI TABS ---
-tab_cip, tab_audio, tab_detail = st.tabs(["📦 CIP Packet Analysis", "🔊 Audio Waveform Analysis", "🔍 Detailed Packet Log"])
+tab_cip, tab_audio, tab_wave, tab_detail = st.tabs(["📦 CIP Packet Analysis", "🔊 Audio Waveform Analysis", "🌊 Wave File Analysis", "🔍 Detailed Packet Log"])
 
 # --- TAB 1: CIP Packet Analysis ---
 with tab_cip:
@@ -85,7 +85,58 @@ with tab_audio:
         # Render frequency spectrum
         AudioAnalysisView.render_frequency_spectrum(samples, controller.get_sample_rate())
 
-# --- TAB 3: Detailed Packet Log ---
+# --- TAB 3: Wave File Analysis ---
+with tab_wave:
+    st.header("Wave File Analysis")
+    st.caption("Upload and analyze WAV files for transients, dropouts, and spectral content")
+    
+    # File uploader
+    wave_file = WaveAnalysisView.render_file_uploader()
+    
+    if wave_file:
+        # Load the file
+        with st.spinner("Loading WAV file..."):
+            if not controller.load_wave_file(wave_file):
+                st.stop()
+        
+        # Configuration controls
+        config = WaveAnalysisView.render_config_controls()
+        controller.update_wave_config(config)
+        
+        # Get and display audio metrics
+        with st.spinner("Analyzing audio metrics..."):
+            metrics = controller.get_wave_metrics()
+            if "error" not in metrics:
+                WaveAnalysisView.render_audio_info(metrics)
+                WaveAnalysisView.render_channel_metrics(metrics)
+        
+        # Event analysis
+        with st.spinner("Detecting events (transients and dropouts)..."):
+            events_result = controller.analyze_wave_events()
+            WaveAnalysisView.render_event_analysis(events_result)
+        
+        # Clustering analysis
+        if events_result.get('transients', 0) > 0:
+            with st.spinner("Clustering transients..."):
+                clusters_result = controller.cluster_wave_transients()
+                WaveAnalysisView.render_clustering_results(clusters_result)
+        
+        # Spectrogram
+        if metrics.get('channels', 0) > 0:
+            st.divider()
+            channel_idx, channel_label = WaveAnalysisView.render_channel_selector(metrics['channels'])
+            
+            with st.spinner(f"Generating spectrogram for {channel_label}..."):
+                try:
+                    frequencies, times, spectrogram = controller.get_wave_spectrogram(channel_idx)
+                    if frequencies is not None:
+                        WaveAnalysisView.render_spectrogram(frequencies, times, spectrogram, channel_label)
+                except Exception as e:
+                    st.error(f"Error generating spectrogram: {str(e)}")
+    else:
+        st.info("Please upload a WAV file to begin analysis.")
+
+# --- TAB 4: Detailed Packet Log ---
 with tab_detail:
     st.header("Detailed CIP Packet Log")
     st.caption("Inspect individual packets with CIP header breakdown and sample data highlighting")
