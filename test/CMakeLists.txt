@@ -21,6 +21,11 @@ target_include_directories(fwadaemon_tests_catch2
 # Google Test + Mock Tests (new - better for complex testing)
 add_executable(fwadaemon_tests_gtest
     CIPPreCalculatorModernTests.cpp
+    DBCTests.cpp  # Comprehensive DBC calculation and continuity tests
+    DBCSimpleTests.cpp  # Simple DBC pattern observation tests
+    AmdtpTransmitterIntegrationTests.cpp  # Integration tests for multi-threaded DBC validation
+    DCLCallbackIntegrationTests.cpp  # DCL callback and pre-calculator integration tests
+    DBCEmergencyPathTests.cpp  # Emergency path DBC validation tests
     # ConcurrencyTests.cpp  # Commented out temporarily due to spdlog API issues
 )
 

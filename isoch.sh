@@ -176,7 +176,7 @@ if [[ "$MODE" == "transmit" ]]; then
         "include/Isoch/Core/CIPHeader.hpp"
         "include/Isoch/core/CIPPreCalculator.hpp"
         "include/Isoch/utils/TimingUtils.hpp"
-        "include/Isoch/IsochStreamHandler.hpp"
+        "include/Isoch/IsoStreamHandler.hpp"
         "include/Isoch/core/IsochTransmitDCLManager.hpp"
         "include/Isoch/core/IsochTransmitBufferManager.hpp"
         "include/shared/SharedMemoryStructures.hpp"
@@ -184,7 +184,7 @@ if [[ "$MODE" == "transmit" ]]; then
         "src/Isoch/core/AmdtpTransmitter.cpp"
         "src/Isoch/core/IsochTransmitDCLManager.cpp"
         "src/Isoch/core/IsochTransmitBufferManager.cpp"
-        "src/Isoch/IsochStreamHandler.cpp"
+        "src/Isoch/IsoStreamHandler.cpp"
         "src/Isoch/core/CIPPreCalculator.cpp"
         # "src/Driver/*"
         # all files in src/Driver should be included
