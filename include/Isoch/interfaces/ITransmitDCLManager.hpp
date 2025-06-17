@@ -44,6 +44,8 @@ public:
          IOFireWireLibLocalIsochPortRef localPort,
          uint32_t groupIndexToNotify) = 0;
 
+    // Method to get DCL reference for batching (Apple's architecture)
+    virtual NuDCLSendPacketRef getDCLRef(uint32_t groupIndex, uint32_t packetIndexInGroup) = 0;
 
     virtual DCLCommand* getProgramHandle() const = 0; // Get the handle needed by Local Port
     virtual void reset() = 0;

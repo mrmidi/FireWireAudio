@@ -20,6 +20,7 @@
 #include "FWA/Error.h"
 #include "Isoch/core/CIPHeader.hpp"
 #include "Isoch/core/CIPPreCalculator.hpp"
+#include "Isoch/core/DCLBatcher.hpp"
 #include "Isoch/core/TransmitterTypes.hpp"
 #include "Isoch/interfaces/ITransmitBufferManager.hpp"
 #include "Isoch/interfaces/ITransmitDCLManager.hpp"
@@ -139,22 +140,8 @@ private:
     void handleDCLCompleteFastPath(uint32_t completedGroupIndex);  // New fast path
     void handleDCLOverrun();
     
-    // === ADD: Apple's methods ===
-    void handleDCLCompleteAppleStyle(uint32_t completedGroupIndex);
-    
-    // === ADD: Apple's processing methods ===
-    void processBufferGroupLoop(uint32_t completedGroupIndex, uint64_t currentTimestamp);
-    bool processOutputForBufferGroup(uint32_t groupIndex, uint64_t timestamp);
-    void handleFirstTimeExecution(uint32_t callbackCount);
-    void updateAppleStyleStats(uint32_t groupsProcessed, uint64_t processingTimeNs);
-    uint32_t getCurrentHardwareCycleTime() const;
-    void handleStreamReset();
-    
-    // === LOGGING HELPERS ===
-    #if APPLE_STYLE_LOGGING
-    void logAppleStyleStats() const;
-    bool shouldLogStats() const;
-    #endif
+    // Apple's architecture - process single group helper
+    void processAndQueueGroup(uint32_t fillGroup);
     
     // Performance monitoring for pre-calc integration
     void logPerformanceStatistics() const;
@@ -204,6 +191,9 @@ private:
     
     // CIP Pre-calculator for background header generation
     std::unique_ptr<CIPPreCalculator> cipPreCalc_;
+    
+    // DCL Batcher for reduced kernel transitions
+    std::unique_ptr<DCLBatcher> dclBatcher_;
 
     // RunLoop
     CFRunLoopRef runLoopRef_{nullptr};

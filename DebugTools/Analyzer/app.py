@@ -3,6 +3,7 @@ import streamlit as st
 import numpy as np
 from mvc.controller import AppController
 from mvc.views import CIPAnalysisView, AudioAnalysisView, DetailedPacketView, WaveAnalysisView
+from mvc.packet_analysis_views import PacketAnalysisView
 from mvc.anomality_views import AudioAnomalyView
 from firewire.audio_anomality_analyzer import AudioAnomalyAnalyzer
 
@@ -32,25 +33,42 @@ with st.spinner("Parsing log files and analyzing packets..."):
         st.stop()
 
 # --- UI TABS ---
-tab_cip, tab_audio, tab_wave, tab_detail = st.tabs(["📦 CIP Packet Analysis", "🔊 Audio Waveform Analysis", "🌊 Wave File Analysis", "🔍 Detailed Packet Log"])
+tab_packet, tab_audio, tab_wave, tab_detail = st.tabs(["📦 Packet Analyzer", "🔊 Audio Waveform Analysis", "🌊 Wave File Analysis", "🔍 Detailed Packet Log"])
 
-# --- TAB 1: CIP Packet Analysis ---
-with tab_cip:
-    # Stream Format
-    fmt_results = controller.get_format_info()
-    CIPAnalysisView.render_format_info(fmt_results)
+# --- TAB 1: Enhanced Packet Analysis ---
+with tab_packet:
+    # Channel selection for analysis
+    unique_channels = controller.get_unique_channels()
+    if unique_channels:
+        channel_select = st.selectbox(
+            "Select Channel for Analysis", 
+            options=[None] + unique_channels, 
+            format_func=lambda x: "All Channels" if x is None else f"Channel {x}",
+            index=0
+        )
+    else:
+        channel_select = None
     
-    # Packet Type Distribution
-    packet_type_results = controller.get_packet_type_analysis()
-    CIPAnalysisView.render_packet_types(packet_type_results)
+    # Get comprehensive packet analysis
+    with st.spinner("Analyzing packet anomalies..."):
+        analysis_results = controller.get_comprehensive_packet_analysis(channel_select)
+        packet_samples = controller.export_packet_samples(max_samples_per_type=5)
     
-    # DBC Continuity
-    dbc_results = controller.get_dbc_analysis()
-    CIPAnalysisView.render_dbc_analysis(dbc_results)
+    # Render analysis results
+    PacketAnalysisView.render_packet_health_overview(analysis_results)
     
-    # SYT Analysis
-    syt_results = controller.get_syt_analysis()
-    CIPAnalysisView.render_syt_analysis(syt_results)
+    # Detailed analyses in expandable sections
+    PacketAnalysisView.render_dbc_analysis_enhanced(analysis_results.get("dbc_analysis", {}))
+    PacketAnalysisView.render_length_errors(analysis_results.get("length_errors", {}))
+    PacketAnalysisView.render_dropout_analysis(analysis_results.get("dropout_analysis", {}))
+    PacketAnalysisView.render_pattern_analysis(analysis_results.get("pattern_analysis", {}))
+    
+    # Timeline and channel comparison
+    PacketAnalysisView.render_packet_timeline(analysis_results)
+    PacketAnalysisView.render_channel_comparison(analysis_results)
+    
+    # Export controls
+    PacketAnalysisView.render_export_controls(analysis_results, packet_samples)
 
 # --- TAB 2: Audio Analysis ---
 with tab_audio:

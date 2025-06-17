@@ -1,0 +1,883 @@
+[2025-06-17 06:59:52.040] [info] PlugDetailParser: Finished querying supported formats. Found 0 formats for plug 0x08/0 Output
+[2025-06-17 06:59:52.040] [info] DeviceParser: Capability parsing finished for GUID: 0x3db0a0000d112
+[2025-06-17 06:59:52.040] [info] AudioDevice::init: Device capability parsing completed successfully.
+[2025-06-17 06:59:52.040] [info] AudioDevice::init completed successfully for GUID: 0x3db0a0000d112
+[2025-06-17 06:59:52.040] [info] deviceAdded: AudioDevice created and initialized successfully for GUID 0x3db0a0000d112
+[2025-06-17 06:59:52.040] [info] Adding device 0x3db0a0000d112 to controller.
+[2025-06-17 06:59:52.040] [info] Device added: 1085260926341394
+[2025-06-17 06:59:52.040] [info] deviceAdded: Calling notification callback for GUID 0x3db0a0000d112
+[2025-06-17 06:59:52.040] [info] deviceAdded: Finished iterating devices
+[2025-06-17 06:59:52.042] [info] [FWADaemon.mm:887] XPC: getDetailedDeviceInfoJSONForGUID: 0x0003DB0A0000D112
+[2025-06-17 07:00:00.882] [info] [FWADaemon.mm:430] Received setDriverPresenceStatus: true
+[2025-06-17 07:00:00.882] [info] [FWADaemon.mm:433] Driver connection status changed to true. Broadcasting...
+[2025-06-17 07:00:00.882] [info] [FWADaemon.mm:453] Broadcasting driverConnectionStatusDidChange: true
+[2025-06-17 07:00:15.146] [info] [FWADaemon.mm:934] XPC: startAudioStreamsForDevice: GUID=0x0003DB0A0000D112
+[2025-06-17 07:00:15.146] [info] Starting audio streams for device GUID: 0x3db0a0000d112
+[2025-06-17 07:00:15.146] [info] AudioDevice::startStreams called for GUID 0x3db0a0000d112
+[2025-06-17 07:00:15.146] [info] AudioDevice::startStreams: Creating IsoStreamHandler for GUID 0x3db0a0000d112
+[2025-06-17 07:00:15.146] [info] IsoStreamHandler: Initialized
+[2025-06-17 07:00:15.146] [info] IsoStreamHandler: Node ID: 65474
+[2025-06-17 07:00:15.146] [info] IsoStreamHandler: Constructor finished (obsolete XPC init removed).
+[2025-06-17 07:00:15.146] [info] AudioDevice::startStreams: IsoStreamHandler created successfully.
+[2025-06-17 07:00:15.146] [info] IsoStreamHandler: Starting streams (RECEIVE=0, TRANSMIT=1)
+[2025-06-17 07:00:15.146] [info] IsoStreamHandler: Speed: 400Mbps
+[2025-06-17 07:00:15.146] [info] IsoStreamHandler: Receiver disabled by build configuration.
+[2025-06-17 07:00:15.146] [info] IsoStreamHandler: Creating transmitter stream...
+[2025-06-17 07:00:15.146] [info] IsoStreamHandler: Creating transmitter stream with: packetsPerGroup=8, numGroups=16, transmitProviderBufferSize=16384
+[2025-06-17 07:00:15.146] [info] AudioDeviceStream: Created for plug 0 with type 1
+[2025-06-17 07:00:15.146] [warning] AudioDeviceStream: Failed to set CPU affinity, error: 46
+[2025-06-17 07:00:15.146] [info] AudioDeviceStream: Current thread set to real-time priority (1000µs period, 300µs compute, 600µs constraint)
+[2025-06-17 07:00:15.147] [info] AudioDeviceStream: Dedicated RunLoop thread started: 0x132c041c0 on thread 5395
+[2025-06-17 07:00:15.147] [info] AudioDeviceStream: Added FireWire dispatchers to dedicated RunLoop
+[2025-06-17 07:00:15.161] [info] AudioDeviceStream: RunLoop initialization completed successfully
+[2025-06-17 07:00:15.161] [info] [RunLoop] Class: AudioDeviceStream | Function: create | CFRunLoopRef: 0x132c041c0 | Thread ID: 6103396352
+[2025-06-17 07:00:15.162] [info] AmdtpTransmitter constructing...
+[2025-06-17 07:00:15.162] [info] AudioDeviceStream: Initializing AmdtpTransmitter for plug 0
+[2025-06-17 07:00:15.163] [info] IsochPacketProvider reset (direct SHM mode)
+[2025-06-17 07:00:15.164] [info] IsochTransmitBufferManager::setupBuffers: Allocated buffer at 0x1046bc000 size 65536
+[2025-06-17 07:00:15.164] [info] IsochPortChannelManager::initialize: isTalker=true, runLoop=0x130e06960
+[2025-06-17 07:00:15.164] [info] IsochPortChannelManager::setupDispatchers: dispatchers added to RunLoop
+[2025-06-17 07:00:15.165] [info] IsochPortChannelManager::initialize: completed successfully
+[2025-06-17 07:00:15.165] [info] IsochTransmitDCLManager::createDCLProgram starting...
+[2025-06-17 07:00:15.165] [warning]   Set callback for G=7, P=7 (DCL 0x60000080fcf0)
+[2025-06-17 07:00:15.165] [warning]   Set callback for G=15, P=7 (DCL 0x60000081f930)
+[2025-06-17 07:00:15.165] [info] IsochTransmitDCLManager::createDCLProgram finished successfully.
+[2025-06-17 07:00:15.165] [info] IsochPortChannelManager::createLocalPort: Creating port with buffer at 0x1046bc000, length=65536
+[2025-06-17 07:00:15.165] [info] IsochPortChannelManager::createIsochChannel: This is a talker, remote is listener
+[2025-06-17 07:00:15.165] [info] IsochPortChannelManager::setupLocalPortAndChannel: Port and channel setup successfully
+[2025-06-17 07:00:15.165] [info] AudioDeviceStream: Created AmdtpTransmitter for plug 0
+[2025-06-17 07:00:15.165] [info] IsoStreamHandler: Output stream created successfully
+[2025-06-17 07:00:15.165] [info] AudioDeviceStream: Set isochronous speed to 2
+[2025-06-17 07:00:15.166] [info] IsochPortChannelManager::configure: Set speed=2, channel=4294967295
+[2025-06-17 07:00:15.166] [info] AudioDeviceStream: Connecting to device INPUT plug 0 on channel 4294967295
+[2025-06-17 07:00:15.166] [info] AudioDeviceStream: Connected to device input plug 0 on channel 4294967295
+[2025-06-17 07:00:15.166] [info] AmdtpTransmitter starting transmit...
+[2025-06-17 07:00:15.166] [info] Priming DCL program with initial NO-DATA state...
+[2025-06-17 07:00:15.166] [info] DCL program memory and commands configured for NO-DATA state.
+[2025-06-17 07:00:15.166] [info] IsochTransmitDCLManager::fixupDCLJumpTargets completed successfully.
+0:	SEND 0x60000080c1e0	hdr=user @ 0x1046c4000, mask @ 0x1046c4004
+			ranges:
+				0: < 1046c0000, 8 >
+			branch --> 0x60000080c2d0
+			time stamp 0x1046c8000
+			refcon 0x130e06d30
+1:	SEND 0x60000080c2d0	hdr=user @ 0x1046c4008, mask @ 0x1046c400c
+			ranges:
+				0: < 1046c0008, 8 >
+			branch --> 0x60000080c3c0
+			time stamp 0x1046c8000
+			refcon 0x130e06d30
+2:	SEND 0x60000080c3c0	hdr=user @ 0x1046c4010, mask @ 0x1046c4014
+			ranges:
+				0: < 1046c0010, 8 >
+			branch --> 0x60000080c4b0
+			time stamp 0x1046c8000
+			refcon 0x130e06d30
+3:	SEND 0x60000080c4b0	hdr=user @ 0x1046c4018, mask @ 0x1046c401c
+			ranges:
+				0: < 1046c0018, 8 >
+			branch --> 0x60000080c5a0
+			time stamp 0x1046c8000
+			refcon 0x130e06d30
+4:	SEND 0x60000080c5a0	hdr=user @ 0x1046c4020, mask @ 0x1046c4024
+			ranges:
+				0: < 1046c0020, 8 >
+			branch --> 0x60000080c690
+			time stamp 0x1046c8000
+			refcon 0x130e06d30
+5:	SEND 0x60000080c690	hdr=user @ 0x1046c4028, mask @ 0x1046c402c
+			ranges:
+				0: < 1046c0028, 8 >
+			branch --> 0x60000080c780
+			time stamp 0x1046c8000
+			refcon 0x130e06d30
+6:	SEND 0x60000080c780	hdr=user @ 0x1046c4030, mask @ 0x1046c4034
+			ranges:
+				0: < 1046c0030, 8 >
+			branch --> 0x60000080c870
+			time stamp 0x1046c8000
+			refcon 0x130e06d30
+7:	SEND 0x60000080c870	hdr=user @ 0x1046c4038, mask @ 0x1046c403c
+			ranges:
+				0: < 1046c0038, 8 >
+			branch --> 0x60000080c960
+			time stamp 0x1046c8000
+			refcon 0x130e06d30
+8:	SEND 0x60000080c960	hdr=user @ 0x1046c4040, mask @ 0x1046c4044
+			ranges:
+				0: < 1046c0040, 8 >
+			branch --> 0x60000080ca50
+			time stamp 0x1046c8004
+			refcon 0x130e06d30
+9:	SEND 0x60000080ca50	hdr=user @ 0x1046c4048, mask @ 0x1046c404c
+			ranges:
+				0: < 1046c0048, 8 >
+			branch --> 0x60000080cb40
+			time stamp 0x1046c8004
+			refcon 0x130e06d30
+10:	SEND 0x60000080cb40	hdr=user @ 0x1046c4050, mask @ 0x1046c4054
+			ranges:
+				0: < 1046c0050, 8 >
+			branch --> 0x60000080cc30
+			time stamp 0x1046c8004
+			refcon 0x130e06d30
+11:	SEND 0x60000080cc30	hdr=user @ 0x1046c4058, mask @ 0x1046c405c
+			ranges:
+				0: < 1046c0058, 8 >
+			branch --> 0x60000080cd20
+			time stamp 0x1046c8004
+			refcon 0x130e06d30
+12:	SEND 0x60000080cd20	hdr=user @ 0x1046c4060, mask @ 0x1046c4064
+			ranges:
+				0: < 1046c0060, 8 >
+			branch --> 0x60000080ce10
+			time stamp 0x1046c8004
+			refcon 0x130e06d30
+13:	SEND 0x60000080ce10	hdr=user @ 0x1046c4068, mask @ 0x1046c406c
+			ranges:
+				0: < 1046c0068, 8 >
+			branch --> 0x60000080cf00
+			time stamp 0x1046c8004
+			refcon 0x130e06d30
+14:	SEND 0x60000080cf00	hdr=user @ 0x1046c4070, mask @ 0x1046c4074
+			ranges:
+				0: < 1046c0070, 8 >
+			branch --> 0x60000080cff0
+			time stamp 0x1046c8004
+			refcon 0x130e06d30
+15:	SEND 0x60000080cff0	hdr=user @ 0x1046c4078, mask @ 0x1046c407c
+			ranges:
+				0: < 1046c0078, 8 >
+			branch --> 0x60000080d0e0
+			time stamp 0x1046c8004
+			refcon 0x130e06d30
+16:	SEND 0x60000080d0e0	hdr=user @ 0x1046c4080, mask @ 0x1046c4084
+			ranges:
+				0: < 1046c0080, 8 >
+			branch --> 0x60000080d1d0
+			time stamp 0x1046c8008
+			refcon 0x130e06d30
+17:	SEND 0x60000080d1d0	hdr=user @ 0x1046c4088, mask @ 0x1046c408c
+			ranges:
+				0: < 1046c0088, 8 >
+			branch --> 0x60000080d2c0
+			time stamp 0x1046c8008
+			refcon 0x130e06d30
+18:	SEND 0x60000080d2c0	hdr=user @ 0x1046c4090, mask @ 0x1046c4094
+			ranges:
+				0: < 1046c0090, 8 >
+			branch --> 0x60000080d3b0
+			time stamp 0x1046c8008
+			refcon 0x130e06d30
+19:	SEND 0x60000080d3b0	hdr=user @ 0x1046c4098, mask @ 0x1046c409c
+			ranges:
+				0: < 1046c0098, 8 >
+			branch --> 0x60000080d4a0
+			time stamp 0x1046c8008
+			refcon 0x130e06d30
+20:	SEND 0x60000080d4a0	hdr=user @ 0x1046c40a0, mask @ 0x1046c40a4
+			ranges:
+				0: < 1046c00a0, 8 >
+			branch --> 0x60000080d590
+			time stamp 0x1046c8008
+			refcon 0x130e06d30
+21:	SEND 0x60000080d590	hdr=user @ 0x1046c40a8, mask @ 0x1046c40ac
+			ranges:
+				0: < 1046c00a8, 8 >
+			branch --> 0x60000080d680
+			time stamp 0x1046c8008
+			refcon 0x130e06d30
+22:	SEND 0x60000080d680	hdr=user @ 0x1046c40b0, mask @ 0x1046c40b4
+			ranges:
+				0: < 1046c00b0, 8 >
+			branch --> 0x60000080d770
+			time stamp 0x1046c8008
+			refcon 0x130e06d30
+23:	SEND 0x60000080d770	hdr=user @ 0x1046c40b8, mask @ 0x1046c40bc
+			ranges:
+				0: < 1046c00b8, 8 >
+			branch --> 0x60000080d860
+			time stamp 0x1046c8008
+			refcon 0x130e06d30
+24:	SEND 0x60000080d860	hdr=user @ 0x1046c40c0, mask @ 0x1046c40c4
+			ranges:
+				0: < 1046c00c0, 8 >
+			branch --> 0x60000080d950
+			time stamp 0x1046c800c
+			refcon 0x130e06d30
+25:	SEND 0x60000080d950	hdr=user @ 0x1046c40c8, mask @ 0x1046c40cc
+			ranges:
+				0: < 1046c00c8, 8 >
+			branch --> 0x60000080da40
+			time stamp 0x1046c800c
+			refcon 0x130e06d30
+26:	SEND 0x60000080da40	hdr=user @ 0x1046c40d0, mask @ 0x1046c40d4
+			ranges:
+				0: < 1046c00d0, 8 >
+			branch --> 0x60000080db30
+			time stamp 0x1046c800c
+			refcon 0x130e06d30
+27:	SEND 0x60000080db30	hdr=user @ 0x1046c40d8, mask @ 0x1046c40dc
+			ranges:
+				0: < 1046c00d8, 8 >
+			branch --> 0x60000080dc20
+			time stamp 0x1046c800c
+			refcon 0x130e06d30
+28:	SEND 0x60000080dc20	hdr=user @ 0x1046c40e0, mask @ 0x1046c40e4
+			ranges:
+				0: < 1046c00e0, 8 >
+			branch --> 0x60000080dd10
+			time stamp 0x1046c800c
+			refcon 0x130e06d30
+29:	SEND 0x60000080dd10	hdr=user @ 0x1046c40e8, mask @ 0x1046c40ec
+			ranges:
+				0: < 1046c00e8, 8 >
+			branch --> 0x60000080de00
+			time stamp 0x1046c800c
+			refcon 0x130e06d30
+30:	SEND 0x60000080de00	hdr=user @ 0x1046c40f0, mask @ 0x1046c40f4
+			ranges:
+				0: < 1046c00f0, 8 >
+			branch --> 0x60000080def0
+			time stamp 0x1046c800c
+			refcon 0x130e06d30
+31:	SEND 0x60000080def0	hdr=user @ 0x1046c40f8, mask @ 0x1046c40fc
+			ranges:
+				0: < 1046c00f8, 8 >
+			branch --> 0x60000080dfe0
+			time stamp 0x1046c800c
+			refcon 0x130e06d30
+32:	SEND 0x60000080dfe0	hdr=user @ 0x1046c4100, mask @ 0x1046c4104
+			ranges:
+				0: < 1046c0100, 8 >
+			branch --> 0x60000080e0d0
+			time stamp 0x1046c8010
+			refcon 0x130e06d30
+33:	SEND 0x60000080e0d0	hdr=user @ 0x1046c4108, mask @ 0x1046c410c
+			ranges:
+				0: < 1046c0108, 8 >
+			branch --> 0x60000080e1c0
+			time stamp 0x1046c8010
+			refcon 0x130e06d30
+34:	SEND 0x60000080e1c0	hdr=user @ 0x1046c4110, mask @ 0x1046c4114
+			ranges:
+				0: < 1046c0110, 8 >
+			branch --> 0x60000080e2b0
+			time stamp 0x1046c8010
+			refcon 0x130e06d30
+35:	SEND 0x60000080e2b0	hdr=user @ 0x1046c4118, mask @ 0x1046c411c
+			ranges:
+				0: < 1046c0118, 8 >
+			branch --> 0x60000080e3a0
+			time stamp 0x1046c8010
+			refcon 0x130e06d30
+36:	SEND 0x60000080e3a0	hdr=user @ 0x1046c4120, mask @ 0x1046c4124
+			ranges:
+				0: < 1046c0120, 8 >
+			branch --> 0x60000080e490
+			time stamp 0x1046c8010
+			refcon 0x130e06d30
+37:	SEND 0x60000080e490	hdr=user @ 0x1046c4128, mask @ 0x1046c412c
+			ranges:
+				0: < 1046c0128, 8 >
+			branch --> 0x60000080e580
+			time stamp 0x1046c8010
+			refcon 0x130e06d30
+38:	SEND 0x60000080e580	hdr=user @ 0x1046c4130, mask @ 0x1046c4134
+			ranges:
+				0: < 1046c0130, 8 >
+			branch --> 0x60000080e670
+			time stamp 0x1046c8010
+			refcon 0x130e06d30
+39:	SEND 0x60000080e670	hdr=user @ 0x1046c4138, mask @ 0x1046c413c
+			ranges:
+				0: < 1046c0138, 8 >
+			branch --> 0x60000080e760
+			time stamp 0x1046c8010
+			refcon 0x130e06d30
+40:	SEND 0x60000080e760	hdr=user @ 0x1046c4140, mask @ 0x1046c4144
+			ranges:
+				0: < 1046c0140, 8 >
+			branch --> 0x60000080e850
+			time stamp 0x1046c8014
+			refcon 0x130e06d30
+41:	SEND 0x60000080e850	hdr=user @ 0x1046c4148, mask @ 0x1046c414c
+			ranges:
+				0: < 1046c0148, 8 >
+			branch --> 0x60000080e940
+			time stamp 0x1046c8014
+			refcon 0x130e06d30
+42:	SEND 0x60000080e940	hdr=user @ 0x1046c4150, mask @ 0x1046c4154
+			ranges:
+				0: < 1046c0150, 8 >
+			branch --> 0x60000080ea30
+			time stamp 0x1046c8014
+			refcon 0x130e06d30
+43:	SEND 0x60000080ea30	hdr=user @ 0x1046c4158, mask @ 0x1046c415c
+			ranges:
+				0: < 1046c0158, 8 >
+			branch --> 0x60000080eb20
+			time stamp 0x1046c8014
+			refcon 0x130e06d30
+44:	SEND 0x60000080eb20	hdr=user @ 0x1046c4160, mask @ 0x1046c4164
+			ranges:
+				0: < 1046c0160, 8 >
+			branch --> 0x60000080ec10
+			time stamp 0x1046c8014
+			refcon 0x130e06d30
+45:	SEND 0x60000080ec10	hdr=user @ 0x1046c4168, mask @ 0x1046c416c
+			ranges:
+				0: < 1046c0168, 8 >
+			branch --> 0x60000080ed00
+			time stamp 0x1046c8014
+			refcon 0x130e06d30
+46:	SEND 0x60000080ed00	hdr=user @ 0x1046c4170, mask @ 0x1046c4174
+			ranges:
+				0: < 1046c0170, 8 >
+			branch --> 0x60000080edf0
+			time stamp 0x1046c8014
+			refcon 0x130e06d30
+47:	SEND 0x60000080edf0	hdr=user @ 0x1046c4178, mask @ 0x1046c417c
+			ranges:
+				0: < 1046c0178, 8 >
+			branch --> 0x60000080eee0
+			time stamp 0x1046c8014
+			refcon 0x130e06d30
+48:	SEND 0x60000080eee0	hdr=user @ 0x1046c4180, mask @ 0x1046c4184
+			ranges:
+				0: < 1046c0180, 8 >
+			branch --> 0x60000080efd0
+			time stamp 0x1046c8018
+			refcon 0x130e06d30
+49:	SEND 0x60000080efd0	hdr=user @ 0x1046c4188, mask @ 0x1046c418c
+			ranges:
+				0: < 1046c0188, 8 >
+			branch --> 0x60000080f0c0
+			time stamp 0x1046c8018
+			refcon 0x130e06d30
+50:	SEND 0x60000080f0c0	hdr=user @ 0x1046c4190, mask @ 0x1046c4194
+			ranges:
+				0: < 1046c0190, 8 >
+			branch --> 0x60000080f1b0
+			time stamp 0x1046c8018
+			refcon 0x130e06d30
+51:	SEND 0x60000080f1b0	hdr=user @ 0x1046c4198, mask @ 0x1046c419c
+			ranges:
+				0: < 1046c0198, 8 >
+			branch --> 0x60000080f2a0
+			time stamp 0x1046c8018
+			refcon 0x130e06d30
+52:	SEND 0x60000080f2a0	hdr=user @ 0x1046c41a0, mask @ 0x1046c41a4
+			ranges:
+				0: < 1046c01a0, 8 >
+			branch --> 0x60000080f390
+			time stamp 0x1046c8018
+			refcon 0x130e06d30
+53:	SEND 0x60000080f390	hdr=user @ 0x1046c41a8, mask @ 0x1046c41ac
+			ranges:
+				0: < 1046c01a8, 8 >
+			branch --> 0x60000080f480
+			time stamp 0x1046c8018
+			refcon 0x130e06d30
+54:	SEND 0x60000080f480	hdr=user @ 0x1046c41b0, mask @ 0x1046c41b4
+			ranges:
+				0: < 1046c01b0, 8 >
+			branch --> 0x60000080f570
+			time stamp 0x1046c8018
+			refcon 0x130e06d30
+55:	SEND 0x60000080f570	hdr=user @ 0x1046c41b8, mask @ 0x1046c41bc
+			ranges:
+				0: < 1046c01b8, 8 >
+			branch --> 0x60000080f660
+			time stamp 0x1046c8018
+			refcon 0x130e06d30
+56:	SEND 0x60000080f660	hdr=user @ 0x1046c41c0, mask @ 0x1046c41c4
+			ranges:
+				0: < 1046c01c0, 8 >
+			branch --> 0x60000080f750
+			time stamp 0x1046c801c
+			refcon 0x130e06d30
+57:	SEND 0x60000080f750	hdr=user @ 0x1046c41c8, mask @ 0x1046c41cc
+			ranges:
+				0: < 1046c01c8, 8 >
+			branch --> 0x60000080f840
+			time stamp 0x1046c801c
+			refcon 0x130e06d30
+58:	SEND 0x60000080f840	hdr=user @ 0x1046c41d0, mask @ 0x1046c41d4
+			ranges:
+				0: < 1046c01d0, 8 >
+			branch --> 0x60000080f930
+			time stamp 0x1046c801c
+			refcon 0x130e06d30
+59:	SEND 0x60000080f930	hdr=user @ 0x1046c41d8, mask @ 0x1046c41dc
+			ranges:
+				0: < 1046c01d8, 8 >
+			branch --> 0x60000080fa20
+			time stamp 0x1046c801c
+			refcon 0x130e06d30
+60:	SEND 0x60000080fa20	hdr=user @ 0x1046c41e0, mask @ 0x1046c41e4
+			ranges:
+				0: < 1046c01e0, 8 >
+			branch --> 0x60000080fb10
+			time stamp 0x1046c801c
+			refcon 0x130e06d30
+61:	SEND 0x60000080fb10	hdr=user @ 0x1046c41e8, mask @ 0x1046c41ec
+			ranges:
+				0: < 1046c01e8, 8 >
+			branch --> 0x60000080fc00
+			time stamp 0x1046c801c
+			refcon 0x130e06d30
+62:	SEND 0x60000080fc00	hdr=user @ 0x1046c41f0, mask @ 0x1046c41f4
+			ranges:
+				0: < 1046c01f0, 8 >
+			branch --> 0x60000080fcf0
+			time stamp 0x1046c801c
+			refcon 0x130e06d30
+63:	SEND 0x60000080fcf0	hdr=user @ 0x1046c41f8, mask @ 0x1046c41fc
+			ranges:
+				0: < 1046c01f8, 8 >
+			branch --> 0x60000080fde0
+			callback @0x10428365c
+			time stamp 0x1046c801c
+			refcon 0x600000b08670
+64:	SEND 0x60000080fde0	hdr=user @ 0x1046c4200, mask @ 0x1046c4204
+			ranges:
+				0: < 1046c0200, 8 >
+			branch --> 0x60000080fed0
+			time stamp 0x1046c8020
+			refcon 0x130e06d30
+65:	SEND 0x60000080fed0	hdr=user @ 0x1046c4208, mask @ 0x1046c420c
+			ranges:
+				0: < 1046c0208, 8 >
+			branch --> 0x60000081c000
+			time stamp 0x1046c8020
+			refcon 0x130e06d30
+66:	SEND 0x60000081c000	hdr=user @ 0x1046c4210, mask @ 0x1046c4214
+			ranges:
+				0: < 1046c0210, 8 >
+			branch --> 0x60000081c0f0
+			time stamp 0x1046c8020
+			refcon 0x130e06d30
+67:	SEND 0x60000081c0f0	hdr=user @ 0x1046c4218, mask @ 0x1046c421c
+			ranges:
+				0: < 1046c0218, 8 >
+			branch --> 0x60000081c1e0
+			time stamp 0x1046c8020
+			refcon 0x130e06d30
+68:	SEND 0x60000081c1e0	hdr=user @ 0x1046c4220, mask @ 0x1046c4224
+			ranges:
+				0: < 1046c0220, 8 >
+			branch --> 0x60000081c2d0
+			time stamp 0x1046c8020
+			refcon 0x130e06d30
+69:	SEND 0x60000081c2d0	hdr=user @ 0x1046c4228, mask @ 0x1046c422c
+			ranges:
+				0: < 1046c0228, 8 >
+			branch --> 0x60000081c3c0
+			time stamp 0x1046c8020
+			refcon 0x130e06d30
+70:	SEND 0x60000081c3c0	hdr=user @ 0x1046c4230, mask @ 0x1046c4234
+			ranges:
+				0: < 1046c0230, 8 >
+			branch --> 0x60000081c4b0
+			time stamp 0x1046c8020
+			refcon 0x130e06d30
+71:	SEND 0x60000081c4b0	hdr=user @ 0x1046c4238, mask @ 0x1046c423c
+			ranges:
+				0: < 1046c0238, 8 >
+			branch --> 0x60000081c5a0
+			time stamp 0x1046c8020
+			refcon 0x130e06d30
+72:	SEND 0x60000081c5a0	hdr=user @ 0x1046c4240, mask @ 0x1046c4244
+			ranges:
+				0: < 1046c0240, 8 >
+			branch --> 0x60000081c690
+			time stamp 0x1046c8024
+			refcon 0x130e06d30
+73:	SEND 0x60000081c690	hdr=user @ 0x1046c4248, mask @ 0x1046c424c
+			ranges:
+				0: < 1046c0248, 8 >
+			branch --> 0x60000081c780
+			time stamp 0x1046c8024
+			refcon 0x130e06d30
+74:	SEND 0x60000081c780	hdr=user @ 0x1046c4250, mask @ 0x1046c4254
+			ranges:
+				0: < 1046c0250, 8 >
+			branch --> 0x60000081c870
+			time stamp 0x1046c8024
+			refcon 0x130e06d30
+75:	SEND 0x60000081c870	hdr=user @ 0x1046c4258, mask @ 0x1046c425c
+			ranges:
+				0: < 1046c0258, 8 >
+			branch --> 0x60000081c960
+			time stamp 0x1046c8024
+			refcon 0x130e06d30
+76:	SEND 0x60000081c960	hdr=user @ 0x1046c4260, mask @ 0x1046c4264
+			ranges:
+				0: < 1046c0260, 8 >
+			branch --> 0x60000081ca50
+			time stamp 0x1046c8024
+			refcon 0x130e06d30
+77:	SEND 0x60000081ca50	hdr=user @ 0x1046c4268, mask @ 0x1046c426c
+			ranges:
+				0: < 1046c0268, 8 >
+			branch --> 0x60000081cb40
+			time stamp 0x1046c8024
+			refcon 0x130e06d30
+78:	SEND 0x60000081cb40	hdr=user @ 0x1046c4270, mask @ 0x1046c4274
+			ranges:
+				0: < 1046c0270, 8 >
+			branch --> 0x60000081cc30
+			time stamp 0x1046c8024
+			refcon 0x130e06d30
+79:	SEND 0x60000081cc30	hdr=user @ 0x1046c4278, mask @ 0x1046c427c
+			ranges:
+				0: < 1046c0278, 8 >
+			branch --> 0x60000081cd20
+			time stamp 0x1046c8024
+			refcon 0x130e06d30
+80:	SEND 0x60000081cd20	hdr=user @ 0x1046c4280, mask @ 0x1046c4284
+			ranges:
+				0: < 1046c0280, 8 >
+			branch --> 0x60000081ce10
+			time stamp 0x1046c8028
+			refcon 0x130e06d30
+81:	SEND 0x60000081ce10	hdr=user @ 0x1046c4288, mask @ 0x1046c428c
+			ranges:
+				0: < 1046c0288, 8 >
+			branch --> 0x60000081cf00
+			time stamp 0x1046c8028
+			refcon 0x130e06d30
+82:	SEND 0x60000081cf00	hdr=user @ 0x1046c4290, mask @ 0x1046c4294
+			ranges:
+				0: < 1046c0290, 8 >
+			branch --> 0x60000081cff0
+			time stamp 0x1046c8028
+			refcon 0x130e06d30
+83:	SEND 0x60000081cff0	hdr=user @ 0x1046c4298, mask @ 0x1046c429c
+			ranges:
+				0: < 1046c0298, 8 >
+			branch --> 0x60000081d0e0
+			time stamp 0x1046c8028
+			refcon 0x130e06d30
+84:	SEND 0x60000081d0e0	hdr=user @ 0x1046c42a0, mask @ 0x1046c42a4
+			ranges:
+				0: < 1046c02a0, 8 >
+			branch --> 0x60000081d1d0
+			time stamp 0x1046c8028
+			refcon 0x130e06d30
+85:	SEND 0x60000081d1d0	hdr=user @ 0x1046c42a8, mask @ 0x1046c42ac
+			ranges:
+				0: < 1046c02a8, 8 >
+			branch --> 0x60000081d2c0
+			time stamp 0x1046c8028
+			refcon 0x130e06d30
+86:	SEND 0x60000081d2c0	hdr=user @ 0x1046c42b0, mask @ 0x1046c42b4
+			ranges:
+				0: < 1046c02b0, 8 >
+			branch --> 0x60000081d3b0
+			time stamp 0x1046c8028
+			refcon 0x130e06d30
+87:	SEND 0x60000081d3b0	hdr=user @ 0x1046c42b8, mask @ 0x1046c42bc
+			ranges:
+				0: < 1046c02b8, 8 >
+			branch --> 0x60000081d4a0
+			time stamp 0x1046c8028
+			refcon 0x130e06d30
+88:	SEND 0x60000081d4a0	hdr=user @ 0x1046c42c0, mask @ 0x1046c42c4
+			ranges:
+				0: < 1046c02c0, 8 >
+			branch --> 0x60000081d590
+			time stamp 0x1046c802c
+			refcon 0x130e06d30
+89:	SEND 0x60000081d590	hdr=user @ 0x1046c42c8, mask @ 0x1046c42cc
+			ranges:
+				0: < 1046c02c8, 8 >
+			branch --> 0x60000081d680
+			time stamp 0x1046c802c
+			refcon 0x130e06d30
+90:	SEND 0x60000081d680	hdr=user @ 0x1046c42d0, mask @ 0x1046c42d4
+			ranges:
+				0: < 1046c02d0, 8 >
+			branch --> 0x60000081d770
+			time stamp 0x1046c802c
+			refcon 0x130e06d30
+91:	SEND 0x60000081d770	hdr=user @ 0x1046c42d8, mask @ 0x1046c42dc
+			ranges:
+				0: < 1046c02d8, 8 >
+			branch --> 0x60000081d860
+			time stamp 0x1046c802c
+			refcon 0x130e06d30
+92:	SEND 0x60000081d860	hdr=user @ 0x1046c42e0, mask @ 0x1046c42e4
+			ranges:
+				0: < 1046c02e0, 8 >
+			branch --> 0x60000081d950
+			time stamp 0x1046c802c
+			refcon 0x130e06d30
+93:	SEND 0x60000081d950	hdr=user @ 0x1046c42e8, mask @ 0x1046c42ec
+			ranges:
+				0: < 1046c02e8, 8 >
+			branch --> 0x60000081da40
+			time stamp 0x1046c802c
+			refcon 0x130e06d30
+94:	SEND 0x60000081da40	hdr=user @ 0x1046c42f0, mask @ 0x1046c42f4
+			ranges:
+				0: < 1046c02f0, 8 >
+			branch --> 0x60000081db30
+			time stamp 0x1046c802c
+			refcon 0x130e06d30
+95:	SEND 0x60000081db30	hdr=user @ 0x1046c42f8, mask @ 0x1046c42fc
+			ranges:
+				0: < 1046c02f8, 8 >
+			branch --> 0x60000081dc20
+			time stamp 0x1046c802c
+			refcon 0x130e06d30
+96:	SEND 0x60000081dc20	hdr=user @ 0x1046c4300, mask @ 0x1046c4304
+			ranges:
+				0: < 1046c0300, 8 >
+			branch --> 0x60000081dd10
+			time stamp 0x1046c8030
+			refcon 0x130e06d30
+97:	SEND 0x60000081dd10	hdr=user @ 0x1046c4308, mask @ 0x1046c430c
+			ranges:
+				0: < 1046c0308, 8 >
+			branch --> 0x60000081de00
+			time stamp 0x1046c8030
+			refcon 0x130e06d30
+98:	SEND 0x60000081de00	hdr=user @ 0x1046c4310, mask @ 0x1046c4314
+			ranges:
+				0: < 1046c0310, 8 >
+			branch --> 0x60000081def0
+			time stamp 0x1046c8030
+			refcon 0x130e06d30
+99:	SEND 0x60000081def0	hdr=user @ 0x1046c4318, mask @ 0x1046c431c
+			ranges:
+				0: < 1046c0318, 8 >
+			branch --> 0x60000081dfe0
+			time stamp 0x1046c8030
+			refcon 0x130e06d30
+100:	SEND 0x60000081dfe0	hdr=user @ 0x1046c4320, mask @ 0x1046c4324
+			ranges:
+				0: < 1046c0320, 8 >
+			branch --> 0x60000081e0d0
+			time stamp 0x1046c8030
+			refcon 0x130e06d30
+101:	SEND 0x60000081e0d0	hdr=user @ 0x1046c4328, mask @ 0x1046c432c
+			ranges:
+				0: < 1046c0328, 8 >
+			branch --> 0x60000081e1c0
+			time stamp 0x1046c8030
+			refcon 0x130e06d30
+102:	SEND 0x60000081e1c0	hdr=user @ 0x1046c4330, mask @ 0x1046c4334
+			ranges:
+				0: < 1046c0330, 8 >
+			branch --> 0x60000081e2b0
+			time stamp 0x1046c8030
+			refcon 0x130e06d30
+103:	SEND 0x60000081e2b0	hdr=user @ 0x1046c4338, mask @ 0x1046c433c
+			ranges:
+				0: < 1046c0338, 8 >
+			branch --> 0x60000081e3a0
+			time stamp 0x1046c8030
+			refcon 0x130e06d30
+104:	SEND 0x60000081e3a0	hdr=user @ 0x1046c4340, mask @ 0x1046c4344
+			ranges:
+				0: < 1046c0340, 8 >
+			branch --> 0x60000081e490
+			time stamp 0x1046c8034
+			refcon 0x130e06d30
+105:	SEND 0x60000081e490	hdr=user @ 0x1046c4348, mask @ 0x1046c434c
+			ranges:
+				0: < 1046c0348, 8 >
+			branch --> 0x60000081e580
+			time stamp 0x1046c8034
+			refcon 0x130e06d30
+106:	SEND 0x60000081e580	hdr=user @ 0x1046c4350, mask @ 0x1046c4354
+			ranges:
+				0: < 1046c0350, 8 >
+			branch --> 0x60000081e670
+			time stamp 0x1046c8034
+			refcon 0x130e06d30
+107:	SEND 0x60000081e670	hdr=user @ 0x1046c4358, mask @ 0x1046c435c
+			ranges:
+				0: < 1046c0358, 8 >
+			branch --> 0x60000081e760
+			time stamp 0x1046c8034
+			refcon 0x130e06d30
+108:	SEND 0x60000081e760	hdr=user @ 0x1046c4360, mask @ 0x1046c4364
+			ranges:
+				0: < 1046c0360, 8 >
+			branch --> 0x60000081e850
+			time stamp 0x1046c8034
+			refcon 0x130e06d30
+109:	SEND 0x60000081e850	hdr=user @ 0x1046c4368, mask @ 0x1046c436c
+			ranges:
+				0: < 1046c0368, 8 >
+			branch --> 0x60000081e940
+			time stamp 0x1046c8034
+			refcon 0x130e06d30
+110:	SEND 0x60000081e940	hdr=user @ 0x1046c4370, mask @ 0x1046c4374
+			ranges:
+				0: < 1046c0370, 8 >
+			branch --> 0x60000081ea30
+			time stamp 0x1046c8034
+			refcon 0x130e06d30
+111:	SEND 0x60000081ea30	hdr=user @ 0x1046c4378, mask @ 0x1046c437c
+			ranges:
+				0: < 1046c0378, 8 >
+			branch --> 0x60000081eb20
+			time stamp 0x1046c8034
+			refcon 0x130e06d30
+112:	SEND 0x60000081eb20	hdr=user @ 0x1046c4380, mask @ 0x1046c4384
+			ranges:
+				0: < 1046c0380, 8 >
+			branch --> 0x60000081ec10
+			time stamp 0x1046c8038
+			refcon 0x130e06d30
+113:	SEND 0x60000081ec10	hdr=user @ 0x1046c4388, mask @ 0x1046c438c
+			ranges:
+				0: < 1046c0388, 8 >
+			branch --> 0x60000081ed00
+			time stamp 0x1046c8038
+			refcon 0x130e06d30
+114:	SEND 0x60000081ed00	hdr=user @ 0x1046c4390, mask @ 0x1046c4394
+			ranges:
+				0: < 1046c0390, 8 >
+			branch --> 0x60000081edf0
+			time stamp 0x1046c8038
+			refcon 0x130e06d30
+115:	SEND 0x60000081edf0	hdr=user @ 0x1046c4398, mask @ 0x1046c439c
+			ranges:
+				0: < 1046c0398, 8 >
+			branch --> 0x60000081eee0
+			time stamp 0x1046c8038
+			refcon 0x130e06d30
+116:	SEND 0x60000081eee0	hdr=user @ 0x1046c43a0, mask @ 0x1046c43a4
+			ranges:
+				0: < 1046c03a0, 8 >
+			branch --> 0x60000081efd0
+			time stamp 0x1046c8038
+			refcon 0x130e06d30
+117:	SEND 0x60000081efd0	hdr=user @ 0x1046c43a8, mask @ 0x1046c43ac
+			ranges:
+				0: < 1046c03a8, 8 >
+			branch --> 0x60000081f0c0
+			time stamp 0x1046c8038
+			refcon 0x130e06d30
+118:	SEND 0x60000081f0c0	hdr=user @ 0x1046c43b0, mask @ 0x1046c43b4
+			ranges:
+				0: < 1046c03b0, 8 >
+			branch --> 0x60000081f1b0
+			time stamp 0x1046c8038
+			refcon 0x130e06d30
+119:	SEND 0x60000081f1b0	hdr=user @ 0x1046c43b8, mask @ 0x1046c43bc
+			ranges:
+				0: < 1046c03b8, 8 >
+			branch --> 0x60000081f2a0
+			time stamp 0x1046c8038
+			refcon 0x130e06d30
+120:	SEND 0x60000081f2a0	hdr=user @ 0x1046c43c0, mask @ 0x1046c43c4
+			ranges:
+				0: < 1046c03c0, 8 >
+			branch --> 0x60000081f390
+			time stamp 0x1046c803c
+			refcon 0x130e06d30
+121:	SEND 0x60000081f390	hdr=user @ 0x1046c43c8, mask @ 0x1046c43cc
+			ranges:
+				0: < 1046c03c8, 8 >
+			branch --> 0x60000081f480
+			time stamp 0x1046c803c
+			refcon 0x130e06d30
+122:	SEND 0x60000081f480	hdr=user @ 0x1046c43d0, mask @ 0x1046c43d4
+			ranges:
+				0: < 1046c03d0, 8 >
+			branch --> 0x60000081f570
+			time stamp 0x1046c803c
+			refcon 0x130e06d30
+123:	SEND 0x60000081f570	hdr=user @ 0x1046c43d8, mask @ 0x1046c43dc
+			ranges:
+				0: < 1046c03d8, 8 >
+			branch --> 0x60000081f660
+			time stamp 0x1046c803c
+			refcon 0x130e06d30
+124:	SEND 0x60000081f660	hdr=user @ 0x1046c43e0, mask @ 0x1046c43e4
+			ranges:
+				0: < 1046c03e0, 8 >
+			branch --> 0x60000081f750
+			time stamp 0x1046c803c
+			refcon 0x130e06d30
+125:	SEND 0x60000081f750	hdr=user @ 0x1046c43e8, mask @ 0x1046c43ec
+			ranges:
+				0: < 1046c03e8, 8 >
+			branch --> 0x60000081f840
+			time stamp 0x1046c803c
+			refcon 0x130e06d30
+126:	SEND 0x60000081f840	hdr=user @ 0x1046c43f0, mask @ 0x1046c43f4
+			ranges:
+				0: < 1046c03f0, 8 >
+			branch --> 0x60000081f930
+			time stamp 0x1046c803c
+			refcon 0x130e06d30
+127:	SEND 0x60000081f930	hdr=user @ 0x1046c43f8, mask @ 0x1046c43fc
+			ranges:
+				0: < 1046c03f8, 8 >
+			branch --> 0x60000080c1e0
+			callback @0x10428365c
+			time stamp 0x1046c803c
+			refcon 0x600000b086f0
+[2025-06-17 07:00:15.167] [info] --- END DCL PROGRAM DUMP (TRANSMIT) ---
+[2025-06-17 07:00:15.167] [info] Flushing 128 initial DCL configurations to hardware.
+[2025-06-17 07:00:15.228] [info] IsochTransportManager::start: Channel allocated successfully
+[2025-06-17 07:00:15.228] [info] IsochTransportManager::start: Transport started successfully
+[2025-06-17 07:00:15.229] [info] AmdtpTransmitter transmit started successfully.
+[2025-06-17 07:00:15.229] [info] IsoStreamHandler: AMDTP TX Stream Started
+[2025-06-17 07:00:15.229] [info] AudioDeviceStream: Started stream for plug 0
+[2025-06-17 07:00:15.229] [info] IsoStreamHandler: Output stream started
+[2025-06-17 07:00:15.229] [info] IsoStreamHandler: Starting ShmIsochBridge...
+[2025-06-17 07:00:15.229] [warning] IsoStreamHandler: THIS SHOULD NOT HAPPEN! ShmIsochBridge is not used anymore, RingBufferManager is used instead.
+[2025-06-17 07:00:15.229] [warning] IsoStreamHandler: Failed to set thread CPU affinity, error: 46
+[2025-06-17 07:00:15.229] [info] IsoStreamHandler: Data processing thread started
+[2025-06-17 07:00:15.229] [info] IsoStreamHandler: Successfully set thread to real-time priority (period=2ms, compute=0.5ms, constraint=1ms)
+[2025-06-17 07:00:15.230] [info] IsoStreamHandler: Data processing thread started
+[2025-06-17 07:00:15.230] [info] IsoStreamHandler: Start sequence completed.
+[2025-06-17 07:00:15.230] [info] AudioDevice::startStreams: handler->start() succeeded for GUID 0x3db0a0000d112.
+[2025-06-17 07:00:15.230] [info] Device streams started successfully for GUID 0x3db0a0000d112
+[2025-06-17 07:00:15.230] [info] bindSharedMemory: Validating SHM format - ABI: 4, capacity: 512, sampleRate: 44100, channels: 2, bytesPerFrame: 8
+[2025-06-17 07:00:15.230] [info] IsochPacketProvider reset (direct SHM mode)
+[2025-06-17 07:00:15.230] [info] SHM bound successfully: 44100 Hz, 2 channels, 8 bytes/frame, capacity: 512
+[2025-06-17 07:00:15.230] [info] Direct SHM binding configured for GUID 0x3db0a0000d112 - 44100 Hz, 2 channels, 8 bytes/frame
+[2025-06-17 07:00:15.230] [info] Audio streams and data flow configured successfully for GUID 0x3db0a0000d112
+[2025-06-17 07:00:15.236] [info] First DCL callback received (group 7). Priming pipeline with 2 groups.
+[2025-06-17 07:00:15.237] [warning] SHM underrun detected at Seg=8, Pkt=0, AbsPkt=64. Total Count=1, SHM Fill=0%
+[2025-06-17 07:00:15.260] [warning] SHM underrun detected at Seg=10, Pkt=1, AbsPkt=81. Total Count=101, SHM Fill=0%
+[2025-06-17 07:00:15.276] [warning] SHM underrun detected at Seg=12, Pkt=2, AbsPkt=98. Total Count=201, SHM Fill=0%
+[2025-06-17 07:00:16.135] [warning] SHM underrun detected at Seg=9, Pkt=4, AbsPkt=76. Total Count=301, SHM Fill=0%
+[2025-06-17 07:00:17.389] [warning] SHM underrun detected at Seg=1, Pkt=4, AbsPkt=12. Total Count=401, SHM Fill=0%
+[2025-06-17 07:00:18.644] [warning] SHM underrun detected at Seg=9, Pkt=4, AbsPkt=76. Total Count=501, SHM Fill=0%
+[2025-06-17 07:00:19.898] [warning] SHM underrun detected at Seg=1, Pkt=4, AbsPkt=12. Total Count=601, SHM Fill=0%
+[2025-06-17 07:00:21.278] [warning] SHM underrun detected at Seg=9, Pkt=2, AbsPkt=74. Total Count=701, SHM Fill=0%
+[2025-06-17 07:00:22.532] [warning] SHM underrun detected at Seg=1, Pkt=2, AbsPkt=10. Total Count=801, SHM Fill=0%
+[2025-06-17 07:00:23.786] [warning] SHM underrun detected at Seg=9, Pkt=3, AbsPkt=75. Total Count=901, SHM Fill=0%
+[2025-06-17 07:00:24.914] [warning] SHM underrun detected at Seg=1, Pkt=5, AbsPkt=13. Total Count=1001, SHM Fill=0%
+[2025-06-17 07:00:26.294] [warning] SHM underrun detected at Seg=9, Pkt=3, AbsPkt=75. Total Count=1101, SHM Fill=0%
+[2025-06-17 07:00:27.548] [warning] SHM underrun detected at Seg=1, Pkt=3, AbsPkt=11. Total Count=1201, SHM Fill=0%
+[2025-06-17 07:00:28.801] [warning] SHM underrun detected at Seg=9, Pkt=3, AbsPkt=75. Total Count=1301, SHM Fill=0%
+[2025-06-17 07:00:29.929] [warning] SHM underrun detected at Seg=1, Pkt=6, AbsPkt=14. Total Count=1401, SHM Fill=0%
+[2025-06-17 07:00:31.183] [warning] SHM underrun detected at Seg=9, Pkt=6, AbsPkt=78. Total Count=1501, SHM Fill=0%
+[2025-06-17 07:00:32.437] [warning] SHM underrun detected at Seg=1, Pkt=6, AbsPkt=14. Total Count=1601, SHM Fill=0%
+[2025-06-17 07:00:33.690] [warning] SHM underrun detected at Seg=9, Pkt=6, AbsPkt=78. Total Count=1701, SHM Fill=0%
+[2025-06-17 07:00:34.944] [warning] SHM underrun detected at Seg=1, Pkt=6, AbsPkt=14. Total Count=1801, SHM Fill=0%
+[2025-06-17 07:00:36.198] [warning] SHM underrun detected at Seg=9, Pkt=6, AbsPkt=78. Total Count=1901, SHM Fill=0%
+[2025-06-17 07:00:37.452] [warning] SHM underrun detected at Seg=1, Pkt=6, AbsPkt=14. Total Count=2001, SHM Fill=0%
+[2025-06-17 07:00:38.706] [warning] SHM underrun detected at Seg=9, Pkt=7, AbsPkt=79. Total Count=2101, SHM Fill=0%
+[2025-06-17 07:00:39.959] [warning] SHM underrun detected at Seg=1, Pkt=7, AbsPkt=15. Total Count=2201, SHM Fill=0%
+[2025-06-17 07:00:41.212] [warning] SHM underrun detected at Seg=9, Pkt=7, AbsPkt=79. Total Count=2301, SHM Fill=0%
+[2025-06-17 07:00:42.467] [warning] SHM underrun detected at Seg=1, Pkt=7, AbsPkt=15. Total Count=2401, SHM Fill=0%
+[2025-06-17 07:00:43.721] [warning] SHM underrun detected at Seg=9, Pkt=7, AbsPkt=79. Total Count=2501, SHM Fill=0%
+[2025-06-17 07:00:44.975] [warning] SHM underrun detected at Seg=1, Pkt=7, AbsPkt=15. Total Count=2601, SHM Fill=0%
+
+...
+
+some stats:
+[2025-06-17 07:03:29.068] [info] Transmitter Performance: 24576 callbacks, 0.00% slow (>10ms), 0 missed pre-calc, max 283.8μs
+[2025-06-17 07:03:29.068] [info] Packet Statistics: 1572816 total (1083769 data, 489047 no-data, 31.1% no-data)

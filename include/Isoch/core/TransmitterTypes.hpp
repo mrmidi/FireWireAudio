@@ -29,10 +29,13 @@ enum class TransmissionType {
 struct TransmitterConfig {
     std::shared_ptr<spdlog::logger> logger; ///< Shared pointer to the logger instance.
 
-    // DCL Program & Buffer Structure (Mirroring Receiver for consistency)
-    uint32_t numGroups{8};             ///< Number of buffer groups (segments) in the DCL ring.
-    uint32_t packetsPerGroup{16};      ///< Number of FireWire packets per buffer group.
-    uint32_t callbackGroupInterval{1}; ///< Trigger DCL completion callback every N groups (1 = every group).
+    // DCL Program & Buffer Structure - Apple's Low-Overhead Architecture
+    uint32_t numGroups{32};            ///< Number of buffer groups (segments) - Apple's deep buffer (was 8)
+    uint32_t packetsPerGroup{8};       ///< Number of packets per group - Apple's proven value (was 16) 
+    uint32_t callbackGroupInterval{8}; ///< Apple's sparse callbacks - every 8th group for 8ms interval (was 1)
+    
+    // Derived values (calculated at initialization)
+    uint32_t targetCallbackIntervalUs{8000}; ///< Target callback interval in microseconds (8ms)
 
     // Client Data Buffer (Area managed by IsochTransmitBufferManager for client interaction)
     uint32_t clientBufferSize{0};      ///< Size (in bytes) of the buffer area dedicated for client audio data.

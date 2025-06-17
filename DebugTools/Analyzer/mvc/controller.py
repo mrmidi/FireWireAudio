@@ -6,6 +6,7 @@ from firewire.log_parser import parse_log_content
 from firewire.analyzer import Analyzer
 from firewire.cip_packet import CIPPacket
 from firewire.wave_analyzer import WaveAnalyzer
+from firewire.packet_anomaly_analyzer import PacketAnomalyAnalyzer
 
 
 class AppController:
@@ -18,6 +19,7 @@ class AppController:
         self.analyzer: Optional[Analyzer] = None
         self.packets: List[CIPPacket] = []
         self.wave_analyzer: Optional[WaveAnalyzer] = None
+        self.packet_anomaly_analyzer: Optional[PacketAnomalyAnalyzer] = None
         
     def load_files(self, uploaded_files) -> bool:
         """
@@ -39,6 +41,7 @@ class AppController:
                 return False
                 
             self.analyzer = Analyzer(self.packets)
+            self.packet_anomaly_analyzer = PacketAnomalyAnalyzer(self.analyzer)
             st.success(f"Successfully parsed {len(self.packets)} total packets from {len(uploaded_files)} file(s).")
             return True
             
@@ -220,3 +223,34 @@ class AppController:
         if not self.wave_analyzer:
             return None, None, None
         return self.wave_analyzer.generate_spectrogram(channel)
+    
+    # Packet Anomaly Analysis Methods
+    def get_comprehensive_packet_analysis(self, channel_select=None) -> dict:
+        """Get comprehensive packet anomaly analysis."""
+        if not self.packet_anomaly_analyzer:
+            return {"error": "No packet anomaly analyzer available"}
+        return self.packet_anomaly_analyzer.comprehensive_packet_analysis(channel_select)
+    
+    def get_length_errors(self) -> dict:
+        """Get packet length error analysis."""
+        if not self.packet_anomaly_analyzer:
+            return {"error": "No packet anomaly analyzer available"}
+        return self.packet_anomaly_analyzer.detect_length_errors()
+    
+    def get_dropout_analysis(self, channel_select=None) -> dict:
+        """Get audio dropout analysis."""
+        if not self.packet_anomaly_analyzer:
+            return {"error": "No packet anomaly analyzer available"}
+        return self.packet_anomaly_analyzer.detect_audio_dropouts(channel_select)
+    
+    def get_pattern_analysis(self, channel_select=None) -> dict:
+        """Get pattern anomaly analysis."""
+        if not self.packet_anomaly_analyzer:
+            return {"error": "No packet anomaly analyzer available"}
+        return self.packet_anomaly_analyzer.detect_repeated_patterns(channel_select)
+    
+    def export_packet_samples(self, max_samples_per_type: int = 5) -> dict:
+        """Export packet samples for debugging."""
+        if not self.packet_anomaly_analyzer:
+            return {"error": "No packet anomaly analyzer available"}
+        return self.packet_anomaly_analyzer.export_packet_samples(max_samples_per_type)

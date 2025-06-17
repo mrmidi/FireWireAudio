@@ -44,6 +44,8 @@ public:
          IOFireWireLibLocalIsochPortRef localPort,
          uint32_t groupIndexToNotify) override;
 
+    NuDCLSendPacketRef getDCLRef(uint32_t groupIndex, uint32_t packetIndexInGroup) override;
+
     DCLCommand* getProgramHandle() const override;
     void reset() override;
 
@@ -63,7 +65,6 @@ private:
     void handleDCLOverrun(NuDCLRef dcl);
 
     // Internal helpers
-    NuDCLSendPacketRef getDCLRef(uint32_t groupIndex, uint32_t packetIndexInGroup); // Removed const qualifier
     IOReturn notifyDCLUpdates(IOFireWireLibLocalIsochPortRef localPort, NuDCLRef dcls[], uint32_t count);
     IOReturn notifyJumpUpdate(IOFireWireLibLocalIsochPortRef localPort, NuDCLRef* dclRefPtr);
 

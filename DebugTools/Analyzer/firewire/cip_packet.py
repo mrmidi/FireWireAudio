@@ -14,6 +14,10 @@ class CIPPacket:
         self.actual_size = raw_packet_dict.get('actual_size')
         self.hex_data = raw_packet_dict.get('hexData', '')
         
+        # LENGTH ERROR detection
+        self.has_length_error = raw_packet_dict.get('has_length_error', False)
+        self.length_error_bytes = raw_packet_dict.get('length_error_bytes', 0)
+        
         # FireBug timestamp information
         self.timestamp_cycle = raw_packet_dict.get('timestamp_cycle')
         self.timestamp_second = raw_packet_dict.get('timestamp_second') 
