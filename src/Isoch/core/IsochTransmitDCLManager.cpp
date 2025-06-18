@@ -85,7 +85,12 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
     // Prepare Internal Structures
     try {
         dclProgramRefs_.resize(totalPackets);
-        callbackInfos_.resize(config_.numGroups);
+        // CRITICAL FIX: Reserve callbackInfos_ to prevent pointer invalidation
+        callbackInfos_.clear();
+        callbackInfos_.reserve(config_.numGroups);
+        for (uint32_t g = 0; g < config_.numGroups; ++g) {
+            callbackInfos_.emplace_back(DCLCallbackInfo{this, g});
+        }
     } catch (const std::bad_alloc& e) {
         logger_->error("Failed to allocate internal DCL storage: {}", e.what());
         reset();
@@ -96,9 +101,7 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
 
     // === DCL Allocation Loop ===
     for (uint32_t g = 0; g < config_.numGroups; ++g) {
-        // Prepare callback info for this group
-        callbackInfos_[g].manager = this;
-        callbackInfos_[g].groupIndex = g;
+        // Callback info already prepared during vector initialization
 
         for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
             uint32_t globalPacketIdx = g * config_.packetsPerGroup + p;
@@ -174,30 +177,31 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
 
             // === 5. Configure DCL ===
             UInt32 dclFlags = kNuDCLDynamic | kNuDCLUpdateBeforeCallback;
+            
+            // 1) Install flags first so the kernel will keep your callback bit
+            (*nuDCLPool_)->SetDCLFlags(currentDCL, dclFlags);
 
-            // Set Isoch Header Value/Mask Pointers
+            // 2) Then set header, timestamp, etc…
             (*nuDCLPool_)->SetDCLUserHeaderPtr(currentDCL, &headerVM->value, &headerVM->mask);
-
-            // Set Timestamp Pointer
             (*nuDCLPool_)->SetDCLTimeStampPtr(currentDCL, timestampPtr);
 
-            // === CRITICAL FIX: Proper callback placement ===
+            // 3) Only now install your callback/refCon
             bool isLastPacketInGroup = (p == config_.packetsPerGroup - 1);
             bool isCallbackGroup = ((g + 1) % callbackGroupInterval == 0);
+            bool wantCallback = isLastPacketInGroup && isCallbackGroup;
 
-            if (isLastPacketInGroup && isCallbackGroup) {
+            if (wantCallback) {
                 (*nuDCLPool_)->SetDCLCallback(currentDCL, DCLComplete_Helper);
+                (*nuDCLPool_)->SetDCLRefcon(currentDCL, &callbackInfos_[g]);
                 logger_->debug("DCL Callback set for group {} (packet {}), global DCL index {}. Effective interval: {}ms.", 
                                g, p, globalPacketIdx, config_.callbackIntervalMs());
-                (*nuDCLPool_)->SetDCLRefcon(currentDCL, &callbackInfos_[g]);
                 logger_->info("Set callback for group {} (every {}ms)", g, 
                              callbackGroupInterval * config.packetsPerGroup * 125 / 1000);
             } else {
                 (*nuDCLPool_)->SetDCLRefcon(currentDCL, this);
             }
 
-            // Set Final Flags
-            (*nuDCLPool_)->SetDCLFlags(currentDCL, dclFlags);
+            // —and **never** call SetDCLFlags(currentDCL, …) on this packet again—
 
             // === 6. Link Previous DCL ===
             if (previousDCL) {
@@ -227,6 +231,39 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
         logger_->error("GetProgram returned null after creating DCLs");
         reset();
         return std::unexpected(IOKitError::Error);
+    }
+
+    // --- REFCON VALIDATION DEBUG PASS ---
+    // for each group/packet, verify that SetDCLRefcon was called with the right pointer
+    logger_->info("Validating DCL refCon pointers after creation...");
+    for (uint32_t g = 0; g < config_.numGroups; ++g) {
+        for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
+            uint32_t idx = g * config_.packetsPerGroup + p;
+            NuDCLSendPacketRef dclRef = dclProgramRefs_[idx];
+            if (!dclRef) {
+                logger_->error("DCL[{}] is null!", idx);
+                continue;
+            }
+            // ask the pool what callback (if any) is installed
+            NuDCLCallback cb = (*nuDCLPool_)->GetDCLCallback(dclRef);
+            // ask the pool what refCon was stored
+            void* actualRefCon = (*nuDCLPool_)->GetDCLRefcon(dclRef);
+
+            // compute what we *should* have set:
+            void* expectedRefCon = cb
+                ? static_cast<void*>(&callbackInfos_[g])
+                : static_cast<void*>(this);
+
+            if (actualRefCon != expectedRefCon) {
+                logger_->error(
+                    "DCL[{}] refCon mismatch: expected {:p}, got {:p}",
+                    idx, expectedRefCon, actualRefCon);
+            } else {
+                logger_->info(
+                    "DCL[{}] refCon OK: {:p}",
+                    idx, actualRefCon);
+            }
+        }
     }
 
     dclProgramCreated_ = true;

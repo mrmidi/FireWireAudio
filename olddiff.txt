@@ -1,0 +1,126 @@
+diff --git a/src/Isoch/core/AmdtpTransmitter.cpp b/src/Isoch/core/AmdtpTransmitter.cpp
+index 0c5bfce..d46c655 100644
+--- a/src/Isoch/core/AmdtpTransmitter.cpp
++++ b/src/Isoch/core/AmdtpTransmitter.cpp
+@@ -224,7 +224,10 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
+                 }
+ 
+                 os_log(OS_LOG_DEFAULT, "--- DUMPING DCL PROGRAM (TRANSMIT) BEFORE TRANSPORT START ---");
+-                (*dclPool)->PrintProgram(dclPool); // Call PrintProgram
++                // silence for now
++                os_log(OS_LOG_DEFAULT,
++                       "AmdtpTransmitter::startTransmit: DCL program dump is SILENCED to avoid excessive logging.");
++                // (*dclPool)->PrintProgram(dclPool); // Call PrintProgram
+                 logger_->info("--- END DCL PROGRAM DUMP (TRANSMIT) ---");
+             } else {
+                 logger_->error("AmdtpTransmitter::startTransmit: NuDCLPool is null from portChannelManager_, cannot dump DCL program.");
+@@ -679,8 +682,24 @@ void AmdtpTransmitter::processAndQueueGroup(uint32_t fillGroup) {
+ 
+ // --- Static Callbacks ---
+ void AmdtpTransmitter::DCLCompleteCallback_Helper(uint32_t completedGroupIndex, void* refCon) {
++    static std::atomic<uint32_t> callCount{0};
++    uint32_t count = callCount.fetch_add(1);
++    
++    printf("*** AmdtpTransmitter::DCLCompleteCallback_Helper FIRED #%u, group=%u ***\n", 
++           count, completedGroupIndex);
++    fflush(stdout);
++    
+     AmdtpTransmitter* self = static_cast<AmdtpTransmitter*>(refCon);
+-    if (self) self->handleDCLCompleteFastPath(completedGroupIndex);  // Use new fast path
++    if (self && self->logger_) {
++        // Also log via spdlog
++        self->logger_->critical("DCL Callback reached AmdtpTransmitter for group {}", completedGroupIndex);
++        
++        printf("AmdtpTransmitter: About to call handleDCLCompleteFastPath(%u)\n", completedGroupIndex);
++        self->handleDCLCompleteFastPath(completedGroupIndex);
++        printf("AmdtpTransmitter: handleDCLCompleteFastPath(%u) completed\n", completedGroupIndex);
++    } else {
++        printf("ERROR: AmdtpTransmitter self is NULL or invalid\n");
++    }
+ }
+ 
+ void AmdtpTransmitter::DCLOverrunCallback_Helper(void* refCon) {
+@@ -762,8 +781,17 @@ std::expected<void, IOKitError> AmdtpTransmitter::setupComponents(IOFireWireLibN
+ 
+     portChannelManager_->setupLocalPortAndChannel(dclProgramHandle,
+                                                  bufferManager_->getBufferRange());
+-    dclManager_->setDCLCompleteCallback(DCLCompleteCallback_Helper, this); // Set internal callback forwarder
++    
++    // Set the callbacks
++    dclManager_->setDCLCompleteCallback(DCLCompleteCallback_Helper, this);
+     dclManager_->setDCLOverrunCallback(DCLOverrunCallback_Helper, this);
++    
++    // === CRITICAL VERIFICATION ===
++    logger_->critical("=== DCL CALLBACK SETUP VERIFICATION ===");
++    logger_->critical("DCLCompleteCallback_Helper address: {:p}", (void*)DCLCompleteCallback_Helper);
++    logger_->critical("DCLOverrunCallback_Helper address: {:p}", (void*)DCLOverrunCallback_Helper);
++    logger_->critical("AmdtpTransmitter 'this' pointer: {:p}", (void*)this);
++    logger_->critical("dclManager address: {:p}", (void*)dclManager_.get());
+ 
+     return {};
+ }
+diff --git a/src/Isoch/core/IsochTransmitDCLManager.cpp b/src/Isoch/core/IsochTransmitDCLManager.cpp
+index 68d882d..5c2f568 100644
+--- a/src/Isoch/core/IsochTransmitDCLManager.cpp
++++ b/src/Isoch/core/IsochTransmitDCLManager.cpp
+@@ -181,17 +181,24 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
+             // Set Timestamp Pointer
+             (*nuDCLPool_)->SetDCLTimeStampPtr(currentDCL, timestampPtr);
+ 
+-            // === CRITICAL FIX: Proper callback placement ===
++            // === TEMPORARY FIX: Force callbacks on every group ===
+             bool isLastPacketInGroup = (p == config_.packetsPerGroup - 1);
+-            bool isCallbackGroup = ((g + 1) % callbackGroupInterval == 0);
+ 
+-            if (isLastPacketInGroup && isCallbackGroup) {
++            // FORCE callback on every group's last packet for testing
++            if (isLastPacketInGroup) {
+                 (*nuDCLPool_)->SetDCLCallback(currentDCL, DCLComplete_Helper);
+-                logger_->debug("DCL Callback set for group {} (packet {}), global DCL index {}. Effective interval: {}ms.", 
+-                               g, p, globalPacketIdx, config_.callbackIntervalMs());
+                 (*nuDCLPool_)->SetDCLRefcon(currentDCL, &callbackInfos_[g]);
+-                logger_->info("Set callback for group {} (every {}ms)", g, 
+-                             callbackGroupInterval * config.packetsPerGroup * 125 / 1000);
++                
++                logger_->critical("FORCED CALLBACK SET: Group {}, Packet {}, DCL {:p}", 
++                                 g, p, (void*)currentDCL);
++                
++                // Verify it was set
++                auto verifyCallback = (*nuDCLPool_)->GetDCLCallback(currentDCL);
++                if (verifyCallback == DCLComplete_Helper) {
++                    logger_->critical("VERIFIED: Callback correctly set for group {}", g);
++                } else {
++                    logger_->error("FAILED: Callback not set correctly for group {}", g);
++                }
+             } else {
+                 (*nuDCLPool_)->SetDCLRefcon(currentDCL, this);
+             }
+@@ -453,9 +460,27 @@ DCLCommand* IsochTransmitDCLManager::getProgramHandle() const {
+ 
+ // --- Static Callbacks & Instance Handlers ---
+ void IsochTransmitDCLManager::DCLComplete_Helper(void* refcon, NuDCLRef dcl) {
++     // Use printf for immediate output (bypasses logger buffering)
++     static std::atomic<uint32_t> callCount{0};
++     uint32_t count = callCount.fetch_add(1);
++     
++     printf("*** DCLComplete_Helper FIRED #%u, refcon=%p ***\n", count, refcon);
++     fflush(stdout);
++     
++     if (!refcon) {
++         printf("ERROR: refcon is NULL\n");
++         return;
++     }
++     
+      auto* info = static_cast<DCLCallbackInfo*>(refcon);
++     printf("DCLComplete_Helper: info=%p, manager=%p, groupIndex=%u\n", 
++            info, info->manager, info->groupIndex);
++     
+      if (info && info->manager && info->manager->dclCompleteCallback_) {
+-          info->manager->dclCompleteCallback_(info->groupIndex, info->manager->dclCompleteRefCon_);
++         printf("DCLComplete_Helper: Calling dclCompleteCallback_ for group %u\n", info->groupIndex);
++         info->manager->dclCompleteCallback_(info->groupIndex, info->manager->dclCompleteRefCon_);
++     } else {
++         printf("ERROR: Invalid callback chain\n");
+      }
+ }
+ 

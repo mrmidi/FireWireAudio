@@ -224,8 +224,26 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
                 }
 
                 os_log(OS_LOG_DEFAULT, "--- DUMPING DCL PROGRAM (TRANSMIT) BEFORE TRANSPORT START ---");
-                (*dclPool)->PrintProgram(dclPool); // Call PrintProgram
+                // (*dclPool)->PrintProgram(dclPool); // Call PrintProgram
+                logger_->info("OMMITED: became to huge: 800 DCLs...");
                 logger_->info("--- END DCL PROGRAM DUMP (TRANSMIT) ---");
+
+                // --- REFCON VALIDATION DEBUG CHECK ---
+                if (dclManager_) {
+                    // Get DCL program refs from dclManager
+                    for (uint32_t g = 0; g < config_.numGroups; ++g) {
+                        for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
+                            uint32_t i = g * config_.packetsPerGroup + p;
+                            auto dclRef = dclManager_->getDCLRef(g, p);
+                            if (dclRef) {
+                                void* refcon = (*dclPool)->GetDCLRefcon(dclRef);
+                                if (!refcon) {
+                                    logger_->error("DCL[{}] has null refCon—no callback will fire!", i);
+                                } 
+                            }
+                        }
+                    }
+                }
             } else {
                 logger_->error("AmdtpTransmitter::startTransmit: NuDCLPool is null from portChannelManager_, cannot dump DCL program.");
                 os_log(OS_LOG_DEFAULT,

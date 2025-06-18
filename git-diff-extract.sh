@@ -42,26 +42,154 @@ else
     echo "Creating diff between $BRANCH1 and $BRANCH2..."
 fi
 
-# Create diff.txt with all changes
+
+# Create diff.txt with all changes, ignoring DebugTools, test, CMakeLists.txt, and specific root files
 echo "Generating diff.txt..."
 if [ "$CURRENT_MODE" = true ]; then
-    # Include both staged and unstaged changes, plus new files
-    git diff HEAD > diff.txt
-    git diff --cached >> diff.txt
-    echo "✓ diff.txt created with uncommitted changes against HEAD"
+    # Exclude DebugTools, test, CMakeLists.txt, and specific root files except this script
+    git diff HEAD -- \
+        ":(exclude)DebugTools/**" \
+        ":(exclude)test/**" \
+        ":(exclude)CMakeLists.txt" \
+        ":(exclude)diff.txt" \
+        ":(exclude)source.txt" \
+        ":(exclude)log.txt" \
+        ":(exclude)modified.txt" \
+        ":(exclude)olddiff.txt" \
+        ":(exclude)olddriver.txt" \
+        ":(exclude)driver.txt" \
+        ":(exclude)fwa.txt" \
+        ":(exclude)swift.txt" \
+        ":(exclude)transmit.txt" \
+        ":(exclude)xpc.txt" \
+        ":(exclude)isoch.txt" \
+        ":(exclude)isoch.sh" \
+        ":(exclude)tmp.sh" \
+        ":(exclude)build-optimized.sh" > diff.txt
+    git diff --cached -- \
+        ":(exclude)DebugTools/**" \
+        ":(exclude)test/**" \
+        ":(exclude)CMakeLists.txt" \
+        ":(exclude)diff.txt" \
+        ":(exclude)source.txt" \
+        ":(exclude)log.txt" \
+        ":(exclude)modified.txt" \
+        ":(exclude)olddiff.txt" \
+        ":(exclude)olddriver.txt" \
+        ":(exclude)driver.txt" \
+        ":(exclude)fwa.txt" \
+        ":(exclude)swift.txt" \
+        ":(exclude)transmit.txt" \
+        ":(exclude)xpc.txt" \
+        ":(exclude)isoch.txt" \
+        ":(exclude)isoch.sh" \
+        ":(exclude)tmp.sh" \
+        ":(exclude)build-optimized.sh" >> diff.txt
+    echo "✓ diff.txt created with uncommitted changes against HEAD (ignoring DebugTools, test, CMakeLists.txt, root files)"
 else
-    git diff "$BRANCH1".."$BRANCH2" > diff.txt
-    echo "✓ diff.txt created with changes from $BRANCH1 to $BRANCH2"
+    git diff "$BRANCH1".."$BRANCH2" -- \
+        ":(exclude)DebugTools/**" \
+        ":(exclude)test/**" \
+        ":(exclude)CMakeLists.txt" \
+        ":(exclude)diff.txt" \
+        ":(exclude)source.txt" \
+        ":(exclude)log.txt" \
+        ":(exclude)modified.txt" \
+        ":(exclude)olddiff.txt" \
+        ":(exclude)olddriver.txt" \
+        ":(exclude)driver.txt" \
+        ":(exclude)fwa.txt" \
+        ":(exclude)swift.txt" \
+        ":(exclude)transmit.txt" \
+        ":(exclude)xpc.txt" \
+        ":(exclude)isoch.txt" \
+        ":(exclude)isoch.sh" \
+        ":(exclude)tmp.sh" \
+        ":(exclude)build-optimized.sh" > diff.txt
+    echo "✓ diff.txt created with changes from $BRANCH1 to $BRANCH2 (ignoring DebugTools, test, CMakeLists.txt, root files)"
 fi
 
-# Get list of changed files
+
+# Get list of changed files, ignoring DebugTools, test, CMakeLists.txt, and specific root files
 echo "Getting list of changed files..."
 if [ "$CURRENT_MODE" = true ]; then
-    # Get both modified and new files
-    CHANGED_FILES=$(git diff --name-only HEAD; git diff --cached --name-only; git ls-files --others --exclude-standard)
-    CHANGED_FILES=$(echo "$CHANGED_FILES" | sort -u)
+    CHANGED_FILES=$( (git diff --name-only HEAD -- \
+        ":(exclude)DebugTools/**" \
+        ":(exclude)test/**" \
+        ":(exclude)CMakeLists.txt" \
+        ":(exclude)diff.txt" \
+        ":(exclude)source.txt" \
+        ":(exclude)log.txt" \
+        ":(exclude)modified.txt" \
+        ":(exclude)olddiff.txt" \
+        ":(exclude)olddriver.txt" \
+        ":(exclude)driver.txt" \
+        ":(exclude)fwa.txt" \
+        ":(exclude)swift.txt" \
+        ":(exclude)transmit.txt" \
+        ":(exclude)xpc.txt" \
+        ":(exclude)isoch.txt" \
+        ":(exclude)isoch.sh" \
+        ":(exclude)tmp.sh" \
+        ":(exclude)build-optimized.sh"; \
+        git diff --cached --name-only -- \
+        ":(exclude)DebugTools/**" \
+        ":(exclude)test/**" \
+        ":(exclude)CMakeLists.txt" \
+        ":(exclude)diff.txt" \
+        ":(exclude)source.txt" \
+        ":(exclude)log.txt" \
+        ":(exclude)modified.txt" \
+        ":(exclude)olddiff.txt" \
+        ":(exclude)olddriver.txt" \
+        ":(exclude)driver.txt" \
+        ":(exclude)fwa.txt" \
+        ":(exclude)swift.txt" \
+        ":(exclude)transmit.txt" \
+        ":(exclude)xpc.txt" \
+        ":(exclude)isoch.txt" \
+        ":(exclude)isoch.sh" \
+        ":(exclude)tmp.sh" \
+        ":(exclude)build-optimized.sh"; \
+        git ls-files --others --exclude-standard -- \
+        ":(exclude)DebugTools/**" \
+        ":(exclude)test/**" \
+        ":(exclude)CMakeLists.txt" \
+        ":(exclude)diff.txt" \
+        ":(exclude)source.txt" \
+        ":(exclude)log.txt" \
+        ":(exclude)modified.txt" \
+        ":(exclude)olddiff.txt" \
+        ":(exclude)olddriver.txt" \
+        ":(exclude)driver.txt" \
+        ":(exclude)fwa.txt" \
+        ":(exclude)swift.txt" \
+        ":(exclude)transmit.txt" \
+        ":(exclude)xpc.txt" \
+        ":(exclude)isoch.txt" \
+        ":(exclude)isoch.sh" \
+        ":(exclude)tmp.sh" \
+        ":(exclude)build-optimized.sh" ) | sort -u )
 else
-    CHANGED_FILES=$(git diff --name-only "$BRANCH1".."$BRANCH2")
+    CHANGED_FILES=$(git diff --name-only "$BRANCH1".."$BRANCH2" -- \
+        ":(exclude)DebugTools/**" \
+        ":(exclude)test/**" \
+        ":(exclude)CMakeLists.txt" \
+        ":(exclude)diff.txt" \
+        ":(exclude)source.txt" \
+        ":(exclude)log.txt" \
+        ":(exclude)modified.txt" \
+        ":(exclude)olddiff.txt" \
+        ":(exclude)olddriver.txt" \
+        ":(exclude)driver.txt" \
+        ":(exclude)fwa.txt" \
+        ":(exclude)swift.txt" \
+        ":(exclude)transmit.txt" \
+        ":(exclude)xpc.txt" \
+        ":(exclude)isoch.txt" \
+        ":(exclude)isoch.sh" \
+        ":(exclude)tmp.sh" \
+        ":(exclude)build-optimized.sh")
 fi
 
 # Create source.txt with source code from branch1
