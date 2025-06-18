@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <memory>
 #include <functional> // For std::function if used later, though not for basic callbacks
+#include <string>
+#include <spdlog/fmt/fmt.h>
 #include <spdlog/logger.h>
 #include <IOKit/firewire/IOFireWireFamilyCommon.h> // For IOFWSpeed
 
@@ -14,6 +16,10 @@ namespace FWA {
 namespace Isoch {
 
 // --- Configuration ---
+
+// Maximum number of DCLs to include in a single Notify(kFWNuDCLModifyNotification) call
+// Apple's UniversalTransmitter used 30. This prevents overwhelming the kernel driver.
+constexpr uint32_t kMaxDCLsPerModifyNotify = 30;
 
 
 enum class TransmissionType {
@@ -27,39 +33,92 @@ enum class TransmissionType {
  * @brief Configuration parameters for the AmdtpTransmitter.
  */
 struct TransmitterConfig {
-    std::shared_ptr<spdlog::logger> logger; ///< Shared pointer to the logger instance.
-
-    // DCL Program & Buffer Structure - Apple's Low-Overhead Architecture
-    uint32_t numGroups{32};            ///< Number of buffer groups (segments) - Apple's deep buffer (was 8)
-    uint32_t packetsPerGroup{8};       ///< Number of packets per group - Apple's proven value (was 16) 
-    uint32_t callbackGroupInterval{8}; ///< Apple's sparse callbacks - every 8th group for 8ms interval (was 1)
+    uint32_t numGroups{100};
+    uint32_t packetsPerGroup{8};
+    uint32_t callbackGroupInterval{20};
+    uint32_t packetDataSize{64};
+    uint32_t clientBufferSize{4096};
+    uint32_t numChannels{2};
+    TransmissionType transmissionType{TransmissionType::NonBlocking};
     
-    // Derived values (calculated at initialization)
-    uint32_t targetCallbackIntervalUs{8000}; ///< Target callback interval in microseconds (8ms)
-
-    // Client Data Buffer (Area managed by IsochTransmitBufferManager for client interaction)
-    uint32_t clientBufferSize{0};      ///< Size (in bytes) of the buffer area dedicated for client audio data.
-                                       ///< Must be large enough for numGroups * packetsPerGroup * calculated_audio_payload_per_packet.
-
-    // Audio Format & Rate
-    double sampleRate{44100.0};        ///< Target audio sample rate in Hz.
-    uint32_t numChannels{2};           ///< Number of audio channels (e.g., 2 for stereo).
-                                       ///< Note: Currently assumes interleaved stereo float in provider.
-
-    // FireWire Isochronous Parameters
-    IOFWSpeed initialSpeed{kFWSpeed400MBit}; ///< Initial speed for channel allocation/negotiation.
-    uint32_t initialChannel{0xFFFFFFFF};   ///< Initial channel (0xFFFFFFFF = any available).
-    bool doIRMAllocations{true};       ///< Whether to use Isochronous Resource Manager for bandwidth/channel.
-    uint32_t irmPacketPayloadSize{72}; ///< Maximum PAYLOAD size (CIPHdr + AudioData) in bytes for IRM bandwidth calculation.
-                                       ///< Example: 8 bytes CIP Header + 64 bytes Audio Data = 72 bytes.
-                                       ///< The Isochronous Header (4 bytes) is NOT included here.
-
-    // Timing & Sync (Potentially add more later)
-    uint32_t numStartupCycleMatchBits{0}; ///< For cycle-matching start (0 usually sufficient for transmitter).
-
-    // NEW: Transmission Type
-    TransmissionType transmissionType{TransmissionType::Blocking}; // Default to current behavior
+    double sampleRate{48000.0};
+    IOFWSpeed initialSpeed{kFWSpeed400MBit};
+    uint32_t initialChannel{0};
+    
+    uint32_t totalDCLCommands() const { 
+        return numGroups * packetsPerGroup; 
+    }
+    
+    uint32_t callbackIntervalMs() const { 
+        return callbackGroupInterval * packetsPerGroup * 125 / 1000; 
+    }
+    
+    uint32_t safetyMarginMs() const {
+        if (numGroups <= callbackGroupInterval) return 0;
+        return (numGroups - callbackGroupInterval) * packetsPerGroup * 125 / 1000;
+    }
+    
+    uint32_t totalCallbacksPerCycle() const {
+        if (callbackGroupInterval == 0) return 0;
+        return numGroups / callbackGroupInterval;
+    }
+    
+    bool isValid() const {
+        if (numGroups == 0 || packetsPerGroup == 0 || callbackGroupInterval == 0) {
+            return false; // Basic sanity: no zeros
+        }
+        if (callbackGroupInterval > numGroups) {
+            return false; // Callback interval cannot exceed total groups
+        }
+        // Apple's safety rule: At least 3x the callback interval worth of groups
+        // e.g., if callback is every 20 groups, need at least 60 total groups.
+        if (numGroups < callbackGroupInterval * 3) {
+            return false;
+        }
+        // For clean callback cycles and buffer management, numGroups should be divisible
+        // by callbackGroupInterval.
+        if ((numGroups % callbackGroupInterval) != 0) {
+            return false;
+        }
+        return true;
+    }
+    
+    std::string configSummary() const {
+        return fmt::format("{}x{} DCLs, {}ms callbacks ({}Hz), {}ms safety margin",
+                          numGroups, packetsPerGroup, 
+                          callbackIntervalMs(),
+                          callbackIntervalMs() > 0 ? 1000 / callbackIntervalMs() : 0,
+                          safetyMarginMs());
+    }
+    
+    std::shared_ptr<spdlog::logger> logger;
 };
+
+namespace ApplePresets {
+    const TransmitterConfig Classic = {
+        .numGroups = 100,
+        .packetsPerGroup = 8,
+        .callbackGroupInterval = 20,
+        .packetDataSize = 64,
+        .sampleRate = 48000.0
+    };
+    
+    const TransmitterConfig Conservative = {
+        .numGroups = 160,
+        .packetsPerGroup = 8,
+        .callbackGroupInterval = 20,   
+        .packetDataSize = 64,
+        .sampleRate = 48000.0
+    };
+    
+    const TransmitterConfig Minimal = {
+        .numGroups = 60,
+        .packetsPerGroup = 8,
+        .callbackGroupInterval = 20,
+        .packetDataSize = 64, 
+        .sampleRate = 48000.0
+    };
+}
 
 // --- Messages & Callbacks ---
 

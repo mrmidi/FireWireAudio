@@ -276,28 +276,70 @@ std::expected<std::shared_ptr<AudioDeviceStream>, IOKitError> AudioDeviceStream:
                                                                                                                 Isoch::MessageCallback messageCallback,
                                                                                                                 void* messageRefCon,
                                                                                                                 std::shared_ptr<spdlog::logger> logger,
-                                                                                                                unsigned int cyclesPerSegment,
-                                                                                                                unsigned int numSegments,
-                                                                                                                unsigned int transmitBufferSize,
+                                                                                                                const FWA::Isoch::TransmitterConfig& config,
                                                                                                                 IOFireWireLibDeviceRef interface
                                                                                                                 )
 {
-    // Use the general create method with specific parameters for a transmitter
-    return create(
-                  std::move(audioDevice),
-                  StreamType::AmdtpTransmitter,
-                  devicePlugNumber,
-                  std::move(logger),
-                  nullptr,                // No data push callback for transmitter
-                  nullptr,                // No refCon for data push
-                  messageCallback,
-                  messageRefCon,
-                  cyclesPerSegment,
-                  numSegments,
-                  transmitBufferSize,
-                  kFWSpeed100MBit,        // Default speed, can be changed later
-                  interface
-                  );
+    if (!audioDevice) {
+        return std::unexpected(IOKitError::BadArgument);
+    }
+    
+    // Create the stream object with transmitter-specific values from config
+    unsigned int transmitBufferSize = 2 * config.numGroups * config.packetsPerGroup * config.packetDataSize;
+    auto stream = std::shared_ptr<AudioDeviceStream>(new AudioDeviceStream(
+        audioDevice,
+        StreamType::AmdtpTransmitter,
+        devicePlugNumber,
+        logger,
+        nullptr,                // No data push callback for transmitter
+        nullptr,                // No refCon for data push
+        messageCallback,
+        messageRefCon,
+        config.packetsPerGroup,
+        config.numGroups,
+        transmitBufferSize,
+        config.initialSpeed,
+        interface
+    ));
+    
+    if (!logger) {
+        stream->m_logger = spdlog::default_logger();
+    }
+    
+    // Create AmdtpTransmitter directly with the provided config
+    try {
+        // Use the provided config directly instead of building a new one
+        FWA::Isoch::TransmitterConfig txConfig = config;
+        txConfig.logger = stream->m_logger;
+        
+        // Create the transmitter
+        auto transmitter = Isoch::AmdtpTransmitter::create(txConfig);
+        
+        // Initialize the transmitter with the device interface
+        stream->m_logger->info("AudioDeviceStream: Initializing AmdtpTransmitter for plug {}", devicePlugNumber);
+        auto initResult = transmitter->initialize(interface);
+        if (!initResult.has_value()) {
+            stream->m_logger->error("AudioDeviceStream: Failed to initialize AmdtpTransmitter: {}",
+                                   iokit_error_category().message(static_cast<int>(initResult.error())));
+            return std::unexpected(initResult.error());
+        }
+        
+        // Store the implementation
+        stream->m_streamImpl = transmitter;
+        
+        // Set up message callback
+        if (messageCallback) {
+            transmitter->setMessageCallback(messageCallback, messageRefCon);
+        }
+        
+        stream->m_logger->info("AudioDeviceStream: Created AmdtpTransmitter for plug {}", devicePlugNumber);
+    }
+    catch (const std::exception& ex) {
+        stream->m_logger->error("AudioDeviceStream: Exception creating AmdtpTransmitter: {}", ex.what());
+        return std::unexpected(IOKitError::Error);
+    }
+    
+    return stream;
 }
 
 std::expected<void, IOKitError> AudioDeviceStream::start()

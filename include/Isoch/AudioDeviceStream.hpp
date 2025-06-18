@@ -17,6 +17,7 @@
 #include "Isoch/core/AmdtpTransmitter.hpp" 
 #include "Isoch/core/ReceiverFactory.hpp"
 #include "Isoch/core/ReceiverTypes.hpp"
+#include "Isoch/core/TransmitterTypes.hpp"
 #include "Isoch/utils/RingBuffer.hpp" 
 #include "Isoch/interfaces/ITransmitPacketProvider.hpp" 
 
@@ -114,9 +115,7 @@ public:
      * @param messageCallback Callback for stream events
      * @param messageRefCon Context for message callback
      * @param logger Logger for diagnostics
-     * @param cyclesPerSegment Number of FireWire cycles per segment
-     * @param numSegments Number of segments in the cycle buffer
-     * @param transmitBufferSize Size of transmission buffer in bytes
+     * @param config Transmitter configuration with Apple's optimized parameters
      * @param interface FireWire device interface
      * @return std::expected<std::shared_ptr<AudioDeviceStream>, IOKitError> Created stream or error
      */
@@ -128,9 +127,7 @@ public:
                                                                                                         Isoch::MessageCallback messageCallback,
                                                                                                         void* messageRefCon,
                                                                                                         std::shared_ptr<spdlog::logger> logger,
-                                                                                                        unsigned int cyclesPerSegment = 8,
-                                                                                                        unsigned int numSegments = 4,
-                                                                                                        unsigned int transmitBufferSize = 512,
+                                                                                                        const FWA::Isoch::TransmitterConfig& config,
                                                                                                         IOFireWireLibDeviceRef interface = nullptr);
     
     /**

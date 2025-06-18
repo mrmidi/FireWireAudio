@@ -20,7 +20,6 @@
 #include "FWA/Error.h"
 #include "Isoch/core/CIPHeader.hpp"
 #include "Isoch/core/CIPPreCalculator.hpp"
-#include "Isoch/core/DCLBatcher.hpp"
 #include "Isoch/core/TransmitterTypes.hpp"
 #include "Isoch/interfaces/ITransmitBufferManager.hpp"
 #include "Isoch/interfaces/ITransmitDCLManager.hpp"
@@ -70,12 +69,10 @@ public:
 
 private:
     // Group processing configuration
-    static constexpr uint32_t kGroupsPerCallback = 2; // 2 = double-buffer, 1 keeps old behaviour
+    // THIS SHOUDLD COME FROM TransmitterConfig!!
+    // static constexpr uint32_t kGroupsPerCallback = 2; // 2 = double-buffer, 1 keeps old behaviour
 
-    // === ADD: Apple's fixed-size arrays ===
-    static constexpr uint32_t MAX_BUFFER_GROUPS = 16;  // Matches your txNumGroups
-    static constexpr uint32_t MAX_PACKETS_PER_GROUP = 64; // Matches your txPacketsPerGroup
-    
+
     struct alignas(64) BufferGroupState {
         uint64_t hardwareTimestamp{0};
         uint64_t correctedTimestamp{0}; 
@@ -86,9 +83,9 @@ private:
         uint8_t _padding[42]; // Cache line padding
     };
     
-    // === FIXED ARRAYS (No allocations in hot path) ===
-    BufferGroupState bufferGroupStates_[MAX_BUFFER_GROUPS];
-    uint32_t timestampBufferArray_[MAX_BUFFER_GROUPS];
+    // === DYNAMIC ARRAYS (Sized from configuration) ===
+    std::vector<BufferGroupState> bufferGroupStates_;  
+    std::vector<uint32_t> timestampBufferArray_;
     
     // === APPLE'S TIMING STATE ===
     std::atomic<uint32_t> totalCallbackCount_{0};
@@ -143,6 +140,12 @@ private:
     // Apple's architecture - process single group helper
     void processAndQueueGroup(uint32_t fillGroup);
     
+    // Helper to set up packet DCL ranges (avoids code duplication)
+    uint32_t setupPacketRanges(uint32_t fillGroup, uint32_t p, bool isNoData, IOVirtualRange ranges[]);
+    
+    // Apple UniversalTransmitter style initial DCL content priming
+    IOKitError primeInitialDCLContent(IOFireWireLibLocalIsochPortRef localPort);
+    
     // Performance monitoring for pre-calc integration
     void logPerformanceStatistics() const;
 
@@ -153,27 +156,6 @@ private:
 
      // CIP Header/Timing generation logic
      void initializeCIPState();
-     void generateCIPHeaderContent(FWA::Isoch::CIPHeader* outHeader,
-                                   uint8_t current_dbc_state,
-                                   bool previous_wasNoData_state,
-                                   bool first_dcl_callback_occurred_state,
-                                   uint8_t& next_dbc_for_state,
-                                   bool& next_wasNoData_for_state);
-
-     // --- Helper for the "Blocking" (UniversalTransmitter-style) SYT logic ---
-     struct BlockingSytParams {
-         bool isNoData;
-         uint16_t syt_value;
-     };
-     BlockingSytParams calculateBlockingSyt();
-
-     // --- Helper for the "NonBlocking" (current AmdtpTransmitter) SYT logic ---
-     struct NonBlockingSytParams {
-         bool isNoData;
-         uint16_t syt_value;
-         // Potentially other outputs specific to this strategy's state updates
-     };
-     NonBlockingSytParams calculateNonBlockingSyt(uint8_t current_dbc_state, bool previous_wasNoData_state);
 
     // Helper to send messages to the client
     void notifyMessage(TransmitterMessage msg, uint32_t p1 = 0, uint32_t p2 = 0);
@@ -193,7 +175,6 @@ private:
     std::unique_ptr<CIPPreCalculator> cipPreCalc_;
     
     // DCL Batcher for reduced kernel transitions
-    std::unique_ptr<DCLBatcher> dclBatcher_;
 
     // RunLoop
     CFRunLoopRef runLoopRef_{nullptr};

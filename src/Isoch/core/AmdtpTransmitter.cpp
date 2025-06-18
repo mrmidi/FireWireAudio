@@ -37,8 +37,9 @@ namespace {
             if (hasValidState && lastDataPacketDbc != 0xFF) {
                 uint8_t expectedDbc = (lastDataPacketDbc + NO_DATA_INCREMENT) % DBC_WRAP;
                 if (currentDbc != expectedDbc) {
-                    logger->critical("DBC CONTINUITY ERROR: No-data packet DBC=0x{:02X}, expected=0x{:02X} "
-                                   "(last_data=0x{:02X})", currentDbc, expectedDbc, lastDataPacketDbc);
+                    // COMMENTED OUT: DBC discontinuity critical log temporarily disabled
+                    // logger->critical("DBC CONTINUITY ERROR: No-data packet DBC=0x{:02X}, expected=0x{:02X} "
+                    //                "(last_data=0x{:02X})", currentDbc, expectedDbc, lastDataPacketDbc);
                     return false;
                 }
             }
@@ -64,10 +65,11 @@ namespace {
                 }
                 
                 if (currentDbc != expectedDbc) {
-                    logger->critical("DBC CONTINUITY ERROR: Data packet DBC=0x{:02X}, expected=0x{:02X} "
-                                   "(prev_no_data={}, last_data=0x{:02X}, last_pkt=0x{:02X})", 
-                                   currentDbc, expectedDbc, prevPacketWasNoData, 
-                                   lastDataPacketDbc, lastPacketDbc);
+                    // COMMENTED OUT: DBC discontinuity critical log temporarily disabled
+                    // logger->critical("DBC CONTINUITY ERROR: Data packet DBC=0x{:02X}, expected=0x{:02X} "
+                    //                "(prev_no_data={}, last_data=0x{:02X}, last_pkt=0x{:02X})", 
+                    //                currentDbc, expectedDbc, prevPacketWasNoData, 
+                    //                lastDataPacketDbc, lastPacketDbc);
                     return false;
                 }
             }
@@ -234,26 +236,13 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
                    "AmdtpTransmitter::startTransmit: portChannelManager_ is null, cannot get NuDCLPool to dump DCL program.");
         }
 
-        // --- 4. Batched Notification ---
-        // Now that all DCLs are correctly configured, notify the hardware of ALL changes at once
+        // --- 4. Initial DCL Content Priming (Apple UniversalTransmitter style) ---
+        // Prime all DCLs with NO-DATA content and notify in batches
         if (error_code == IOKitError::Success) {
-            size_t totalDCLs = config_.numGroups * config_.packetsPerGroup;
-            DCLBatcher startupBatcher(totalDCLs);
-            
-            for (uint32_t g = 0; g < config_.numGroups; ++g) {
-                for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
-                    if (auto dclRef = dclManager_->getDCLRef(g, p)) {
-                        startupBatcher.queueForNotification(dclRef);
-                    }
-                }
-            }
-            
-            logger_->info("Flushing {} initial DCL configurations to hardware.", startupBatcher.size());
-            startupBatcher.flush(localPort);
-            logger_->debug("DCL program primed.");
+            error_code = primeInitialDCLContent(localPort);
         }
 
-        // --- 5. Initialize and Start CIP Pre-calculator (only if no error so far) ---
+        // --- 5. Initialize and Start CIP Pre-calculator BEFORE transport (only if no error so far) ---
         if (error_code == IOKitError::Success) {
             cipPreCalc_ = std::make_unique<CIPPreCalculator>();
             uint16_t nodeID = portChannelManager_->getLocalNodeID().value_or(0x3F);
@@ -265,8 +254,8 @@ std::expected<void, IOKitError> AmdtpTransmitter::startTransmit() {
             
             cipPreCalc_->start();
             
-            // Wait longer for initial buffer fill
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            // Wait for initial buffer fill
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
             logger_->debug("CIP pre-calculator started with synchronized state");
         }
 
@@ -389,6 +378,8 @@ void AmdtpTransmitter::handleDCLOverrun() {
 
 // --- APPLE'S MULTI-GROUP BATCH PROCESSING ---
 void AmdtpTransmitter::handleDCLCompleteFastPath(uint32_t completedGroupIndex) {
+    // log critical: FIRED
+    logger_->critical("AmdtpTransmitter::handleDCLCompleteFastPath called for group {}", completedGroupIndex);
     uint64_t startTime = mach_absolute_time();
     
     if (!running_.load(std::memory_order_relaxed)) return;
@@ -399,40 +390,58 @@ void AmdtpTransmitter::handleDCLCompleteFastPath(uint32_t completedGroupIndex) {
         return;
     }
     
-    // Determine the number of groups to process
-    uint32_t numGroupsToProcess = config_.callbackGroupInterval;
-
-    // *** CRITICAL STARTUP LOGIC ***
-    // On the very first callback, the DCL ring is full of NO-DATA packets.
-    // We don't need to replace a full batch of 8 groups. We only need to
-    // replace the groups that the hardware has *just* consumed to get ahead.
-    // Processing just a couple of groups is sufficient to start the pipeline.
+    // 0. Verify DBC on the group we just sent
+    for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
+        auto e = bufferManager_->getPacketCIPHeaderPtr(completedGroupIndex, p);
+        if (!e) continue;
+        auto* hdr = reinterpret_cast<CIPHeader*>(e.value());
+        bool wasNo = (hdr->syt == CIP::kSytNoData);
+        checkDbcContinuity(
+            hdr->dbc, wasNo,
+            lastDataPacketDbc_, lastPacketDbc_,
+            prevPacketWasNoData_, hasValidDbcState_, logger_);
+    }
+    
+    uint32_t appleGroupsPerCallback = config_.callbackGroupInterval;
+    
     bool firstRun = isFirstTimeExecution_.exchange(false);
+    uint32_t numGroupsToProcessThisCallback = firstRun ? 
+        std::min(appleGroupsPerCallback, config_.numGroups / 4) : // Conservative start
+        appleGroupsPerCallback;                                   // Apple's full batch
+    
     if (firstRun) {
-        logger_->info("First DCL callback received (group {}). Priming pipeline with {} groups.", 
-                     completedGroupIndex, kGroupsPerCallback);
-        numGroupsToProcess = kGroupsPerCallback; // kGroupsPerCallback is typically 2
+        logger_->info("First DCL callback (group {}). Processing {} groups for initial pipeline fill.", 
+                     completedGroupIndex, numGroupsToProcessThisCallback);
     }
     
-    // Calculate the first group in the completed batch
-    uint32_t firstGroupInCompletedBatch;
-    if (completedGroupIndex >= (numGroupsToProcess - 1)) {
-        firstGroupInCompletedBatch = completedGroupIndex - (numGroupsToProcess - 1);
+    // Calculate the index of the first group in the batch that the hardware JUST FINISHED processing.
+    // This requires careful handling of wrap-around in the circular buffer.
+    uint32_t firstConsumedGroupInBatch;
+    if (completedGroupIndex >= (numGroupsToProcessThisCallback - 1)) {
+        firstConsumedGroupInBatch = completedGroupIndex - (numGroupsToProcessThisCallback - 1);
     } else {
-        firstGroupInCompletedBatch = config_.numGroups + completedGroupIndex - (numGroupsToProcess - 1);
+        // Wrap-around case: e.g., completedGroupIndex=0, numGroupsToProcess=20, totalGroups=100
+        // -> firstConsumedGroup = 100 + 0 - (20 - 1) = 81
+        firstConsumedGroupInBatch = config_.numGroups + completedGroupIndex - (numGroupsToProcessThisCallback - 1);
     }
     
-    // Process the next batch of groups
-    for (uint32_t i = 0; i < numGroupsToProcess; ++i) {
-        uint32_t processedGroup = (firstGroupInCompletedBatch + i) % config_.numGroups;
-        uint32_t fillGroup = (processedGroup + kGroupsPerCallback) % config_.numGroups;
+    // Now, iterate through the batch of groups that were just consumed by the hardware.
+    // For each consumed group, we need to prepare the *next* corresponding group in the DCL ring
+    // that the hardware will eventually reach. This maintains a lead.
+    for (uint32_t i = 0; i < numGroupsToProcessThisCallback; ++i) {
+        uint32_t consumedGroupIndex = (firstConsumedGroupInBatch + i) % config_.numGroups;
         
-        processAndQueueGroup(fillGroup);
+        // Determine the group to fill: this is `callbackGroupInterval` groups ahead
+        // of the group that was just consumed. This is Apple's "lead distance" strategy.
+        uint32_t groupToFill = (consumedGroupIndex + config_.callbackGroupInterval) % config_.numGroups;
+        
+        // This function (as refactored in Phase 2) processes the groupToFill
+        // and issues a single hardware notification for it.
+        processAndQueueGroup(groupToFill);
     }
     
-    // Flush all queued DCL updates to hardware in single batch (Apple's architecture)
+    // Group-based notification now handled in processAndQueueGroup
     std::atomic_thread_fence(std::memory_order_release);
-    dclBatcher_->flush(localPort);
     
     // Performance monitoring
     uint64_t endTime = mach_absolute_time();
@@ -459,8 +468,55 @@ void AmdtpTransmitter::handleDCLCompleteFastPath(uint32_t completedGroupIndex) {
     }
 }
 
+// --- Helper method to set up packet DCL ranges ---
+uint32_t AmdtpTransmitter::setupPacketRanges(uint32_t fillGroup, uint32_t p, bool isNoData, IOVirtualRange ranges[]) {
+    auto cipPtr = bufferManager_->getPacketCIPHeaderPtr(fillGroup, p);
+    if (!cipPtr) return 0;
+    
+    // First range is always the CIP header
+    ranges[0].address = reinterpret_cast<IOVirtualAddress>(cipPtr.value());
+    ranges[0].length = kTransmitCIPHeaderSize;
+    uint32_t numRanges = 1;
+    
+    if (!isNoData) {
+        // For data packets, add audio payload range
+        uint32_t absIdx = fillGroup * config_.packetsPerGroup + p;
+        uint8_t* audioPtr = bufferManager_->getClientAudioBufferPtr() +
+            (absIdx * bufferManager_->getAudioPayloadSizePerPacket()) % 
+            bufferManager_->getClientAudioBufferSize();
+        
+        TransmitPacketInfo info = {
+            .segmentIndex = fillGroup,
+            .packetIndexInGroup = p,
+            .absolutePacketIndex = absIdx
+        };
+        
+        auto fillRes = packetProvider_->fillPacketData(
+            audioPtr,
+            bufferManager_->getAudioPayloadSizePerPacket(),
+            info
+        );
+        
+        if (fillRes.dataLength > 0) {
+            ranges[1].address = reinterpret_cast<IOVirtualAddress>(audioPtr);
+            ranges[1].length = fillRes.dataLength;
+            numRanges = 2;
+            dataPacketsSent_.fetch_add(1);
+        } else {
+            noDataPacketsSent_.fetch_add(1);
+        }
+    } else {
+        noDataPacketsSent_.fetch_add(1);
+    }
+    
+    return numRanges;
+}
+
 // --- Helper method to process a single group ---
 void AmdtpTransmitter::processAndQueueGroup(uint32_t fillGroup) {
+    std::vector<NuDCLRef> groupDCLs;
+    groupDCLs.reserve(config_.packetsPerGroup);
+    
     // Attempt to get the next pre-calculated group from SPSC ring
     PreCalcGroup grp;
     bool havePrecalc = cipPreCalc_->groupRing_.pop(grp);
@@ -521,16 +577,20 @@ void AmdtpTransmitter::processAndQueueGroup(uint32_t fillGroup) {
                 }
             }
             
-            // Update DCL packet ranges and queue for batched notification
-            dclManager_->updateDCLPacket(fillGroup, p, ranges, numRanges);
-            auto dclRef = dclManager_->getDCLRef(fillGroup, p);
-            if (dclRef) {
-                dclBatcher_->queueForNotification(dclRef);
+            // Update DCL packet ranges
+            auto updateResult = dclManager_->updateDCLPacket(fillGroup, p, ranges, numRanges);
+            if (updateResult) {
+                if (auto dclRef = dclManager_->getDCLRef(fillGroup, p)) {
+                    groupDCLs.push_back(dclRef);
+                }
             }
         }
         
         // Force sync to ensure DBC alignment between transmitter and pre-calc
         cipPreCalc_->forceSync(this->dbc_count_, this->wasNoData_);
+        
+        // CRITICAL: Also sync emergency state for consistent DBC calculation
+        cipPreCalc_->syncEmergencyState();
         
     } else {
         // FAST PATH: Use pre-calculated headers from SPSC ring
@@ -581,8 +641,9 @@ void AmdtpTransmitter::processAndQueueGroup(uint32_t fillGroup) {
                 
                 if (!haveAudio) {
                     // SHOULD NOT HAPPEN: If pre-calc says DATA, we should have audio!
-                    logger_->critical("Pre-calc says DATA but no audio available for G={}, P={}",
-                                  fillGroup, p);
+                    // COMMENTED OUT: Audio availability critical log temporarily disabled
+                    // logger_->critical("Pre-calc says DATA but no audio available for G={}, P={}",
+                    //               fillGroup, p);
                 } else {
                     ranges[1].address = reinterpret_cast<IOVirtualAddress>(audioPtr);
                     ranges[1].length = fillRes.dataLength;
@@ -591,17 +652,28 @@ void AmdtpTransmitter::processAndQueueGroup(uint32_t fillGroup) {
                 }
             }
             
-            // Update DCL packet ranges and queue for batched notification
-            dclManager_->updateDCLPacket(fillGroup, p, ranges, numRanges);
-            auto dclRef = dclManager_->getDCLRef(fillGroup, p);
-            if (dclRef) {
-                dclBatcher_->queueForNotification(dclRef);
+            // Update DCL packet ranges
+            auto updateResult = dclManager_->updateDCLPacket(fillGroup, p, ranges, numRanges);
+            if (updateResult) {
+                if (auto dclRef = dclManager_->getDCLRef(fillGroup, p)) {
+                    groupDCLs.push_back(dclRef);
+                }
             }
         }
         
         // Update transmitter state from pre-calculated group
         this->dbc_count_ = grp.finalDbc;
         this->wasNoData_ = grp.finalWasNoData;
+    }
+    
+    // Notify hardware of all DCL updates for this group in a single batch
+    if (!groupDCLs.empty()) {
+        if (auto localPort = portChannelManager_->getLocalPort()) {
+            auto notifyResult = dclManager_->notifyGroupUpdate(localPort, groupDCLs);
+            if (!notifyResult) {
+                logger_->error("Failed to notify hardware of DCL updates for group {}.", fillGroup);
+            }
+        }
     }
 }
 
@@ -625,12 +697,18 @@ void AmdtpTransmitter::TransportFinalize_Helper(void* refCon) {
 AmdtpTransmitter::AmdtpTransmitter(const TransmitterConfig& config)
     : config_(config),
       logger_(config.logger ? config.logger : spdlog::default_logger()) {
-    logger_->info("AmdtpTransmitter constructing...");
     
-    // Calculate max batch size: groups processed per callback * packets per group
-    size_t maxBatchSize = config_.callbackGroupInterval * config_.packetsPerGroup;
-    dclBatcher_ = std::make_unique<DCLBatcher>(maxBatchSize);
-    logger_->debug("DCLBatcher initialized with max batch size: {}", maxBatchSize);
+    logger_->info("AmdtpTransmitter: Initializing with configuration: {}", config_.configSummary());
+    
+    if (!config_.isValid()) {
+        logger_->error("AmdtpTransmitter: Received configuration violates safety requirements!");
+        throw std::invalid_argument("Invalid TransmitterConfig provided to AmdtpTransmitter.");
+    }
+    
+    bufferGroupStates_.resize(config_.numGroups);
+    timestampBufferArray_.resize(config_.numGroups);
+    
+    // DCLBatcher removed - using direct group-based notification
 }
 
 // Destructor
@@ -724,6 +802,7 @@ std::expected<void, IOKitError> AmdtpTransmitter::configure(IOFWSpeed speed, uin
 // pushAudioData
 bool AmdtpTransmitter::pushAudioData(const void* buffer, size_t bufferSizeInBytes) {
     // logger_->trace("AmdtpTransmitter::pushAudioData"); // Too noisy
+    // TODO: REMOVE!!!
     if (!initialized_ || !packetProvider_) return false;
     return packetProvider_->pushAudioData(buffer, bufferSizeInBytes);
 }
@@ -775,175 +854,6 @@ void AmdtpTransmitter::initializeCIPState() {
     hasValidDbcState_ = false;
 }
 
-AmdtpTransmitter::NonBlockingSytParams AmdtpTransmitter::calculateNonBlockingSyt(
-    uint8_t current_dbc_state, bool previous_wasNoData_state) {
-    NonBlockingSytParams params;
-
-    if (!firstDCLCallbackOccurred_) {
-        params.isNoData   = true;
-        params.syt_value  = 0xFFFF;
-    } else {
-        if (sytOffset_ >= TICKS_PER_CYCLE) {
-            sytOffset_ -= TICKS_PER_CYCLE;
-        } else {
-            uint32_t phase    = sytPhase_ % SYT_PHASE_MOD;
-            bool     addExtra = (phase && !(phase & 3)) || (sytPhase_ == (SYT_PHASE_RESET - 1));
-            sytOffset_ += BASE_TICKS;
-            if (addExtra) {
-                sytOffset_ += 1;
-            }
-            if (++sytPhase_ >= SYT_PHASE_RESET) {
-                sytPhase_ = 0;
-            }
-        }
-
-        if (sytOffset_ >= TICKS_PER_CYCLE) {
-            params.isNoData  = true;
-            params.syt_value = 0xFFFF;
-        } else {
-            params.isNoData  = false;
-            params.syt_value = static_cast<uint16_t>(sytOffset_);
-        }
-    }
-
-    return params;
-}
-
-// These constants are now defined in CIPHeader.hpp as FWA::Isoch::CIP::kFDF_44k1, etc.
-
-void AmdtpTransmitter::generateCIPHeaderContent(FWA::Isoch::CIPHeader* outHeader,
-                                                uint8_t current_dbc_state,
-                                                bool previous_wasNoData_state,
-                                                bool first_dcl_callback_occurred_state_param,
-                                                uint8_t& next_dbc_for_state,
-                                                bool& next_wasNoData_for_state) {
-    // Check preconditions
-    if (!outHeader || !portChannelManager_ || !this->bufferManager_) {
-        if (logger_) logger_->error("generateCIPHeaderContent: Preconditions not met (null pointers).");
-        if (outHeader) {
-            outHeader->fdf = (config_.sampleRate == 44100.0) ? 
-                             FWA::Isoch::CIP::kFDF_44k1 : 
-                             FWA::Isoch::CIP::kFDF_48k;
-            outHeader->syt = FWA::Isoch::CIP::makeBigEndianSyt(FWA::Isoch::CIP::kSytNoData);
-            outHeader->dbc = current_dbc_state;
-        }
-        next_dbc_for_state      = current_dbc_state;
-        next_wasNoData_for_state = true;
-        return;
-    }
-
-    // --- Get Node ID, Set static fields ---
-    uint16_t nodeID   = portChannelManager_->getLocalNodeID().value_or(0x3F);
-    outHeader->sid_byte       = static_cast<uint8_t>(nodeID & 0x3F); // TODO: Check if this should be part of CIP or Isoch header
-    outHeader->dbs            = 2; // Stereo = 2 quadlets per block
-    outHeader->fn_qpc_sph_rsv = 0;
-    outHeader->fmt_eoh1       = FWA::Isoch::CIP::kFmtEohValue;
-
-    // Local variables for this function's calculations
-    bool   calculated_isNoData_for_this_packet  = true;
-    uint16_t calculated_sytVal_for_this_packet = FWA::Isoch::CIP::kSytNoData;
-    uint8_t  sfc_for_this_packet                = FWA::Isoch::CIP::kFDF_48k;
-
-    // Determine SFC based on config
-    if (config_.sampleRate == 44100.0) {
-        sfc_for_this_packet = FWA::Isoch::CIP::kFDF_44k1;
-    } else if (config_.sampleRate == 48000.0) {
-        sfc_for_this_packet = FWA::Isoch::CIP::kFDF_48k;
-    } else {
-        if (logger_) {
-            logger_->warn("generateCIPHeaderContent: Unsupported sample rate {:.1f}Hz, using SFC for 48kHz as fallback.",
-                          config_.sampleRate);
-        }
-    }
-
-    // --- Call Strategy-Specific SYT Calculation ---
-    switch (config_.transmissionType) {
-        case TransmissionType::Blocking: {
-            BlockingSytParams sytParams = calculateBlockingSyt();
-            calculated_isNoData_for_this_packet = sytParams.isNoData;
-            calculated_sytVal_for_this_packet   = sytParams.syt_value;
-            break;
-        }
-        case TransmissionType::NonBlocking:
-        default: {
-            NonBlockingSytParams sytParams = calculateNonBlockingSyt(current_dbc_state,
-                                                                      previous_wasNoData_state);
-            calculated_isNoData_for_this_packet = sytParams.isNoData;
-            calculated_sytVal_for_this_packet   = sytParams.syt_value;
-            break;
-        }
-    }
-
-    // --- Set Dynamic Fields (FDF, SYT, DBC) ---
-    uint8_t blocksPerPacket = this->bufferManager_->getAudioPayloadSizePerPacket() / 8;
-    if (blocksPerPacket == 0) {
-        blocksPerPacket = 8; // stereo, 8 blocks per packet
-    }
-
-    if (calculated_isNoData_for_this_packet) {
-        outHeader->fdf = sfc_for_this_packet;  // Always use sample rate, not 0xFF
-        outHeader->syt = FWA::Isoch::CIP::makeBigEndianSyt(FWA::Isoch::CIP::kSytNoData);
-        outHeader->dbc = (current_dbc_state + blocksPerPacket) & 0xFF;  // +8
-    } else {
-        outHeader->fdf = sfc_for_this_packet;
-        outHeader->syt = FWA::Isoch::CIP::makeBigEndianSyt(calculated_sytVal_for_this_packet);
-        
-        if (previous_wasNoData_state) {
-            outHeader->dbc = current_dbc_state;                      // +0
-        } else {
-            outHeader->dbc = (current_dbc_state + blocksPerPacket) & 0xFF; // +8
-        }
-    }
-
-    // --- Update state for the *next* call (via output parameters) ---
-    next_dbc_for_state       = outHeader->dbc;
-    next_wasNoData_for_state = calculated_isNoData_for_this_packet;
-}
-
-
-AmdtpTransmitter::BlockingSytParams AmdtpTransmitter::calculateBlockingSyt() {
-    BlockingSytParams params;
-
-    // 1) If we haven't had a DCL callback yet, hold off on sending data
-    if (!this->firstDCLCallbackOccurred_.load()) {
-        params.isNoData  = true;
-        params.syt_value = 0xFFFF;   // no-data
-        return params;
-    }
-
-    // 2) If offset >= one full FireWire cycle (3072), subtract and emit NO_DATA
-    if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
-        sytOffset_blocking_ -= TICKS_PER_CYCLE;
-        params.isNoData  = true;     // mark no-data on that overflow
-        params.syt_value = 0xFFFF;
-        return params;
-    }
-
-    // 3) Otherwise, advance by BASE_TICKS_BLOCKING + occasional “+1” jitter
-    uint32_t phase    = sytPhase_blocking_ % SYT_PHASE_MOD_BLOCKING;   // 0..146
-    bool     addExtra = (phase && !(phase & 3)) 
-                         || (sytPhase_blocking_ == (SYT_PHASE_RESET_BLOCKING - 1));
-    sytOffset_blocking_ += BASE_TICKS_BLOCKING;  // = 565 on each iteration
-    if (addExtra) {
-        sytOffset_blocking_ += 1;                // +1 every 4th iteration
-    }
-    if (++sytPhase_blocking_ >= SYT_PHASE_RESET_BLOCKING) {
-        sytPhase_blocking_ = 0;
-    }
-
-    // 4) Now decide per-packet if it’s data or no-data
-    if (sytOffset_blocking_ >= TICKS_PER_CYCLE) {
-        // overflow→no-data
-        params.isNoData  = true;
-        params.syt_value = 0xFFFF;
-    } else {
-        // within cycle → data packet, embed the SYT
-        params.isNoData  = false;
-        params.syt_value = static_cast<uint16_t>(sytOffset_blocking_);
-    }
-
-    return params;
-}
 
 // Performance monitoring and statistics
 void AmdtpTransmitter::logPerformanceStatistics() const {
@@ -982,6 +892,94 @@ void AmdtpTransmitter::logPerformanceStatistics() const {
         logger_->info("Packet Statistics: {} total ({} data, {} no-data, {:.1f}% no-data)",
                      totalPkts, dataPkts, noDataPkts, noDataPercentage);
     }
+}
+
+// Apple UniversalTransmitter style initial DCL content priming
+IOKitError AmdtpTransmitter::primeInitialDCLContent(IOFireWireLibLocalIsochPortRef localPort) {
+    logger_->info("Priming DCL program with initial NO-DATA content (Apple style)...");
+    
+    if (!localPort) {
+        logger_->error("primeInitialDCLContent: localPort is null");
+        return IOKitError::BadArgument;
+    }
+    
+    uint16_t nodeID = portChannelManager_->getLocalNodeID().value_or(0x3F);
+    std::vector<NuDCLRef> allDCLsForNotify;
+    allDCLsForNotify.reserve(config_.totalDCLCommands());
+    
+    // Step 1: Fill all DCLs with initial NO-DATA content using SetDCLRanges
+    for (uint32_t g = 0; g < config_.numGroups; ++g) {
+        for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
+            // Get CIP header buffer for this DCL
+            auto cipHdrPtrExp = bufferManager_->getPacketCIPHeaderPtr(g, p);
+            if (!cipHdrPtrExp) {
+                logger_->error("primeInitialDCLContent: Failed to get CIP header for DCL({}, {})", g, p);
+                return cipHdrPtrExp.error();
+            }
+            
+            auto* cipHdrTarget = reinterpret_cast<FWA::Isoch::CIPHeader*>(cipHdrPtrExp.value());
+            
+            // Initialize NO-DATA CIP header
+            cipHdrTarget->sid_byte = static_cast<uint8_t>(nodeID & 0x3F);
+            cipHdrTarget->dbs = 0;  // No data blocks for NO-DATA
+            cipHdrTarget->fn_qpc_sph_rsv = 0;
+            cipHdrTarget->dbc = 0;  // Will be set by CIP pre-calculator
+            cipHdrTarget->fmt_eoh1 = FWA::Isoch::CIP::kFmtEohValue; // MBLA format
+            cipHdrTarget->fdf = 0xFF;  // NO-DATA indicator
+            cipHdrTarget->syt = FWA::Isoch::CIP::makeBigEndianSyt(FWA::Isoch::CIP::kSytNoData);
+            
+            // Set up NO-DATA ranges (only CIP header, no payload)
+            IOVirtualRange noDataRanges[1];
+            noDataRanges[0].address = reinterpret_cast<IOVirtualAddress>(cipHdrTarget);
+            noDataRanges[0].length = sizeof(FWA::Isoch::CIPHeader);
+            
+            // Update DCL content in memory (this only updates the DCL's internal ranges)
+            auto updateResult = dclManager_->updateDCLPacket(g, p, noDataRanges, 1);
+            if (!updateResult) {
+                logger_->error("primeInitialDCLContent: Failed to update DCL({}, {}) ranges: {}", 
+                              g, p, iokit_error_category().message(static_cast<int>(updateResult.error())));
+                return updateResult.error();
+            }
+            
+            // Collect DCL reference for batched notification
+            if (auto dclRef = dclManager_->getDCLRef(g, p)) {
+                allDCLsForNotify.push_back(dclRef);
+            } else {
+                logger_->error("primeInitialDCLContent: Failed to get DCL reference for DCL({}, {})", g, p);
+                return IOKitError::InternalError;
+            }
+        }
+    }
+    
+    logger_->debug("Initial DCL content (NO-DATA) prepared in memory for {} DCLs", allDCLsForNotify.size());
+    
+    // Step 2: Notify hardware of initial DCL content in batches (Apple style)
+    logger_->info("Notifying hardware of initial DCL content in batches...");
+    
+    for (size_t i = 0; i < allDCLsForNotify.size(); i += kMaxDCLsPerModifyNotify) {
+        size_t batchEnd = std::min(i + kMaxDCLsPerModifyNotify, allDCLsForNotify.size());
+        std::vector<NuDCLRef> currentBatch;
+        
+        for (size_t k = i; k < batchEnd; ++k) {
+            currentBatch.push_back(allDCLsForNotify[k]);
+        }
+        
+        if (!currentBatch.empty()) {
+            logger_->debug("Notifying batch of {} DCLs (starting at index {})", currentBatch.size(), i);
+            auto notifyResult = dclManager_->notifyGroupUpdate(localPort, currentBatch);
+            if (!notifyResult) {
+                logger_->error("primeInitialDCLContent: Batch notification failed at index {}: {}", 
+                              i, iokit_error_category().message(static_cast<int>(notifyResult.error())));
+                return notifyResult.error();
+            }
+        }
+    }
+    
+    logger_->info("Hardware notified of initial DCL content for {} DCLs in {} batches", 
+                 allDCLsForNotify.size(), 
+                 (allDCLsForNotify.size() + kMaxDCLsPerModifyNotify - 1) / kMaxDCLsPerModifyNotify);
+    
+    return IOKitError::Success;
 }
 
 } // namespace Isoch

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 #include <expected>
 #include "Isoch/core/TransmitterTypes.hpp"
 #include "FWA/Error.h"
@@ -39,10 +40,10 @@ public:
         uint32_t numRanges           // Number of ranges to set (1 for NO_DATA, 2 for DATA)
     ) = 0;
 
-    // Method to notify the hardware about updated DCLs in a segment
-    virtual std::expected<void, IOKitError> notifySegmentUpdate(
-         IOFireWireLibLocalIsochPortRef localPort,
-         uint32_t groupIndexToNotify) = 0;
+    // Method to notify the hardware about updated DCLs in a group
+    virtual std::expected<void, IOKitError> notifyGroupUpdate(
+        IOFireWireLibLocalIsochPortRef localPort, 
+        const std::vector<NuDCLRef>& groupDCLs) = 0;
 
     // Method to get DCL reference for batching (Apple's architecture)
     virtual NuDCLSendPacketRef getDCLRef(uint32_t groupIndex, uint32_t packetIndexInGroup) = 0;

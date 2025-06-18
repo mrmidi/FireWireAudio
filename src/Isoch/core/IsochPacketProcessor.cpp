@@ -5,6 +5,9 @@
 #include <cstring> // For memcpy
 #include <CoreServices/CoreServices.h> // For endian conversion functions
 
+// SYT_INTERVAL constant for DBC calculations
+static constexpr uint8_t SYT_INTERVAL = 8;
+
 // Define bytes per sample for clarity
 constexpr size_t BYTES_PER_AM824_SAMPLE = 4;
 // Define max value for 24-bit signed int normalization
@@ -174,8 +177,9 @@ std::expected<void, IOKitError> IsochPacketProcessor::processPacket(
             lastPacketWasNoData_ = true; // Mark that this packet was NO_DATA
         } else { // First packet is DATA
             expectedDBC_ = dbc;
-            lastPacketNumDataBlocks_ = numDataBlocks; // Store blocks from THIS packet
-            lastPacketWasNoData_ = false;             // THIS packet was DATA
+            // NO-DATA contributes 0 blocks (Apple rule), DATA contributes actual blocks
+            lastPacketNumDataBlocks_ = currentPacketIsNoData ? 0 : numDataBlocks;
+            lastPacketWasNoData_ = currentPacketIsNoData; // Store type of THIS packet
             dbcInitialized_ = true;
             if (logger_) logger_->info("Packet G:{} P:{} - Initialized DBC tracking. First DBC={}, Blocks={}, Expecting next after {} blocks.",
                                       groupIndex, packetIndexInGroup, dbc, numDataBlocks, numDataBlocks);
@@ -207,18 +211,15 @@ std::expected<void, IOKitError> IsochPacketProcessor::processPacket(
         // --- Subsequent Packet Processing ---
         uint8_t nextExpectedDBC;
 
-        // --- Calculate Correct Expectation ---
-        if (lastPacketWasNoData_) {
-            // If previous was NO_DATA, expect the SAME DBC it carried
-            nextExpectedDBC = expectedDBC_;
-            if (logger_) logger_->trace("Packet G:{} P:{} - Expecting SAME DBC {} (after NO_DATA)", 
-                                       groupIndex, packetIndexInGroup, nextExpectedDBC);
-        } else {
-            // If previous was DATA, expect DBC + blocks from previous DATA packet
-            nextExpectedDBC = (expectedDBC_ + lastPacketNumDataBlocks_) & 0xFF;
-            if (logger_) logger_->trace("Packet G:{} P:{} - Expecting DBC {} + {} = {} (after DATA)", 
-                                       groupIndex, packetIndexInGroup, expectedDBC_, lastPacketNumDataBlocks_, nextExpectedDBC);
-        }
+        // --- Calculate Correct Expectation per Apple rule ---
+        nextExpectedDBC = lastPacketWasNoData_
+                        ? expectedDBC_                     // hold across ND/D
+                        : uint8_t(expectedDBC_ + lastPacketNumDataBlocks_);
+        if (logger_) logger_->trace("Packet G:{} P:{} - Expecting DBC {} {} {} = {} (prev was {})", 
+                                   groupIndex, packetIndexInGroup, expectedDBC_, 
+                                   lastPacketWasNoData_ ? "(hold)" : "+", 
+                                   lastPacketWasNoData_ ? "" : std::to_string(lastPacketNumDataBlocks_),
+                                   nextExpectedDBC, lastPacketWasNoData_ ? "NO-DATA" : "DATA");
 
         // --- Compare Received DBC with Expectation ---
         if (dbc != nextExpectedDBC) {
@@ -251,7 +252,8 @@ std::expected<void, IOKitError> IsochPacketProcessor::processPacket(
 
             // --- RESYNC State based on CURRENT packet ---
             expectedDBC_ = dbc;                       // Base NEXT expectation on THIS packet's DBC
-            lastPacketNumDataBlocks_ = numDataBlocks;  // Use blocks from THIS packet
+            // NO-DATA contributes 0 blocks (Apple rule), DATA contributes actual blocks
+            lastPacketNumDataBlocks_ = currentPacketIsNoData ? 0 : numDataBlocks;
             lastPacketWasNoData_ = currentPacketIsNoData; // Store type of THIS packet
             discontinuityDetected = true;
             // if (logger_) logger_->debug("Packet G:{} P:{} - RESYNC state: Next expected after PrevDBC={}, PrevBlocks={}, PrevWasNoData={}",
@@ -264,7 +266,8 @@ std::expected<void, IOKitError> IsochPacketProcessor::processPacket(
 
             // --- Update state based on CURRENT packet for NEXT check ---
             expectedDBC_ = dbc;                        // Base NEXT expectation on THIS packet's DBC
-            lastPacketNumDataBlocks_ = numDataBlocks;   // Use blocks from THIS packet
+            // NO-DATA contributes 0 blocks (Apple rule), DATA contributes actual blocks
+            lastPacketNumDataBlocks_ = currentPacketIsNoData ? 0 : numDataBlocks;
             lastPacketWasNoData_ = currentPacketIsNoData; // Store type of THIS packet
             if (logger_) logger_->trace("Packet G:{} P:{} - Updated state for next check: Next expected after PrevDBC={}, PrevBlocks={}, PrevWasNoData={}",
                                         groupIndex, packetIndexInGroup, expectedDBC_, lastPacketNumDataBlocks_, lastPacketWasNoData_);

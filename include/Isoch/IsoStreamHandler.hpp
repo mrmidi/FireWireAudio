@@ -106,6 +106,9 @@ private:
 
     // Helper to get the ring buffer pointer safely
     raul::RingBuffer* getInputStreamRingBuffer();
+    
+    // Configuration validation
+    void validateAppleConfiguration(const FWA::Isoch::TransmitterConfig& config);
 
     // Statistics tracking
     std::chrono::steady_clock::time_point m_lastTimestamp;

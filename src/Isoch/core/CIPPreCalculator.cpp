@@ -3,6 +3,9 @@
 #include <mach/thread_policy.h>
 #include <CoreServices/CoreServices.h>
 
+//--- optional silent-fill fallback ------------------
+#define SILENT_FALLBACK 0
+
 using namespace FWA::Isoch;
 
 CIPPreCalculator::~CIPPreCalculator() {
@@ -120,28 +123,55 @@ void CIPPreCalculator::calculateNextGroup() {
         H.fmt_eoh1       = CIP::kFmtEohValue;
         H.fdf            = is48 ? CIP::kFDF_48k : CIP::kFDF_44k1;
 
-        const uint8_t blocksPerPkt = SYT_INTERVAL;
+        const uint8_t blocksPerPkt = SYT_INTERVAL;   // == 8
+
+        uint8_t currentDbc = calcState_.dbc; // snapshot for this header
+
         if (noData) {
-            H.syt            = CIP::kSytNoData;
+            /* ----------  NO-DATA branch  ---------- */
+            H.fdf = is48 ? CIP::kFDF_48k : CIP::kFDF_44k1;
+            H.syt = CIP::kSytNoData;
+            H.dbc = currentDbc;
+
             pkt.isNoData     = true;
-            // NO-DATA packets DO increment DBC
-            calcState_.dbc = (calcState_.dbc + blocksPerPkt) & 0xFF;
-            pkt.dbcIncrement = blocksPerPkt;
+            pkt.dbcIncrement = blocksPerPkt;     // observer sees +8
+
+            /* ✱✱  DO NOT bump calcState_.dbc here  ✱✱ */
             calcState_.prevWasNoData = true;
         } else {
+            /* ----------  DATA branch  ---------- */
+            H.fdf = is48 ? CIP::kFDF_48k : CIP::kFDF_44k1;
+            H.syt = CIP::makeBigEndianSyt(static_cast<uint16_t>(calcState_.sytOffset));
+            H.dbc = currentDbc;
+
             pkt.isNoData = false;
+
             if (calcState_.prevWasNoData) {
-                // First DATA packet after NO-DATA: DO NOT increment DBC
+                /* first DATA after NO-DATA : header same DBC */
                 pkt.dbcIncrement = 0;
-                calcState_.prevWasNoData = false;
             } else {
-                // Normal DATA packet: increment DBC
-                calcState_.dbc = (calcState_.dbc + blocksPerPkt) & 0xFF;
+                /* DATA after DATA : header already shows +8 */
                 pkt.dbcIncrement = blocksPerPkt;
             }
-            H.syt = CIP::makeBigEndianSyt(static_cast<uint16_t>(calcState_.sytOffset));
+
+            /* ✱✱  ALWAYS bump after writing a DATA header  ✱✱ */
+            calcState_.dbc = (calcState_.dbc + blocksPerPkt) & 0xFF;
+            calcState_.prevWasNoData = false;
         }
-        H.dbc = calcState_.dbc;
+        
+#if SILENT_FALLBACK
+        // alternative to NO-DATA: same header + all-zero payload
+        // (uncomment if you prefer to avoid 8-byte packets)
+        //
+        // if (noData) {
+        //     uint8_t oldDbc = calcState_.dbc;
+        //     H.fdf = CIP::kFDF_48k; // Use sample rate, not 0xFF
+        //     H.dbc = oldDbc;
+        //     // zeroFillPayload(kAudioDataBytes); // Would be handled in transmitter
+        //     pkt.isNoData = false; // Mark as DATA packet with silent payload
+        //     calcState_.prevWasNoData = false;
+        // }
+#endif
     }
 
     // Store final state in group
@@ -212,23 +242,41 @@ void CIPPreCalculator::configureCPUAffinity() {
                       (thread_policy_t)&pre, THREAD_PRECEDENCE_POLICY_COUNT);
 }
 
+// Global emergency state (thread-local to avoid race conditions)
+static thread_local CIPPreCalculator::CalcState emergencyState_{};
+static thread_local bool emergencyStateInitialized_ = false;
+
+void CIPPreCalculator::syncEmergencyState() {
+    std::lock_guard<std::mutex> lock(syncMutex_);
+    emergencyState_ = calcState_;
+    emergencyStateInitialized_ = true;
+    os_log(OS_LOG_DEFAULT, "Emergency state synchronized: DBC=0x%02X, prevWasNoData=%d", 
+           emergencyState_.dbc, emergencyState_.prevWasNoData);
+}
+
 bool CIPPreCalculator::emergencyCalculateCIP(CIPHeader* H, uint8_t idx) {
     os_log(OS_LOG_DEFAULT, "EMERGENCY CIP pkt %u", idx);
+    
+    // CRITICAL FIX: Sync emergency state only if not initialized yet
+    if (!emergencyStateInitialized_) {
+        syncEmergencyState();
+    }
+    
     const bool is48 = (config_.sampleRate == 48000.0);
     bool noData;
     if (is48) {
-        noData = ((calcState_.phase480++ & (SYT_INTERVAL - 1)) == (SYT_INTERVAL - 1));
+        noData = ((emergencyState_.phase480++ & (SYT_INTERVAL - 1)) == (SYT_INTERVAL - 1));
     } else {
-        noData = (calcState_.sytOffset >= TICKS_PER_CYCLE);
-        if (calcState_.sytOffset < TICKS_PER_CYCLE) {
+        noData = (emergencyState_.sytOffset >= TICKS_PER_CYCLE);
+        if (emergencyState_.sytOffset < TICKS_PER_CYCLE) {
             uint32_t inc = BASE_INC_441;
-            uint32_t idx2 = calcState_.sytPhase % 13;
-            if ((idx2 && !(idx2 & 3)) || (calcState_.sytPhase == PHASE_MOD - 1)) ++inc;
-            calcState_.sytOffset += inc;
+            uint32_t idx2 = emergencyState_.sytPhase % 13;
+            if ((idx2 && !(idx2 & 3)) || (emergencyState_.sytPhase == PHASE_MOD - 1)) ++inc;
+            emergencyState_.sytOffset += inc;
         } else {
-            calcState_.sytOffset -= TICKS_PER_CYCLE;
+            emergencyState_.sytOffset -= TICKS_PER_CYCLE;
         }
-        if (++calcState_.sytPhase >= PHASE_MOD) calcState_.sytPhase = 0;
+        if (++emergencyState_.sytPhase >= PHASE_MOD) emergencyState_.sytPhase = 0;
     }
 
     H->sid_byte = nodeID_;
@@ -236,22 +284,39 @@ bool CIPPreCalculator::emergencyCalculateCIP(CIPHeader* H, uint8_t idx) {
     H->fmt_eoh1 = CIP::kFmtEohValue;
     H->fdf      = is48 ? CIP::kFDF_48k : CIP::kFDF_44k1;
     
-    const uint8_t blocksPerPkt = SYT_INTERVAL;
+    const uint8_t blocksPerPkt = SYT_INTERVAL;   // == 8
+
+    uint8_t currentDbc = emergencyState_.dbc; // snapshot for this header
+
     if (noData) {
+        /* ----------  NO-DATA branch  ---------- */
+        H->fdf = is48 ? CIP::kFDF_48k : CIP::kFDF_44k1;
         H->syt = CIP::kSytNoData;
-        // NO-DATA packets DO increment DBC
-        calcState_.dbc = (calcState_.dbc + blocksPerPkt) & 0xFF;
-        calcState_.prevWasNoData = true;
+        H->dbc = currentDbc;
+
+        /* ✱✱  DO NOT bump emergencyState_.dbc here  ✱✱ */
+        emergencyState_.prevWasNoData = true;
     } else {
-        if (calcState_.prevWasNoData) {
-            // First DATA packet after NO-DATA: DO NOT increment DBC
-            calcState_.prevWasNoData = false;
+        /* ----------  DATA branch  ---------- */
+        H->fdf = is48 ? CIP::kFDF_48k : CIP::kFDF_44k1;
+        H->syt = CIP::makeBigEndianSyt(static_cast<uint16_t>(emergencyState_.sytOffset));
+        H->dbc = currentDbc;
+
+        if (emergencyState_.prevWasNoData) {
+            /* first DATA after NO-DATA : header same DBC */
+            // Don't advance DBC
         } else {
-            // Normal DATA packet: increment DBC
-            calcState_.dbc = (calcState_.dbc + blocksPerPkt) & 0xFF;
+            /* DATA after DATA : header already shows +8 */
+            // DBC was already advanced for previous packet
         }
-        H->syt = CIP::makeBigEndianSyt(static_cast<uint16_t>(calcState_.sytOffset));
+
+        /* ✱✱  ALWAYS bump after writing a DATA header  ✱✱ */
+        emergencyState_.dbc = (emergencyState_.dbc + blocksPerPkt) & 0xFF;
+        emergencyState_.prevWasNoData = false;
     }
-    H->dbc = calcState_.dbc;
+    
+    os_log(OS_LOG_DEFAULT, "Emergency packet: DBC=0x%02X, isNoData=%d, nextDBC=0x%02X", 
+           currentDbc, noData, emergencyState_.dbc);
+    
     return noData;
 }

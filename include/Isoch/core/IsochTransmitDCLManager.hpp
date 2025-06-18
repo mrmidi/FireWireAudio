@@ -40,9 +40,9 @@ public:
         uint32_t numRanges
     ) override;
 
-     std::expected<void, IOKitError> notifySegmentUpdate(
-         IOFireWireLibLocalIsochPortRef localPort,
-         uint32_t groupIndexToNotify) override;
+    std::expected<void, IOKitError> notifyGroupUpdate(
+        IOFireWireLibLocalIsochPortRef localPort, 
+        const std::vector<NuDCLRef>& groupDCLs) override;
 
     NuDCLSendPacketRef getDCLRef(uint32_t groupIndex, uint32_t packetIndexInGroup) override;
 

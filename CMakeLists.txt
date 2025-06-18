@@ -624,7 +624,6 @@ src/Isoch/IsoStreamHandler.cpp
 src/Isoch/SharedManagers.cpp
 src/Isoch/core/AmdtpReceiver.cpp
 src/Isoch/core/AmdtpTransmitter.cpp
-src/Isoch/core/DCLBatcher.cpp
 src/Isoch/core/IsochBufferManager.cpp
 src/Isoch/core/IsochTransportManager.cpp
 src/Isoch/core/IsochPacketProcessor.cpp
@@ -650,7 +649,6 @@ include/Isoch/SharedManagers.hpp
 include/Isoch/core/AmdtpReceiver.hpp
 include/Isoch/core/AmdtpTransmitter.hpp
 include/Isoch/core/AmdtpTypes.hpp
-include/Isoch/core/DCLBatcher.hpp
 include/Isoch/core/ReceiverTypes.hpp
 include/Isoch/core/TransmitterTypes.hpp
 include/Isoch/core/SharedTypes.hpp

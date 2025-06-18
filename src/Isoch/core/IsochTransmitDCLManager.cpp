@@ -42,174 +42,201 @@ void IsochTransmitDCLManager::reset() {
 std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram(
     const TransmitterConfig& config,
     IOFireWireLibNuDCLPoolRef nuDCLPool,
-    const ITransmitBufferManager& bufferManager) // Use const ref to Buffer Manager
+    const ITransmitBufferManager& bufferManager)
 {
-     std::lock_guard<std::mutex> lock(mutex_);
-     if (dclProgramCreated_) {
-         logger_->warn("createDCLProgram called when already created.");
-         return std::unexpected(IOKitError::Busy);
-     }
-     if (!nuDCLPool) {
-          logger_->error("createDCLProgram: NuDCL pool is null.");
-         return std::unexpected(IOKitError::BadArgument);
-     }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (dclProgramCreated_) {
+        logger_->warn("createDCLProgram called when already created.");
+        return std::unexpected(IOKitError::Busy);
+    }
+    if (!nuDCLPool) {
+        logger_->error("createDCLProgram: NuDCL pool is null.");
+        return std::unexpected(IOKitError::BadArgument);
+    }
 
-     logger_->info("IsochTransmitDCLManager::createDCLProgram starting...");
+    logger_->info("IsochTransmitDCLManager: Creating DCL program with configuration: {}", config.configSummary());
 
-     // Store config and pool reference
-     config_ = config;
-     nuDCLPool_ = nuDCLPool; // Store non-owning ref
+    if (!config.isValid()) {
+        logger_->error("IsochTransmitDCLManager: Received an invalid configuration. Aborting DCL program creation.");
+        return std::unexpected(IOKitError::BadArgument);
+    }
 
-     // --- Basic Input Validation ---
-     if (config_.numGroups == 0 || config_.packetsPerGroup == 0) {
-         logger_->error("createDCLProgram: numGroups or packetsPerGroup is zero.");
-         return std::unexpected(IOKitError::BadArgument);
-     }
-     uint32_t totalPackets = config_.numGroups * config_.packetsPerGroup;
-     logger_->debug("  Total packets to create: {}", totalPackets);
+    // Store config and pool reference
+    config_ = config;
+    nuDCLPool_ = nuDCLPool;
 
-     // --- Prepare Internal Structures ---
-     try {
+    uint32_t callbackGroupInterval = config_.callbackGroupInterval; // Use from stored config_
+
+    // Basic Input Validation already present, now using config_
+    if (config_.numGroups == 0 || config_.packetsPerGroup == 0) {
+        logger_->error("createDCLProgram: numGroups or packetsPerGroup is zero in stored config.");
+        return std::unexpected(IOKitError::BadArgument);
+    }
+    
+    if (callbackGroupInterval > config_.numGroups) {
+        logger_->error("createDCLProgram: callbackGroupInterval ({}) > numGroups ({}) in stored config.", 
+                      callbackGroupInterval, config_.numGroups);
+        return std::unexpected(IOKitError::BadArgument);
+    }
+
+    uint32_t totalPackets = config_.numGroups * config_.packetsPerGroup;
+    logger_->debug("Total packets to create: {}", totalPackets);
+
+    // Prepare Internal Structures
+    try {
         dclProgramRefs_.resize(totalPackets);
         callbackInfos_.resize(config_.numGroups);
-        // updateBags_.resize(config_.numGroups); // Not using update bags for now
-     } catch (const std::bad_alloc& e) {
-         logger_->error("Failed to allocate internal DCL storage: {}", e.what());
-         reset();
-         return std::unexpected(IOKitError::NoMemory);
-     }
+    } catch (const std::bad_alloc& e) {
+        logger_->error("Failed to allocate internal DCL storage: {}", e.what());
+        reset();
+        return std::unexpected(IOKitError::NoMemory);
+    }
 
-     NuDCLSendPacketRef previousDCL = nullptr;
+    NuDCLSendPacketRef previousDCL = nullptr;
 
-     // --- DCL Allocation Loop ---
-     for (uint32_t g = 0; g < config_.numGroups; ++g) {
-         // Prepare callback info for this group (even if callback isn't set on all DCLs)
-         callbackInfos_[g].manager = this;
-         callbackInfos_[g].groupIndex = g;
-         // updateBags_[g] = CFSetCreateMutable(nullptr, 0, nullptr); // If using update bags
+    // === DCL Allocation Loop ===
+    for (uint32_t g = 0; g < config_.numGroups; ++g) {
+        // Prepare callback info for this group
+        callbackInfos_[g].manager = this;
+        callbackInfos_[g].groupIndex = g;
 
-         for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
-             uint32_t globalPacketIdx = g * config_.packetsPerGroup + p;
+        for (uint32_t p = 0; p < config_.packetsPerGroup; ++p) {
+            uint32_t globalPacketIdx = g * config_.packetsPerGroup + p;
 
-             // --- 1. Get Buffer Pointers for this Packet ---
-             auto headerVMPtrExp = bufferManager.getPacketIsochHeaderValueMaskPtr(g, p);
-             auto cipHdrPtrExp = bufferManager.getPacketCIPHeaderPtr(g, p);
-             // For Send DCL, the *source* of audio data is the client buffer area
-             uint8_t* audioDataPtr = bufferManager.getClientAudioBufferPtr()
-                                   + (globalPacketIdx * bufferManager.getAudioPayloadSizePerPacket()) % bufferManager.getClientAudioBufferSize(); // Cycle through client buffer
-             auto timestampPtrExp = bufferManager.getGroupTimestampPtr(g);
+            // === 1. Get Buffer Pointers ===
+            auto headerVMPtrExp = bufferManager.getPacketIsochHeaderValueMaskPtr(g, p);
+            auto cipHdrPtrExp = bufferManager.getPacketCIPHeaderPtr(g, p);
+            auto timestampPtrExp = bufferManager.getGroupTimestampPtr(g);
 
-             if (!headerVMPtrExp || !cipHdrPtrExp || !timestampPtrExp || !audioDataPtr) {
-                 logger_->error("Failed to get buffer pointers for G={}, P={}", g, p);
-                 reset(); // Cleanup partially created DCLs
-                 return std::unexpected(IOKitError::NoMemory); // Or more specific error
-             }
-             auto* headerVM = headerVMPtrExp.value();
-             uint8_t* cipHdrPtr = cipHdrPtrExp.value();
-             uint32_t* timestampPtr = timestampPtrExp.value();
-             size_t audioPayloadSize = bufferManager.getAudioPayloadSizePerPacket();
+            if (!headerVMPtrExp || !cipHdrPtrExp || !timestampPtrExp) {
+                logger_->error("Failed to get buffer pointers for G={}, P={}", g, p);
+                reset();
+                return std::unexpected(IOKitError::NoMemory);
+            }
 
-             // --- 2. Prepare Initial Value/Mask for Isochronous Header ---
-             // Use the makeIsoHeader helper to create proper value/mask pair. Tag=1 is for streams with a CIP header.
-             *headerVM = makeIsoHeader(/*tag=*/1, /*sy=*/0);
+            auto* headerVM = headerVMPtrExp.value();
+            uint8_t* cipHdrPtr = cipHdrPtrExp.value();
+            uint32_t* timestampPtr = timestampPtrExp.value();
 
-             // CIP Header (Initial safe state: NO_DATA)
-             FWA::Isoch::CIPHeader* cipHdr = reinterpret_cast<FWA::Isoch::CIPHeader*>(cipHdrPtr);
-             bzero(cipHdr, kTransmitCIPHeaderSize);
-             cipHdr->fmt_eoh1 = FWA::Isoch::CIP::kFmtEohValue;
-             cipHdr->fdf = FWA::Isoch::CIP::kFDF_48k;  // Always use sample rate, never 0xFF
-             cipHdr->syt = FWA::Isoch::CIP::makeBigEndianSyt(FWA::Isoch::CIP::kSytNoData);
+            // === CRITICAL FIX: Proper audio buffer pointer calculation ===
+            // Use round-robin approach to prevent buffer overlaps
+            size_t audioPayloadSize = bufferManager.getAudioPayloadSizePerPacket();
+            size_t clientBufferSize = bufferManager.getClientAudioBufferSize();
+            size_t bufferOffset = (globalPacketIdx * audioPayloadSize) % clientBufferSize;
+            
+            // Ensure we don't exceed buffer bounds
+            if (bufferOffset + audioPayloadSize > clientBufferSize) {
+                bufferOffset = 0;  // Wrap to beginning
+                logger_->warn("Audio buffer wrap at packet {} (G={}, P={})", globalPacketIdx, g, p);
+            }
+            
+            uint8_t* audioDataPtr = bufferManager.getClientAudioBufferPtr() + bufferOffset;
 
-             // Audio Payload (Zero it out initially)
-             // bzero(audioDataPtr, audioPayloadSize); // Provider should handle initial silence
+            // === 2. Initialize Isochronous Header ===
+            *headerVM = makeIsoHeader(/*tag=*/1, /*sy=*/0);
 
-             // --- 3. Prepare IOVirtualRange Array ---
-             // With hardware-assisted headers, the isochronous header is NOT part of the data ranges.
-             IOVirtualRange ranges[2];
-             uint32_t numRanges = 2; // Assume CIP + Payload initially
+            // === 3. Initialize CIP Header (NO-DATA state) ===
+            FWA::Isoch::CIPHeader* cipHdr = reinterpret_cast<FWA::Isoch::CIPHeader*>(cipHdrPtr);
+            bzero(cipHdr, kTransmitCIPHeaderSize);
+            cipHdr->fmt_eoh1 = FWA::Isoch::CIP::kFmtEohValue;
+            cipHdr->fdf = (config.sampleRate == 44100.0) ? 
+                          FWA::Isoch::CIP::kFDF_44k1 : 
+                          FWA::Isoch::CIP::kFDF_48k;
+            cipHdr->syt = FWA::Isoch::CIP::makeBigEndianSyt(FWA::Isoch::CIP::kSytNoData);
 
-             // Range 0: CIP Header
-             ranges[0].address = reinterpret_cast<IOVirtualAddress>(cipHdrPtr);
-             ranges[0].length = kTransmitCIPHeaderSize;
+            // === CRITICAL FIX: Start with NO-DATA packet configuration ===
+            IOVirtualRange ranges[2];  // Prepare for max 2 ranges
+            uint32_t numRanges = 1;    // Start with only CIP header
 
-             // Range 1: Audio Payload (Omitted initially for NO_DATA packets)
-             ranges[1].address = reinterpret_cast<IOVirtualAddress>(audioDataPtr);
-             ranges[1].length = audioPayloadSize;
+            // Range 0: CIP Header (ALWAYS present)
+            ranges[0].address = reinterpret_cast<IOVirtualAddress>(cipHdrPtr);
+            ranges[0].length = kTransmitCIPHeaderSize;
 
-             // --- 4. Allocate Send Packet DCL ---
-             NuDCLSendPacketRef currentDCL = (*nuDCLPool_)->AllocateSendPacket(
-                 nuDCLPool_,
-                 nullptr, // updateBag - not using for now
-                 numRanges,
-                 (::IOVirtualRange*)ranges // Cast to system type
-             );
+            // Range 1: Audio Payload (ONLY for data packets - initially NONE)
+            // We'll set this up but won't include it in initial numRanges
+            ranges[1].address = reinterpret_cast<IOVirtualAddress>(audioDataPtr);
+            ranges[1].length = audioPayloadSize;
 
-             if (!currentDCL) {
-                 logger_->error("Failed to allocate NuDCLSendPacketRef for G={}, P={}", g, p);
-                 reset();
-                 return std::unexpected(IOKitError::NoMemory);
-             }
-             dclProgramRefs_[globalPacketIdx] = currentDCL; // Store the reference
+            // === 4. Allocate Send Packet DCL ===
+            NuDCLSendPacketRef currentDCL = (*nuDCLPool_)->AllocateSendPacket(
+                nuDCLPool_,
+                nullptr,      // updateBag - not using
+                numRanges,    // FIXED: Start with 1 range (CIP only)
+                (::IOVirtualRange*)ranges
+            );
 
-             // --- 5. Configure the Allocated DCL ---
-             UInt32 dclFlags = kNuDCLDynamic |         // DCL might change (ranges, branch)
-                                kNuDCLUpdateBeforeCallback; // Update status/TS before callback
+            if (!currentDCL) {
+                logger_->error("Failed to allocate NuDCLSendPacketRef for G={}, P={}", g, p);
+                reset();
+                return std::unexpected(IOKitError::NoMemory);
+            }
+            dclProgramRefs_[globalPacketIdx] = currentDCL;
 
-             // Set Isoch Header Value/Mask Pointers. This tells the hardware how to generate the header.
-             (*nuDCLPool_)->SetDCLUserHeaderPtr(currentDCL, &headerVM->value, &headerVM->mask);
+            // === 5. Configure DCL ===
+            UInt32 dclFlags = kNuDCLDynamic | kNuDCLUpdateBeforeCallback;
 
-             // Set Timestamp Pointer (where hardware WRITES completion time)
-             (*nuDCLPool_)->SetDCLTimeStampPtr(currentDCL, timestampPtr);
-             // NOTE: Setting a non-NULL timestamp pointer might automatically set kFWNuDCLFlag_TimeStamp
-             
-            // Set Callback (Conditional)
-            bool isLastPacketInGroup = (p == config_.packetsPerGroup - 1);  // LAST packet
-            bool isCallbackGroup = ((g + 1) % config_.callbackGroupInterval == 0);
+            // Set Isoch Header Value/Mask Pointers
+            (*nuDCLPool_)->SetDCLUserHeaderPtr(currentDCL, &headerVM->value, &headerVM->mask);
+
+            // Set Timestamp Pointer
+            (*nuDCLPool_)->SetDCLTimeStampPtr(currentDCL, timestampPtr);
+
+            // === CRITICAL FIX: Proper callback placement ===
+            bool isLastPacketInGroup = (p == config_.packetsPerGroup - 1);
+            bool isCallbackGroup = ((g + 1) % callbackGroupInterval == 0);
 
             if (isLastPacketInGroup && isCallbackGroup) {
                 (*nuDCLPool_)->SetDCLCallback(currentDCL, DCLComplete_Helper);
-                (*nuDCLPool_)->SetDCLRefcon(currentDCL, &callbackInfos_[g]); // Pass group info struct addr
-                logger_->warn("  Set callback for G={}, P={} (DCL {:p})", g, p, (void*)currentDCL);
+                logger_->debug("DCL Callback set for group {} (packet {}), global DCL index {}. Effective interval: {}ms.", 
+                               g, p, globalPacketIdx, config_.callbackIntervalMs());
+                (*nuDCLPool_)->SetDCLRefcon(currentDCL, &callbackInfos_[g]);
+                logger_->info("Set callback for group {} (every {}ms)", g, 
+                             callbackGroupInterval * config.packetsPerGroup * 125 / 1000);
             } else {
-                (*nuDCLPool_)->SetDCLRefcon(currentDCL, this); // Default refcon
+                (*nuDCLPool_)->SetDCLRefcon(currentDCL, this);
             }
 
-             // Set Final Flags
-             (*nuDCLPool_)->SetDCLFlags(currentDCL, dclFlags);
+            // Set Final Flags
+            (*nuDCLPool_)->SetDCLFlags(currentDCL, dclFlags);
 
-             // --- 6. Link Previous DCL to Current ---
-             if (previousDCL) {
-                 (*nuDCLPool_)->SetDCLBranch(previousDCL, currentDCL);
-             }
+            // === 6. Link Previous DCL ===
+            if (previousDCL) {
+                (*nuDCLPool_)->SetDCLBranch(previousDCL, currentDCL);
+            }
 
-             // --- 7. Store First/Update Previous ---
-             if (globalPacketIdx == 0) {
-                 firstDCLRef_ = currentDCL;
-                 logger_->debug("  Stored first DCL: {:p}", (void*)firstDCLRef_);
-             }
-             previousDCL = currentDCL;
+            // === 7. Store First/Update Previous ===
+            if (globalPacketIdx == 0) {
+                firstDCLRef_ = currentDCL;
+                logger_->debug("Stored first DCL: {:p}", (void*)firstDCLRef_);
+            }
+            previousDCL = currentDCL;
+        }
+    }
 
-         } // End packet loop (p)
-     } // End group loop (g)
+    // Store last DCL
+    lastDCLRef_ = previousDCL;
+    if (lastDCLRef_) {
+        logger_->debug("Stored last DCL: {:p}", (void*)lastDCLRef_);
+    } else {
+        logger_->error("Last DCL is NULL after loop!");
+    }
 
-
-     // --- 8. Store Last DCL ---
-     lastDCLRef_ = previousDCL; // Should be the last one allocated
-     if(lastDCLRef_) logger_->debug("  Stored last DCL: {:p}", (void*)lastDCLRef_); else logger_->error("  Last DCL is NULL after loop!");
-
-
-     // --- 9. Get Program Handle ---
-     // The handle is needed for CreateLocalIsochPort
-     DCLCommand* programHandle = (*nuDCLPool_)->GetProgram(nuDCLPool_);
-     if (!programHandle) {
+    // Get Program Handle
+    DCLCommand* programHandle = (*nuDCLPool_)->GetProgram(nuDCLPool_);
+    if (!programHandle) {
         logger_->error("GetProgram returned null after creating DCLs");
         reset();
         return std::unexpected(IOKitError::Error);
     }
 
-     dclProgramCreated_ = true;
-     logger_->info("IsochTransmitDCLManager::createDCLProgram finished successfully.");
-     return programHandle; // Return the system-compatible handle
+    dclProgramCreated_ = true;
+    
+    logger_->info("DCL program created successfully with {} DCLs. {} callbacks per full cycle (every {}ms).",
+                  config_.totalDCLCommands(),
+                  config_.totalCallbacksPerCycle(),
+                  config_.callbackIntervalMs());
+    
+    return programHandle;
 }
 
 std::expected<void, IOKitError> IsochTransmitDCLManager::fixupDCLJumpTargets(
@@ -286,9 +313,92 @@ std::expected<void, IOKitError> IsochTransmitDCLManager::updateDCLPacket(
          return std::unexpected(IOKitError::BadArgument);
      }
 
-     // The only thing we need to update in real-time is the array of data ranges.
-     // The isochronous header itself is now handled by the hardware based on the
-     // value/mask we set during creation.
+     // === CRITICAL VALIDATION: Prevent CIP headers being transmitted as audio data ===
+     
+     // Input validation
+     if (!ranges) {
+         logger_->error("updateDCLPacket: ranges is NULL for G={}, P={}", groupIndex, packetIndexInGroup);
+         return std::unexpected(IOKitError::BadArgument);
+     }
+     
+     if (numRanges == 0 || numRanges > 2) {
+         logger_->error("updateDCLPacket: Invalid numRanges={} for G={}, P={} (expected 1 or 2)", 
+                       numRanges, groupIndex, packetIndexInGroup);
+         return std::unexpected(IOKitError::BadArgument);
+     }
+
+     // Range 0: Must always be CIP header (8 bytes)
+     if (ranges[0].length != kTransmitCIPHeaderSize) {
+         logger_->error("updateDCLPacket: Range[0] length={} != CIP header size {} for G={}, P={}", 
+                       ranges[0].length, kTransmitCIPHeaderSize, groupIndex, packetIndexInGroup);
+         return std::unexpected(IOKitError::BadArgument);
+     }
+
+     // Validate CIP header address is properly aligned
+     if (ranges[0].address == 0) {
+         logger_->error("updateDCLPacket: Range[0] CIP header address is NULL for G={}, P={}", 
+                       groupIndex, packetIndexInGroup);
+         return std::unexpected(IOKitError::BadArgument);
+     }
+
+     // If numRanges == 2, validate audio payload range
+     if (numRanges == 2) {
+         // Range 1: Audio payload validation
+         if (ranges[1].length == 0) {
+             logger_->error("updateDCLPacket: Range[1] audio payload length is 0 for G={}, P={}", 
+                           groupIndex, packetIndexInGroup);
+             return std::unexpected(IOKitError::BadArgument);
+         }
+
+         if (ranges[1].address == 0) {
+             logger_->error("updateDCLPacket: Range[1] audio payload address is NULL for G={}, P={}", 
+                           groupIndex, packetIndexInGroup);
+             return std::unexpected(IOKitError::BadArgument);
+         }
+
+         // CRITICAL: Ensure CIP header and audio data don't overlap
+         uintptr_t cipStart = ranges[0].address;
+         uintptr_t cipEnd = cipStart + ranges[0].length;
+         uintptr_t audioStart = ranges[1].address;
+         uintptr_t audioEnd = audioStart + ranges[1].length;
+
+         if ((cipStart >= audioStart && cipStart < audioEnd) ||
+             (audioStart >= cipStart && audioStart < cipEnd)) {
+             logger_->error("updateDCLPacket: CIP header [0x{:08X}-0x{:08X}) overlaps with audio data [0x{:08X}-0x{:08X}) for G={}, P={}", 
+                           cipStart, cipEnd, audioStart, audioEnd, groupIndex, packetIndexInGroup);
+             return std::unexpected(IOKitError::BadArgument);
+         }
+
+         // Validate audio payload size is reasonable (multiple of sample size)
+         const uint32_t BYTES_PER_SAMPLE = 4;  // 24-bit sample in 32-bit container
+         const uint32_t SAMPLES_PER_PACKET = 8;  // SYT_INTERVAL
+         const uint32_t EXPECTED_PAYLOAD_BASE = BYTES_PER_SAMPLE * SAMPLES_PER_PACKET;
+         
+         if (ranges[1].length % EXPECTED_PAYLOAD_BASE != 0) {
+             logger_->warn("updateDCLPacket: Audio payload length {} not multiple of expected base {} for G={}, P={}", 
+                          ranges[1].length, EXPECTED_PAYLOAD_BASE, groupIndex, packetIndexInGroup);
+         }
+     }
+
+     // Additional safety check: Verify we're not accidentally setting CIP header size as audio data
+     for (uint32_t i = 0; i < numRanges; ++i) {
+         if (i > 0 && ranges[i].length == kTransmitCIPHeaderSize) {
+             logger_->error("updateDCLPacket: Range[{}] has CIP header size {} but should be audio data for G={}, P={}", 
+                           i, kTransmitCIPHeaderSize, groupIndex, packetIndexInGroup);
+             return std::unexpected(IOKitError::BadArgument);
+         }
+     }
+
+     // Log successful validation for debugging (remove in production)
+     if (logger_->should_log(spdlog::level::trace)) {
+         logger_->trace("updateDCLPacket: G={}, P={}, numRanges={}, CIP[0x{:08X}:{}], Audio[0x{:08X}:{}]",
+                       groupIndex, packetIndexInGroup, numRanges,
+                       ranges[0].address, ranges[0].length,
+                       numRanges > 1 ? ranges[1].address : 0,
+                       numRanges > 1 ? ranges[1].length : 0);
+     }
+
+     // Perform the actual DCL range update
      IOReturn result = (*nuDCLPool_)->SetDCLRanges(dclRef, numRanges, (::IOVirtualRange*)ranges);
      if (result != kIOReturnSuccess) {
          logger_->error("SetDCLRanges failed for G={}, P={}: 0x{:08X}", groupIndex, packetIndexInGroup, result);
@@ -298,41 +408,38 @@ std::expected<void, IOKitError> IsochTransmitDCLManager::updateDCLPacket(
      return {};
 }
 
-std::expected<void, IOKitError> IsochTransmitDCLManager::notifySegmentUpdate(
-     IOFireWireLibLocalIsochPortRef localPort, uint32_t groupIndexToNotify)
-{
-     // std::lock_guard<std::mutex> lock(mutex_); // May not need lock if dclProgramRefs_ isn't modified
-     if (!dclProgramCreated_) return std::unexpected(IOKitError::NotReady);
-     if (!localPort) return std::unexpected(IOKitError::BadArgument);
-     if (groupIndexToNotify >= config_.numGroups) return std::unexpected(IOKitError::BadArgument);
-
-     // Prepare the list of DCLs in the segment to notify
-     uint32_t startIndex = groupIndexToNotify * config_.packetsPerGroup;
-     uint32_t count = config_.packetsPerGroup;
-     std::vector<NuDCLRef> dclsInSegment;
-     dclsInSegment.reserve(count);
-     for (uint32_t i = 0; i < count; ++i) {
-          if (startIndex + i < dclProgramRefs_.size()) {
-              dclsInSegment.push_back(dclProgramRefs_[startIndex + i]);
-          } else {
-               logger_->error("notifySegmentUpdate: Calculated index out of bounds!");
-               return std::unexpected(IOKitError::BadArgument); // Should not happen
-          }
-     }
-
-     if (dclsInSegment.empty()) {
-          logger_->warn("notifySegmentUpdate: No DCLs found for group {}", groupIndexToNotify);
-          return {}; // Not an error, but nothing to do
-     }
-
-     // Call the helper to notify
-     IOReturn result = notifyDCLUpdates(localPort, dclsInSegment.data(), dclsInSegment.size());
-     if (result != kIOReturnSuccess) {
-          logger_->error("notifyDCLUpdates failed for group {}: 0x{:08X}", groupIndexToNotify, result);
-          return std::unexpected(IOKitError(result));
-     }
-     // logger_->trace("Notified DCL updates for group {}", groupIndexToNotify);
-     return {};
+std::expected<void, IOKitError> IsochTransmitDCLManager::notifyGroupUpdate(
+    IOFireWireLibLocalIsochPortRef localPort, 
+    const std::vector<NuDCLRef>& groupDCLs) {
+    
+    if (!localPort || groupDCLs.empty()) {
+        return std::unexpected(IOKitError::BadArgument);
+    }
+    
+    std::vector<void*> dclPtrArray;
+    dclPtrArray.reserve(groupDCLs.size());
+    
+    for (size_t i = 0; i < groupDCLs.size(); ++i) {
+        if (!groupDCLs[i]) {
+            logger_->error("notifyGroupUpdate: NULL DCL reference at group index {}.", i);
+            return std::unexpected(IOKitError::BadArgument);
+        }
+        dclPtrArray.push_back(static_cast<void*>(groupDCLs[i]));
+    }
+    
+    IOReturn result = (*localPort)->Notify(
+        localPort,
+        kFWNuDCLModifyNotification,
+        dclPtrArray.data(),
+        static_cast<UInt32>(dclPtrArray.size())
+    );
+    
+    if (result != kIOReturnSuccess) {
+        logger_->error("notifyGroupUpdate: Hardware notification failed with error: 0x{:08X}", result);
+        return std::unexpected(IOKitError(result));
+    }
+    
+    return {};
 }
 
 // updateJumpTargets method removed - we now use a static circular DCL program

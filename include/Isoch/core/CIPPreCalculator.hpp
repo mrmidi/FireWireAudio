@@ -84,6 +84,18 @@ public:
     // Force sync DBC state between transmitter and pre-calc
     void forceSync(uint8_t dbc, bool prevWasNoData);
     bool emergencyCalculateCIP(CIPHeader* header, uint8_t packetIndex);
+    void syncEmergencyState();  // Synchronize emergency state with main state
+
+    // Public state structure for emergency calculation
+    struct CalcState {
+        uint8_t  dbc{0};
+        bool     prevWasNoData{true};
+        // for 44.1 kHz
+        uint32_t sytOffset{0};
+        uint32_t sytPhase{0};
+        // for 48 kHz
+        uint32_t phase480{0};
+    };
 
 private:
     void calculateNextGroup();
@@ -107,15 +119,7 @@ private:
     uint16_t nodeID_{0};
 
     // thread-local state
-    struct CalcState {
-        uint8_t  dbc{0};
-        bool     prevWasNoData{true};
-        // for 44.1 kHz
-        uint32_t sytOffset{0};
-        uint32_t sytPhase{0};
-        // for 48 kHz
-        uint32_t phase480{0};
-    } calcState_;
+    CalcState calcState_;
     
     // Mutex to protect calcState_ during sync operations
     mutable std::mutex syncMutex_;

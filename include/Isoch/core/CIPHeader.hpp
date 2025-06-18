@@ -39,9 +39,9 @@ static_assert(sizeof(CIPHeader) == 8, "CIPHeader must be packed to 8 bytes");
 // Constants for filling the CIP Header, improving readability
 namespace CIP {
     // FDF (Format Dependent Field) values for sample rate
-    // CRITICAL: FDF always contains sample rate, NEVER changes for NO-DATA packets!
-    constexpr uint8_t kFDF_44k1  = 0x01;
-    constexpr uint8_t kFDF_48k   = 0x02;
+    // For Apple/Focusrite devices: NO-DATA packets use sample rate FDF, not 0xFF
+    constexpr uint8_t kFDF_44k1   = 0x01;
+    constexpr uint8_t kFDF_48k    = 0x02;
 
     // Format (FMT) and End-of-Header (EOH) values
     constexpr uint8_t kFmtMBLA   = 0x24; // FMT=0x24 for MBLA - Duet format

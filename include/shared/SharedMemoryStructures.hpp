@@ -5,18 +5,21 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <os/log.h>
 
 constexpr std::size_t kDestructiveCL     = 64;
 constexpr std::size_t kMaxFramesPerChunk = 1024; 
 constexpr std::size_t kMaxChannels       = 2;
 constexpr std::size_t kMaxBytesPerSample = 4;
 constexpr std::size_t kMaxBytesPerFrame  = kMaxChannels * kMaxBytesPerSample;
-constexpr std::size_t kRingCapacityPow2  = 512; // TEST
+// 1024 slots → ~86 ms @44.1 kHz, power-of-2
+constexpr std::size_t kRingCapacityPow2  = 1024;
 static_assert((kRingCapacityPow2 & (kRingCapacityPow2 - 1)) == 0);
 constexpr std::size_t kAudioDataBytes = kMaxFramesPerChunk * kMaxBytesPerFrame;
 constexpr uint32_t    kShmVersion     = 4;
 
-static constexpr uint32_t kSafetyHedgeChunks = 4; // Safety hedge for ring buffer capacity
+// ~2 ms of extra cycles at 8 kHz
+static constexpr uint32_t kSafetyHedgeChunks = 16;
 
 namespace RTShmRing {
 
@@ -108,6 +111,15 @@ inline bool push(ControlBlock_POD&       cb,
     auto rd = ReadIndexProxy(cb).load(std::memory_order_acquire);
     auto wr = WriteIndexProxy(cb).load(std::memory_order_relaxed);
     if (wr - rd >= cb.capacity) return false;
+    
+    // Ring fill level diagnostics
+    auto freeSlots = cb.capacity - (wr - rd);
+    auto fillPct   = (100 * (cb.capacity - freeSlots)) / cb.capacity;
+    if (fillPct < 10 || fillPct > 90) {
+        // Use os_log since we don't have logger access here
+        os_log(OS_LOG_DEFAULT, "SHM fill-level = %u %% (rd=%llu, wr=%llu, cap=%u)",
+               (unsigned int)fillPct, (unsigned long long)rd, (unsigned long long)wr, (unsigned int)cb.capacity);
+    }
 
     auto slot = wr & (cb.capacity-1);
     auto& c   = ring[slot];
@@ -159,6 +171,14 @@ inline bool pop(ControlBlock_POD&       cb,           // CHANGED: remove const
         return false;
     }
     inUnderrun = false;            // we have data again
+    
+    // Ring fill level diagnostics on pop side
+    auto freeSlots = cb.capacity - (wr - rd);
+    auto fillPct   = (100 * (cb.capacity - freeSlots)) / cb.capacity;
+    if (fillPct < 10 || fillPct > 90) {
+        os_log(OS_LOG_DEFAULT, "SHM pop fill-level = %u %% (rd=%llu, wr=%llu, cap=%u)",
+               (unsigned int)fillPct, (unsigned long long)rd, (unsigned long long)wr, (unsigned int)cb.capacity);
+    }
 
     const uint64_t slot = rd & (cb.capacity - 1);
     AudioChunk_POD& c = ring[slot];

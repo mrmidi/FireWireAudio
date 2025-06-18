@@ -191,23 +191,19 @@ std::expected<void, IOKitError> IsoStreamHandler::start() {
     // --- Create Output Stream (Transmitter) ---
     m_logger->info("IsoStreamHandler: Creating transmitter stream...");
 
-    // isochronous paramexsters for transmitter
-    // 256 callbacks per second
-    // worth playing around with this values 32/8 rate ~250 callbacks per second. Latency is need to be estimated.
-    // PROGRAM SHOULD CONTAIN MAX 128 DCLs for now
-    const unsigned int txPacketsPerGroup = 8; 
-    const unsigned int txNumGroups = 16;            
-    const unsigned int txPacketDataSize = 64; // Audio payload size per packet
-    unsigned int transmitProviderBufferSize = 2 * txNumGroups * txPacketsPerGroup * txPacketDataSize; // Example buffer size
+    FWA::Isoch::TransmitterConfig txConfig = FWA::Isoch::ApplePresets::Classic;
+    txConfig.initialSpeed = m_speed;
+    txConfig.logger = m_logger;
+    // Potentially set txConfig.sampleRate = m_audioDevice->getCurrentSampleRate(); here
 
-    m_logger->info("IsoStreamHandler: Creating transmitter stream with: packetsPerGroup={}, numGroups={}, transmitProviderBufferSize={}",
-                   txPacketsPerGroup, txNumGroups, transmitProviderBufferSize);
-
-    // --- REMOVED check for m_amdtpTxProcessor ---
-    // The check for m_amdtpTxProcessor has been removed as it's no longer a member variable
-    // We don't need to check for this processor anymore before creating the output stream
-
-    // Assume device INPUT plug 0 for transmitting audio TO device
+    // Validate the configuration BEFORE proceeding
+    try {
+        validateAppleConfiguration(txConfig);
+    } catch (const std::invalid_argument& e) {
+        m_logger->critical("IsoStreamHandler: Aborting stream start due to invalid configuration: {}", e.what());
+        return std::unexpected(IOKitError::BadArgument);
+    }
+    
     uint8_t transmitPlugNum = 0;
 
     auto outputStreamResult = AudioDeviceStream::createTransmitterForDevicePlug(
@@ -218,9 +214,7 @@ std::expected<void, IOKitError> IsoStreamHandler::start() {
         &IsoStreamHandler::handleMessage, // Reuse message handler for errors/status
         this, // RefCon for message handler
         m_logger,
-        txPacketsPerGroup, // Use same cycle/segment config for DCL structure
-        txNumGroups,
-        transmitProviderBufferSize, // Buffer size for the internal provider
+        txConfig,
         m_interface
     );
     // If you want to set transmissionType here, modify AudioDeviceStream::createTransmitterForDevicePlug to accept and forward it.
@@ -769,5 +763,40 @@ bool IsoStreamHandler::pushTransmitData(const void* buffer, size_t bufferSizeInB
     return false; // Indicate failure as transmitter isn't running
 }
 #endif // TRANSMIT
+
+// Add this private helper method to IsoStreamHandler class
+void IsoStreamHandler::validateAppleConfiguration(const FWA::Isoch::TransmitterConfig& config) {
+    if (!config.isValid()) {
+        m_logger->critical("IsoStreamHandler: CRITICAL CONFIGURATION ERROR. The transmitter configuration is invalid and does not meet safety requirements. Summary: {}", config.configSummary());
+        throw std::invalid_argument("Invalid TransmitterConfig for Apple-style streaming: " + config.configSummary());
+    }
+    
+    // Log detailed information about the final, validated configuration
+    m_logger->info("-----------------------------------------------------------------------");
+    m_logger->info("IsoStreamHandler: Final Validated Transmitter Configuration:");
+    m_logger->info("  Total DCL Commands:      {}", config.totalDCLCommands());
+    m_logger->info("  Groups:                  {}", config.numGroups);
+    m_logger->info("  Packets Per Group:       {}", config.packetsPerGroup);
+    m_logger->info("  Callback Interval:       Every {} groups ({} ms, {} Hz)", 
+                   config.callbackGroupInterval, config.callbackIntervalMs(),
+                   config.callbackIntervalMs() > 0 ? 1000 / config.callbackIntervalMs() : 0);
+    m_logger->info("  Safety Margin:           {} ms (Time before buffer exhaustion if callbacks stop)", config.safetyMarginMs());
+    m_logger->info("  Total Callbacks/Cycle:   {}", config.totalCallbacksPerCycle());
+    m_logger->info("  Packet Data Size:        {} bytes", config.packetDataSize);
+    m_logger->info("  Sample Rate:             {:.1f} Hz", config.sampleRate);
+    m_logger->info("  Initial FireWire Speed:  {}", static_cast<int>(config.initialSpeed));
+    m_logger->info("-----------------------------------------------------------------------");
+
+    // Specific checks for Apple's known "sweet spot"
+    if (config.totalDCLCommands() != 800 && config.numGroups == 100 && config.packetsPerGroup == 8) {
+         m_logger->warn("IsoStreamHandler: Configuration uses {} DCLs. Apple's classic AM824NuDCLWrite used 800 (100 groups of 8).", config.totalDCLCommands());
+    }
+    if (config.callbackIntervalMs() != 20) {
+         m_logger->warn("IsoStreamHandler: Callback interval is {}ms. Apple's classic used 20ms.", config.callbackIntervalMs());
+    }
+    if (config.safetyMarginMs() < 60 && config.numGroups == 100) { // Check only if aiming for classic
+         m_logger->warn("IsoStreamHandler: Safety margin is {}ms. Apple's classic had ~80ms.", config.safetyMarginMs());
+    }
+}
 
 } // namespace FWA
