@@ -212,6 +212,13 @@ IOReturn AudioDevice::createFWDeviceInterface() {
         if (comErr == S_OK)
         {
             result = (*deviceInterface)->AddCallbackDispatcherToRunLoop(deviceInterface, deviceController_->getRunLoopRef());
+            
+            /* NEW – let isochronous callbacks reach the run-loop as well */
+            if (!result) {
+                result = (*deviceInterface)->AddIsochCallbackDispatcherToRunLoop(
+                                            deviceInterface,
+                                            deviceController_->getRunLoopRef());
+            }
         }
         else
             result = comErr;

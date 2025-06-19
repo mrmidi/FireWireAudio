@@ -88,8 +88,15 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
         // CRITICAL FIX: Reserve callbackInfos_ to prevent pointer invalidation
         callbackInfos_.clear();
         callbackInfos_.reserve(config_.numGroups);
+
+        // NEW: allocate one CFMutableSet bag per segment for UpdateBeforeCallback
+        updateBags_.clear();
+        updateBags_.reserve(config_.numGroups);
+
         for (uint32_t g = 0; g < config_.numGroups; ++g) {
             callbackInfos_.emplace_back(DCLCallbackInfo{this, g});
+            CFMutableSetRef bag = CFSetCreateMutable(nullptr, 0, nullptr);
+            updateBags_.push_back(bag);
         }
     } catch (const std::bad_alloc& e) {
         logger_->error("Failed to allocate internal DCL storage: {}", e.what());
@@ -163,7 +170,7 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
             // === 4. Allocate Send Packet DCL ===
             NuDCLSendPacketRef currentDCL = (*nuDCLPool_)->AllocateSendPacket(
                 nuDCLPool_,
-                nullptr,      // updateBag - not using
+                /*updateBag*/ updateBags_[g],
                 numRanges,    // FIXED: Start with 1 range (CIP only)
                 (::IOVirtualRange*)ranges
             );
@@ -175,17 +182,14 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
             }
             dclProgramRefs_[globalPacketIdx] = currentDCL;
 
-            // === 5. Configure DCL ===
-            UInt32 dclFlags = kNuDCLDynamic | kNuDCLUpdateBeforeCallback;
-            
-            // 1) Install flags first so the kernel will keep your callback bit
-            (*nuDCLPool_)->SetDCLFlags(currentDCL, dclFlags);
+            // ① First: install the update-list (bag)
+            (*nuDCLPool_)->SetDCLUpdateList(currentDCL, updateBags_[g]);
 
-            // 2) Then set header, timestamp, etc…
+            // ② Second: set header, timestamp, etc…
             (*nuDCLPool_)->SetDCLUserHeaderPtr(currentDCL, &headerVM->value, &headerVM->mask);
             (*nuDCLPool_)->SetDCLTimeStampPtr(currentDCL, timestampPtr);
 
-            // 3) Only now install your callback/refCon
+            // ③ Third: install callback/refCon
             bool isLastPacketInGroup = (p == config_.packetsPerGroup - 1);
             bool isCallbackGroup = ((g + 1) % callbackGroupInterval == 0);
             bool wantCallback = isLastPacketInGroup && isCallbackGroup;
@@ -200,6 +204,10 @@ std::expected<DCLCommand*, IOKitError> IsochTransmitDCLManager::createDCLProgram
             } else {
                 (*nuDCLPool_)->SetDCLRefcon(currentDCL, this);
             }
+
+            // ④ Fourth and LAST: set flags to enable update-before-callback
+            UInt32 dclFlags = kNuDCLDynamic | kNuDCLUpdateBeforeCallback;
+            (*nuDCLPool_)->SetDCLFlags(currentDCL, dclFlags);
 
             // —and **never** call SetDCLFlags(currentDCL, …) on this packet again—
 

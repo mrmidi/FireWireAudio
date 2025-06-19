@@ -397,7 +397,7 @@ void AmdtpTransmitter::handleDCLOverrun() {
 // --- APPLE'S MULTI-GROUP BATCH PROCESSING ---
 void AmdtpTransmitter::handleDCLCompleteFastPath(uint32_t completedGroupIndex) {
     // log critical: FIRED
-    logger_->critical("AmdtpTransmitter::handleDCLCompleteFastPath called for group {}", completedGroupIndex);
+    // logger_->critical("AmdtpTransmitter::handleDCLCompleteFastPath called for group {}", completedGroupIndex);
     uint64_t startTime = mach_absolute_time();
     
     if (!running_.load(std::memory_order_relaxed)) return;

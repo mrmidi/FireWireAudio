@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <os/log.h>
 
 constexpr std::size_t kDestructiveCL     = 64;
 constexpr std::size_t kMaxFramesPerChunk = 1024; 
@@ -111,15 +110,6 @@ inline bool push(ControlBlock_POD&       cb,
     auto rd = ReadIndexProxy(cb).load(std::memory_order_acquire);
     auto wr = WriteIndexProxy(cb).load(std::memory_order_relaxed);
     if (wr - rd >= cb.capacity) return false;
-    
-    // Ring fill level diagnostics
-    auto freeSlots = cb.capacity - (wr - rd);
-    auto fillPct   = (100 * (cb.capacity - freeSlots)) / cb.capacity;
-    if (fillPct < 10 || fillPct > 90) {
-        // Use os_log since we don't have logger access here
-        os_log(OS_LOG_DEFAULT, "SHM fill-level = %u %% (rd=%llu, wr=%llu, cap=%u)",
-               (unsigned int)fillPct, (unsigned long long)rd, (unsigned long long)wr, (unsigned int)cb.capacity);
-    }
 
     auto slot = wr & (cb.capacity-1);
     auto& c   = ring[slot];
@@ -171,14 +161,6 @@ inline bool pop(ControlBlock_POD&       cb,           // CHANGED: remove const
         return false;
     }
     inUnderrun = false;            // we have data again
-    
-    // Ring fill level diagnostics on pop side
-    auto freeSlots = cb.capacity - (wr - rd);
-    auto fillPct   = (100 * (cb.capacity - freeSlots)) / cb.capacity;
-    if (fillPct < 10 || fillPct > 90) {
-        os_log(OS_LOG_DEFAULT, "SHM pop fill-level = %u %% (rd=%llu, wr=%llu, cap=%u)",
-               (unsigned int)fillPct, (unsigned long long)rd, (unsigned long long)wr, (unsigned int)cb.capacity);
-    }
 
     const uint64_t slot = rd & (cb.capacity - 1);
     AudioChunk_POD& c = ring[slot];

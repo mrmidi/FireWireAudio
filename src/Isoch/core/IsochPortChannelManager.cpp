@@ -74,6 +74,10 @@ void IsochPortChannelManager::cleanupResources() noexcept {
             (*isochChannel_)->ReleaseChannel(isochChannel_);
             running_ = false;
         }
+        // Turn off notifications before releasing the channel
+        if ((*isochChannel_)->TurnOffNotification) {
+            (*isochChannel_)->TurnOffNotification(isochChannel_);
+        }
         (*isochChannel_)->Release(isochChannel_);
         isochChannel_ = nullptr;
     }
@@ -208,7 +212,7 @@ std::expected<void, IOKitError> IsochPortChannelManager::setupDispatchers() {
         return std::unexpected(IOKitError(ret));
     }
     
-    ret = (*interface_)->AddIsochCallbackDispatcherToRunLoop(interface_, runLoop_);
+        ret = (*interface_)->AddIsochCallbackDispatcherToRunLoop(interface_, runLoop_);
     if (ret != kIOReturnSuccess) {
         if (logger_) {
             logger_->error("IsochPortChannelManager::setupDispatchers: Failed to add isoch callback dispatcher to RunLoop: 0x{:08X}", ret);
@@ -216,6 +220,19 @@ std::expected<void, IOKitError> IsochPortChannelManager::setupDispatchers() {
         (*interface_)->RemoveCallbackDispatcherFromRunLoop(interface_);
         return std::unexpected(IOKitError(ret));
     }
+
+        /* NEW ---- enable notifications ---- */
+    if (!(*interface_)->TurnOnNotification(interface_)) {
+        (*interface_)->RemoveIsochCallbackDispatcherFromRunLoop(interface_);
+        (*interface_)->RemoveCallbackDispatcherFromRunLoop(interface_);
+        logger_->error("IsochPortChannelManager::setupDispatchers: Failed to enable notifications");
+        return std::unexpected(IOKitError::NoMemory);
+    } else {
+        if (logger_) {
+            logger_->info("IsochPortChannelManager::setupDispatchers: Notifications enabled");
+        }
+    }
+
     
     dispatchersAdded_ = true;
     
@@ -475,12 +492,21 @@ std::expected<void, IOKitError> IsochPortChannelManager::createIsochChannel() {
         }
     }
     
+    /* NEW – enable packet notifications so SetDCLCallback() can fire   */
+    if ((*isochChannel_)->TurnOnNotification &&
+        !(*isochChannel_)->TurnOnNotification(isochChannel_))        /* returns bool */
+    {
+        logger_->error("IsochPortChannelManager: TurnOnNotification failed");
+        return std::unexpected(IOKitError::Error);
+    }
+
     // Set this as the refcon for the channel
     (*isochChannel_)->SetRefCon(isochChannel_, this);
-    
+
     if (logger_) {
         logger_->debug("IsochPortChannelManager::createIsochChannel: Isoch channel created successfully");
     }
+    
     
     return {};
 }

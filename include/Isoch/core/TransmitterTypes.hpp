@@ -41,7 +41,7 @@ struct TransmitterConfig {
     uint32_t numChannels{2};
     TransmissionType transmissionType{TransmissionType::NonBlocking};
     
-    double sampleRate{48000.0};
+    double sampleRate{44100.0};
     IOFWSpeed initialSpeed{kFWSpeed400MBit};
     uint32_t initialChannel{0};
     
@@ -100,7 +100,7 @@ namespace ApplePresets {
         .packetsPerGroup = 8,
         .callbackGroupInterval = 20,
         .packetDataSize = 64,
-        .sampleRate = 48000.0
+        .sampleRate = 44100.0
     };
     
     const TransmitterConfig Conservative = {
@@ -108,7 +108,7 @@ namespace ApplePresets {
         .packetsPerGroup = 8,
         .callbackGroupInterval = 20,   
         .packetDataSize = 64,
-        .sampleRate = 48000.0
+        .sampleRate = 44100.0
     };
     
     const TransmitterConfig Minimal = {
@@ -116,7 +116,7 @@ namespace ApplePresets {
         .packetsPerGroup = 8,
         .callbackGroupInterval = 20,
         .packetDataSize = 64, 
-        .sampleRate = 48000.0
+        .sampleRate = 44100.0
     };
 }
 

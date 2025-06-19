@@ -112,9 +112,9 @@ private:
     uint8_t dbcCount_{0};           ///< Data block counter
     bool wasNoData_{true};          ///< Previous packet state
     bool firstCallbackOccurred_{false}; ///< First DCL callback occurred
-    uint32_t sampleRate_{48000};    ///< Current sample rate
-    uint32_t baseTicks_{BASE_TICKS_48K}; ///< Ticks per packet
-    
+    uint32_t sampleRate_{44100};    ///< Current sample rate
+    uint32_t baseTicks_{BASE_TICKS_44K}; ///< Ticks per packet
+
     /**
      * @brief Initialize transfer delay based on current cycle time
      * @param currentFireWireCycleTime Current FireWire cycle time
